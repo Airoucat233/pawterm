@@ -69,6 +69,11 @@ class Strings {
   final String filesCancel;
   final String filesDownload;
   final String filesDownloading;
+  final String filesPreview;
+  final String filesOpenWith;
+  final String filesSaveLocal;
+  final String filesShare;
+  final String filesOpenFailed;
   // Permission modes
   final String todoChipTpl; // {done}/{total}
   final String todoSheetTitle;
@@ -257,6 +262,11 @@ class Strings {
     required this.filesCancel,
     required this.filesDownload,
     required this.filesDownloading,
+    required this.filesPreview,
+    required this.filesOpenWith,
+    required this.filesSaveLocal,
+    required this.filesShare,
+    required this.filesOpenFailed,
     required this.todoChipTpl,
     required this.todoSheetTitle,
     required this.todoEmpty,
@@ -422,6 +432,11 @@ const Strings stringsEn = Strings(
   filesCancel: 'Cancel',
   filesDownload: 'Download',
   filesDownloading: 'Downloading',
+  filesPreview: 'Preview',
+  filesOpenWith: 'Open with…',
+  filesSaveLocal: 'Save to device',
+  filesShare: 'Share',
+  filesOpenFailed: 'Cannot open',
   todoChipTpl: 'Tasks {done}/{total}',
   todoSheetTitle: 'Task list',
   todoEmpty: 'No active tasks',
@@ -591,6 +606,11 @@ const Strings stringsZh = Strings(
   filesCancel: '取消',
   filesDownload: '下载',
   filesDownloading: '下载中',
+  filesPreview: '预览',
+  filesOpenWith: '用其他应用打开',
+  filesSaveLocal: '保存到本地',
+  filesShare: '分享',
+  filesOpenFailed: '无法打开',
   todoChipTpl: '任务 {done}/{total}',
   todoSheetTitle: '任务列表',
   todoEmpty: '暂无任务',

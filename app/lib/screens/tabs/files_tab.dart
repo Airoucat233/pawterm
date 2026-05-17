@@ -3,9 +3,12 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:open_file_plus/open_file_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:pdfx/pdfx.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../api/files_api.dart';
@@ -14,6 +17,37 @@ import '../../i18n/strings.dart';
 import '../../state/projects_store.dart';
 import '../../state/server_config.dart';
 import '../../theme.dart';
+
+// ── preview type ────────────────────────────────────────────────────
+
+enum _PreviewType { text, markdown, image, pdf, none }
+
+_PreviewType _previewTypeFor(String name) {
+  final lower = name.toLowerCase();
+  if (lower.endsWith('.md')) { return _PreviewType.markdown; }
+  if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') ||
+      lower.endsWith('.gif') || lower.endsWith('.webp')) { return _PreviewType.image; }
+  if (lower.endsWith('.pdf')) { return _PreviewType.pdf; }
+  if (lower.endsWith('.txt') || lower.endsWith('.log') || lower.endsWith('.json') ||
+      lower.endsWith('.yaml') || lower.endsWith('.yml') || lower.endsWith('.toml') ||
+      lower.endsWith('.ini') || lower.endsWith('.env') || lower.endsWith('.ts') ||
+      lower.endsWith('.tsx') || lower.endsWith('.js') || lower.endsWith('.jsx') ||
+      lower.endsWith('.dart') || lower.endsWith('.py') || lower.endsWith('.rs') ||
+      lower.endsWith('.go') || lower.endsWith('.java') || lower.endsWith('.kt') ||
+      lower.endsWith('.swift') || lower.endsWith('.c') || lower.endsWith('.cpp') ||
+      lower.endsWith('.h') || lower.endsWith('.sh') || lower.endsWith('.bash') ||
+      lower.endsWith('.css') || lower.endsWith('.html') || lower.endsWith('.xml') ||
+      lower.endsWith('.svg')) {
+    return _PreviewType.text;
+  }
+  return _PreviewType.none;
+}
+
+// ── file action enum ────────────────────────────────────────────────
+
+enum _FileAction { preview, open, save }
+
+// ── main tab ────────────────────────────────────────────────────────
 
 class FilesTab extends ConsumerStatefulWidget {
   const FilesTab({super.key});
@@ -24,13 +58,11 @@ class FilesTab extends ConsumerStatefulWidget {
 
 class _FilesTabState extends ConsumerState<FilesTab> {
   String? _path;
-  String? _rootPath; // 起始 cwd，用作面包屑相对根 + 决定 "上级" 是否可用
+  String? _rootPath;
   List<FsEntry> _entries = const [];
   bool _loading = false;
   String? _error;
 
-  /// 进程内目录缓存：path → 上次 ls 的结果。
-  /// 进入已访问的目录优先用缓存秒开，同时后台异步刷新；用户下拉/点刷新强制 bypass。
   final Map<String, FsListing> _cache = {};
 
   String _sessionKey(CurrentSession s) => s.cwd;
@@ -42,14 +74,10 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     _ls(session.cwd);
   }
 
-  /// 进入目录。
-  /// - [force] = false：优先用 cache 秒开，并后台 refresh
-  /// - [force] = true：bypass cache，强制重新拉取（下拉刷新 / 显式点刷新）
   Future<void> _ls(String path, {bool force = false}) async {
     final conn = ref.read(activeConnectionProvider);
     if (conn == null) return;
 
-    // 走缓存：立即把 cached entries 显示出来，loading 仅在 cache miss 才置 true
     final cached = !force ? _cache[path] : null;
     setState(() {
       if (cached != null) {
@@ -69,7 +97,6 @@ class _FilesTabState extends ConsumerState<FilesTab> {
       final listing = await api.ls(path);
       if (!mounted) return;
       _cache[listing.path] = listing;
-      // 如果用户已经跳到别的目录，不要回填覆盖
       if (_path != listing.path && _path != path) return;
       setState(() {
         _path = listing.path;
@@ -78,7 +105,6 @@ class _FilesTabState extends ConsumerState<FilesTab> {
       });
     } catch (e) {
       if (!mounted) return;
-      // cache hit 的情况下网络失败不显示错误（保留旧内容），cache miss 才报错
       if (cached == null) {
         setState(() {
           _loading = false;
@@ -88,31 +114,42 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     }
   }
 
-  String _humanPath(String path) {
-    return path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
-  }
+  String _humanPath(String path) =>
+      path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
+
+  // ── file tap → action sheet ──────────────────────────────────────
 
   Future<void> _onTapFile(FsEntry entry) async {
-    final s = ref.read(stringsProvider);
-    final confirm = await showDialog<bool>(
+    final action = await showModalBottomSheet<_FileAction>(
       context: context,
-      builder: (ctx) => _DownloadConfirmDialog(entry: entry, strings: s),
+      builder: (ctx) => _FileActionSheet(
+        entry: entry,
+        previewEnabled: _previewTypeFor(entry.name) != _PreviewType.none,
+      ),
     );
-    if (confirm != true || !mounted) return;
-    await _download(entry);
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _FileAction.preview:
+        await _doPreview(entry);
+      case _FileAction.open:
+        await _doOpen(entry);
+      case _FileAction.save:
+        await _doSave(entry);
+    }
   }
 
-  Future<void> _download(FsEntry entry) async {
+  // ── generic download helper ──────────────────────────────────────
+
+  Future<File?> _downloadTo(FsEntry entry, Directory destDir) async {
     final conn = ref.read(activeConnectionProvider);
-    if (conn == null) return;
-    final s = ref.read(stringsProvider);
+    if (conn == null) return null;
+
     final progressNotifier = ValueNotifier<_DownloadState>(
       const _DownloadState(received: 0, total: null, done: false),
     );
     final cancelToken = Completer<void>();
     bool dialogOpen = true;
 
-    // 弹出进度对话框（不阻塞 await）
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -126,8 +163,8 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     ).then((_) => dialogOpen = false);
 
     try {
-      final tmpDir = await getTemporaryDirectory();
-      final dest = File('${tmpDir.path}/cc-downloads/${entry.name}');
+      await destDir.create(recursive: true);
+      final dest = File('${destDir.path}/${entry.name}');
       final api = FilesApi(conn.httpBase);
       final file = await api.download(
         remotePath: entry.path,
@@ -137,27 +174,81 @@ class _FilesTabState extends ConsumerState<FilesTab> {
           progressNotifier.value = _DownloadState(received: recv, total: total, done: false);
         },
       );
-      progressNotifier.value = _DownloadState(received: file.lengthSync(), total: file.lengthSync(), done: true);
-      if (dialogOpen && mounted) Navigator.of(context).pop();
-
-      // 分享出去（让用户存到相册、文件 app、邮件、AirDrop…）
-      // ignore: deprecated_member_use — share_plus 跨平台 API 仍然推荐 shareXFiles
-      await Share.shareXFiles(
-        [XFile(file.path, name: entry.name)],
-        subject: s.filesShareSavedFile,
+      progressNotifier.value = _DownloadState(
+        received: file.lengthSync(),
+        total: file.lengthSync(),
+        done: true,
       );
+      if (dialogOpen && mounted) Navigator.of(context).pop();
+      return file;
     } on FsCancelledException {
       if (dialogOpen && mounted) Navigator.of(context).pop();
+      return null;
     } catch (e) {
       if (dialogOpen && mounted) Navigator.of(context).pop();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(s.filesDownloadFailedTpl.replaceAll('{err}', '$e')),
-      ));
+      if (mounted) {
+        final s = ref.read(stringsProvider);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(s.filesDownloadFailedTpl.replaceAll('{err}', '$e')),
+        ));
+      }
+      return null;
     } finally {
       progressNotifier.dispose();
     }
   }
+
+  // ── action handlers ──────────────────────────────────────────────
+
+  Future<void> _doPreview(FsEntry entry) async {
+    final tmpDir = await getTemporaryDirectory();
+    final file = await _downloadTo(entry, Directory('${tmpDir.path}/cc-previews'));
+    if (file == null || !mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => _PreviewSheet(
+        file: file,
+        name: entry.name,
+        type: _previewTypeFor(entry.name),
+      ),
+    );
+  }
+
+  Future<void> _doOpen(FsEntry entry) async {
+    final tmpDir = await getTemporaryDirectory();
+    final file = await _downloadTo(entry, Directory('${tmpDir.path}/cc-open'));
+    if (file == null || !mounted) return;
+    final result = await OpenFile.open(file.path);
+    if (result.type != ResultType.done && mounted) {
+      final s = ref.read(stringsProvider);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${s.filesOpenFailed}: ${result.message}'),
+      ));
+    }
+  }
+
+  Future<void> _doSave(FsEntry entry) async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    final file = await _downloadTo(entry, Directory('${docsDir.path}/downloads'));
+    if (file == null || !mounted) return;
+    final s = ref.read(stringsProvider);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(s.filesDownloadDoneTpl.replaceAll('{name}', entry.name)),
+      action: SnackBarAction(
+        label: s.filesShare,
+        onPressed: () async {
+          // ignore: deprecated_member_use
+          await Share.shareXFiles([XFile(file.path, name: entry.name)]);
+        },
+      ),
+    ));
+  }
+
+  // ── build ────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -250,16 +341,15 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   }
 }
 
-// ── path bar (breadcrumb) ──────────────────────────────────────────
+// ── path bar (compact breadcrumb) ────────────────────────────────────
 
-/// 可点击的路径面包屑：`~ / workspace / shulex / claude-companion`，
-/// 每段都能 tap 跳到对应那一级。比单纯的"上级"按钮更高效——尤其深路径下。
 class _PathBar extends StatelessWidget {
-  final String path; // 已经 home-fold 过的展示路径
-  final String? rawPath; // 真实绝对路径，用于点击时算出每段的目标 path
-  final String? rootPath; // 起始项目根，root 之前的段不允许 jump
+  final String path;
+  final String? rawPath;
+  final String? rootPath;
   final void Function(String absolutePath) onJump;
   final VoidCallback? onRefresh;
+
   const _PathBar({
     required this.path,
     required this.rawPath,
@@ -268,21 +358,14 @@ class _PathBar extends StatelessWidget {
     required this.onRefresh,
   });
 
-  /// 把 `~/workspace/shulex/.../server` 拆成可点击段。每段返回 (label, absolutePath?)。
-  /// absolutePath == null 表示该段在 root 之外，禁止跳转。
   List<(String, String?)> _segments() {
-    if (rawPath == null || rawPath!.isEmpty) {
-      return [('~', null)];
-    }
+    if (rawPath == null || rawPath!.isEmpty) return [('~', null)];
     final raw = rawPath!;
     final segs = raw.split('/').where((s) => s.isNotEmpty).toList();
-    // 重建每段对应的累积路径
     final result = <(String, String?)>[];
     var cum = '';
     final isHome = path.startsWith('~');
     if (isHome) {
-      // 找到 home 段：raw 形如 /Users/<me>/...；前两段 (Users/<me>) 折叠成 ~
-      // 累积 path 跨过 /Users/<me> 为止
       if (segs.length >= 2) {
         cum = '/${segs[0]}/${segs[1]}';
         result.add(('~', _isUnderRoot(cum) ? cum : null));
@@ -294,7 +377,6 @@ class _PathBar extends StatelessWidget {
         result.add(('~', null));
       }
     } else {
-      // 绝对路径但不在 home 下：完整展开（首段保留 / 前缀）
       result.add(('/', null));
       for (final s in segs) {
         cum = '$cum/$s';
@@ -306,7 +388,10 @@ class _PathBar extends StatelessWidget {
 
   bool _isUnderRoot(String abs) {
     if (rootPath == null) return true;
-    return abs == rootPath || abs.startsWith('$rootPath/') || rootPath!.startsWith('$abs/') || rootPath == abs;
+    return abs == rootPath ||
+        abs.startsWith('$rootPath/') ||
+        rootPath!.startsWith('$abs/') ||
+        rootPath == abs;
   }
 
   @override
@@ -315,14 +400,14 @@ class _PathBar extends StatelessWidget {
     final segs = _segments();
     return Container(
       color: t.surface,
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
           Expanded(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              reverse: true, // 末段总是可见
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              reverse: true,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -335,8 +420,8 @@ class _PathBar extends StatelessWidget {
                     ),
                     if (i < segs.length - 1)
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: Icon(Icons.chevron_right, size: 14, color: t.textDim),
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        child: Icon(Icons.chevron_right, size: 12, color: t.textDim),
                       ),
                   ],
                 ],
@@ -344,9 +429,9 @@ class _PathBar extends StatelessWidget {
             ),
           ),
           IconButton(
-            icon: Icon(Icons.refresh, size: 18, color: onRefresh == null ? t.textDim : t.textMuted),
+            icon: Icon(Icons.refresh, size: 16, color: onRefresh == null ? t.textDim : t.textMuted),
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             onPressed: onRefresh,
           ),
         ],
@@ -357,9 +442,10 @@ class _PathBar extends StatelessWidget {
 
 class _Crumb extends StatelessWidget {
   final String label;
-  final String? target; // null = 不可跳
+  final String? target;
   final bool isLast;
   final void Function(String) onJump;
+
   const _Crumb({
     required this.label,
     required this.target,
@@ -375,13 +461,13 @@ class _Crumb extends StatelessWidget {
     final tappable = !isLast && target != null;
     return InkWell(
       onTap: tappable ? () => onJump(target!) : null,
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(4),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 12,
+            fontSize: 10.5,
             color: color,
             fontWeight: weight,
             fontFamily: 'monospace',
@@ -403,16 +489,21 @@ class _FsRow extends StatelessWidget {
     final lower = name.toLowerCase();
     if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') ||
         lower.endsWith('.gif') || lower.endsWith('.webp')) { return Icons.image_outlined; }
-    if (lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.webm')) { return Icons.movie_outlined; }
-    if (lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.m4a') || lower.endsWith('.flac')) { return Icons.audiotrack_outlined; }
+    if (lower.endsWith('.mp4') || lower.endsWith('.mov') ||
+        lower.endsWith('.webm')) { return Icons.movie_outlined; }
+    if (lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.m4a') ||
+        lower.endsWith('.flac')) { return Icons.audiotrack_outlined; }
     if (lower.endsWith('.pdf')) { return Icons.picture_as_pdf_outlined; }
-    if (lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.gz') || lower.endsWith('.tgz')) { return Icons.folder_zip_outlined; }
-    if (lower.endsWith('.md') || lower.endsWith('.txt') || lower.endsWith('.log')) { return Icons.description_outlined; }
+    if (lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.gz') ||
+        lower.endsWith('.tgz')) { return Icons.folder_zip_outlined; }
+    if (lower.endsWith('.md') || lower.endsWith('.txt') ||
+        lower.endsWith('.log')) { return Icons.description_outlined; }
     if (lower.endsWith('.ts') || lower.endsWith('.tsx') || lower.endsWith('.js') ||
         lower.endsWith('.jsx') || lower.endsWith('.dart') || lower.endsWith('.py') ||
         lower.endsWith('.rs') || lower.endsWith('.go') || lower.endsWith('.java') ||
         lower.endsWith('.kt') || lower.endsWith('.swift') || lower.endsWith('.c') ||
-        lower.endsWith('.cpp') || lower.endsWith('.h') || lower.endsWith('.json')) { return Icons.code_outlined; }
+        lower.endsWith('.cpp') || lower.endsWith('.h') ||
+        lower.endsWith('.json')) { return Icons.code_outlined; }
     return Icons.insert_drive_file_outlined;
   }
 
@@ -451,7 +542,7 @@ class _FsRow extends StatelessWidget {
               ),
             ),
             Icon(
-              entry.isDir ? Icons.chevron_right : Icons.download_outlined,
+              entry.isDir ? Icons.chevron_right : Icons.more_horiz,
               size: 16,
               color: t.textDim,
             ),
@@ -462,39 +553,294 @@ class _FsRow extends StatelessWidget {
   }
 }
 
-// ── confirm + progress dialogs ──────────────────────────────────────
+// ── file action sheet ────────────────────────────────────────────────
 
-class _DownloadConfirmDialog extends StatelessWidget {
+class _FileActionSheet extends ConsumerWidget {
   final FsEntry entry;
-  final Strings strings;
-  const _DownloadConfirmDialog({required this.entry, required this.strings});
+  final bool previewEnabled;
+
+  const _FileActionSheet({
+    required this.entry,
+    required this.previewEnabled,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = AppTokens.of(context);
+    final s = ref.watch(stringsProvider);
+
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // drag handle
+          Container(
+            margin: const EdgeInsets.only(top: 10, bottom: 4),
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: t.border,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          // file info
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                Icon(Icons.insert_drive_file_outlined, size: 18, color: t.textMuted),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    entry.name,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.text),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Text(
+                  formatBytes(entry.sizeBytes),
+                  style: TextStyle(fontSize: 11, color: t.textDim, fontFamily: 'monospace'),
+                ),
+              ],
+            ),
+          ),
+          Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
+          // actions
+          ListTile(
+            enabled: previewEnabled,
+            leading: Icon(
+              Icons.visibility_outlined,
+              color: previewEnabled ? t.accent : t.textDim,
+            ),
+            title: Text(
+              s.filesPreview,
+              style: TextStyle(color: previewEnabled ? t.text : t.textDim),
+            ),
+            onTap: previewEnabled ? () => Navigator.of(context).pop(_FileAction.preview) : null,
+          ),
+          ListTile(
+            leading: Icon(Icons.open_in_new, color: t.text),
+            title: Text(s.filesOpenWith, style: TextStyle(color: t.text)),
+            onTap: () => Navigator.of(context).pop(_FileAction.open),
+          ),
+          ListTile(
+            leading: Icon(Icons.save_outlined, color: t.text),
+            title: Text(s.filesSaveLocal, style: TextStyle(color: t.text)),
+            onTap: () => Navigator.of(context).pop(_FileAction.save),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// ── preview sheet ─────────────────────────────────────────────────────
+
+class _PreviewSheet extends StatelessWidget {
+  final File file;
+  final String name;
+  final _PreviewType type;
+
+  const _PreviewSheet({
+    required this.file,
+    required this.name,
+    required this.type,
+  });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return AlertDialog(
-      backgroundColor: t.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: Text(strings.filesDownload, style: TextStyle(fontSize: 16, color: t.text)),
-      content: Text(
-        strings.filesConfirmDownloadTpl
-            .replaceAll('{name}', entry.name)
-            .replaceAll('{size}', formatBytes(entry.sizeBytes)),
-        style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.5),
+    final screenHeight = MediaQuery.of(context).size.height;
+    return SizedBox(
+      height: screenHeight * 0.92,
+      child: Column(
+        children: [
+          // drag handle
+          Center(
+            child: Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 4),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: t.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          // title bar
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    name,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.text),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close, size: 20, color: t.textMuted),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+          ),
+          Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
+          Expanded(child: _buildContent()),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: Text(strings.filesCancel, style: TextStyle(color: t.textMuted)),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(true),
-          child: Text(strings.filesDownload),
-        ),
-      ],
+    );
+  }
+
+  Widget _buildContent() {
+    switch (type) {
+      case _PreviewType.image:
+        return _ImagePreview(file: file);
+      case _PreviewType.markdown:
+        return _MarkdownPreview(file: file);
+      case _PreviewType.pdf:
+        return _PdfPreview(file: file);
+      case _PreviewType.text:
+        return _TextPreview(file: file);
+      case _PreviewType.none:
+        return const Center(child: Text('Preview not available'));
+    }
+  }
+}
+
+// ── preview content widgets ──────────────────────────────────────────
+
+class _ImagePreview extends StatelessWidget {
+  final File file;
+  const _ImagePreview({required this.file});
+
+  @override
+  Widget build(BuildContext context) {
+    return InteractiveViewer(
+      minScale: 0.5,
+      maxScale: 6.0,
+      child: Center(child: Image.file(file)),
     );
   }
 }
+
+class _TextPreview extends StatefulWidget {
+  final File file;
+  const _TextPreview({required this.file});
+
+  @override
+  State<_TextPreview> createState() => _TextPreviewState();
+}
+
+class _TextPreviewState extends State<_TextPreview> {
+  String? _content;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.file.readAsString().then((v) {
+      if (mounted) setState(() => _content = v);
+    }).catchError((Object e) {
+      if (mounted) setState(() => _error = e);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    if (_error != null) {
+      return Center(child: Text('$_error', style: TextStyle(color: t.error, fontSize: 12)));
+    }
+    if (_content == null) {
+      return Center(child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: SelectableText(
+        _content!,
+        style: TextStyle(
+          fontSize: 11.5,
+          color: t.text,
+          fontFamily: 'monospace',
+          height: 1.55,
+        ),
+      ),
+    );
+  }
+}
+
+class _MarkdownPreview extends StatefulWidget {
+  final File file;
+  const _MarkdownPreview({required this.file});
+
+  @override
+  State<_MarkdownPreview> createState() => _MarkdownPreviewState();
+}
+
+class _MarkdownPreviewState extends State<_MarkdownPreview> {
+  String? _content;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.file.readAsString().then((v) {
+      if (mounted) setState(() => _content = v);
+    }).catchError((Object e) {
+      if (mounted) setState(() => _error = e);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    if (_error != null) {
+      return Center(child: Text('$_error', style: TextStyle(color: t.error, fontSize: 12)));
+    }
+    if (_content == null) {
+      return Center(child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
+    }
+    return Markdown(data: _content!, padding: const EdgeInsets.all(16));
+  }
+}
+
+class _PdfPreview extends StatefulWidget {
+  final File file;
+  const _PdfPreview({required this.file});
+
+  @override
+  State<_PdfPreview> createState() => _PdfPreviewState();
+}
+
+class _PdfPreviewState extends State<_PdfPreview> {
+  late PdfController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = PdfController(document: PdfDocument.openFile(widget.file.path));
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PdfView(controller: _controller);
+  }
+}
+
+// ── progress dialog ──────────────────────────────────────────────────
 
 class _DownloadState {
   final int received;
@@ -507,6 +853,7 @@ class _DownloadProgressDialog extends StatelessWidget {
   final String filename;
   final ValueListenable<_DownloadState> progress;
   final VoidCallback onCancel;
+
   const _DownloadProgressDialog({
     required this.filename,
     required this.progress,
@@ -563,7 +910,7 @@ class _DownloadProgressDialog extends StatelessWidget {
   }
 }
 
-// ── formatting helpers ──────────────────────────────────────────────
+// ── formatting helpers ───────────────────────────────────────────────
 
 String formatBytes(int n) {
   if (n < 1024) return '${n}B';
