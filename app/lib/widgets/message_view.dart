@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
@@ -17,16 +20,106 @@ class MessageView extends StatelessWidget {
     Map<String, String> answers,
     Map<String, Map<String, String>>? annotations,
   )? onAnswerQuestion;
+  /// 原始 SSE event data（仅 debug 打包时传入，release 为 null）。
+  /// 长按消息可查看。
+  final Map<String, dynamic>? rawJson;
 
   const MessageView({
     super.key,
     required this.message,
     this.toolResults,
     this.onAnswerQuestion,
+    this.rawJson,
   });
 
   @override
   Widget build(BuildContext context) {
+    final content = _buildContent(context);
+    // debug 打包：长按弹出原始 SSE 数据
+    if (kDebugMode && rawJson != null) {
+      return GestureDetector(
+        onLongPress: () => _showRawSheet(context),
+        child: content,
+      );
+    }
+    return content;
+  }
+
+  void _showRawSheet(BuildContext context) {
+    const enc = JsonEncoder.withIndent('  ');
+    String text;
+    try {
+      text = enc.convert(rawJson);
+    } catch (_) {
+      text = rawJson.toString();
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) {
+        final t = AppTokens.of(context);
+        return DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          maxChildSize: 0.92,
+          minChildSize: 0.3,
+          expand: false,
+          builder: (_, ctrl) => Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'Raw Message',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: t.text,
+                      ),
+                    ),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: () => Navigator.of(context).pop(),
+                      child: Icon(Icons.close, size: 18, color: t.textDim),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: t.bg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: t.border, width: 0.5),
+                    ),
+                    child: SingleChildScrollView(
+                      controller: ctrl,
+                      padding: const EdgeInsets.all(12),
+                      child: SelectableText(
+                        text,
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          color: t.textMuted,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     final t = AppTokens.of(context);
     final msg = message;
 

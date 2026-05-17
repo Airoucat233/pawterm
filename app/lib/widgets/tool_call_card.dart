@@ -9,9 +9,9 @@ import 'diff_view.dart';
 /// 工具调用卡片 — 把 ToolUseBlock 和它对应的 ToolResultBlock（按 id 配对）
 /// 合并成一个折叠卡。
 ///
-/// 折叠态：单行 [icon] [name] [summary] [✓/✗/⏳]  [▾]
+/// 折叠态：单行 [icon] [name] [summary ←→ 横滑] [✓/✗/⏳] [▾]
 /// 展开态：分两段
-///   Input  — 调用参数（diff/命令/键值对……）
+///   Input  — 调用参数（diff/命令/JSON……）+ pretty|raw segmented control
 ///   Output — 工具返回（文本，>4000 字符截断）
 class ToolCallCard extends StatefulWidget {
   final ToolUseBlock toolUse;
@@ -25,31 +25,26 @@ class ToolCallCard extends StatefulWidget {
 }
 
 class _ToolCallCardState extends State<ToolCallCard> {
-  /// 默认折叠：消息流里大量工具调用展开会噪音很大；想看细节再点。
   bool _expanded = false;
+  bool _viewRaw = false;
 
   ToolUseBlock get toolUse => widget.toolUse;
   ToolResultBlock? get result => widget.result;
 
   @override
   Widget build(BuildContext context) {
-    // TodoWrite 工具调用：交给顶部全局 TodoChip 展示，消息流里不显示卡片。
     if (toolUse.name == 'TodoWrite') return const SizedBox.shrink();
 
     final t = AppTokens.of(context);
     final color = _colorFor(t, toolUse.name);
     final icon = _iconFor(toolUse.name);
-    // 所有工具都允许展开（即使 input 为空，也能看 output）。
     final hasInputBody = !_isBodyEmpty(toolUse.name);
     final hasOutput = result != null;
     final canExpand = hasInputBody || hasOutput;
 
     return InkWell(
       onTap: canExpand ? () => setState(() => _expanded = !_expanded) : null,
-      borderRadius: const BorderRadius.only(
-        topRight: Radius.circular(6),
-        bottomRight: Radius.circular(6),
-      ),
+      borderRadius: BorderRadius.circular(8),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
@@ -61,10 +56,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
             bottom: BorderSide(color: t.border, width: 0.5),
             left: BorderSide(color: color, width: 3),
           ),
-          borderRadius: const BorderRadius.only(
-            topRight: Radius.circular(6),
-            bottomRight: Radius.circular(6),
-          ),
+          borderRadius: BorderRadius.circular(8),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -82,7 +74,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Expanded(child: _summary(t, toolUse.name, toolUse.input)),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: _summary(t, toolUse.name, toolUse.input),
+                  ),
+                ),
                 _statusBadge(t),
                 if (canExpand) ...[
                   const SizedBox(width: 6),
@@ -97,7 +94,17 @@ class _ToolCallCardState extends State<ToolCallCard> {
             if (_expanded && canExpand) ...[
               const SizedBox(height: 10),
               if (hasInputBody) ...[
-                _SectionLabel('Input', t),
+                Row(
+                  children: [
+                    _SectionLabel('Input', t),
+                    const Spacer(),
+                    if (_showViewToggle(toolUse.name))
+                      _SegmentedControl(
+                        isRaw: _viewRaw,
+                        onChanged: (v) => setState(() => _viewRaw = v),
+                      ),
+                  ],
+                ),
                 const SizedBox(height: 4),
                 _renderBody(context, t, toolUse.name, toolUse.input),
               ],
@@ -114,22 +121,15 @@ class _ToolCallCardState extends State<ToolCallCard> {
     );
   }
 
-  /// 状态徽章：折叠态下显示 ⏳ running / ✓ done / ✗ error。
-  /// 它取代了原来的"+adds −dels"和"NEW"徽章 — 那些细节展开后再看。
   Widget _statusBadge(AppTokens t) {
     if (result == null) {
       return SizedBox(
         width: 12,
         height: 12,
-        child: CircularProgressIndicator(
-          strokeWidth: 1.5,
-          color: t.textDim,
-        ),
+        child: CircularProgressIndicator(strokeWidth: 1.5, color: t.textDim),
       );
     }
-    if (result!.isError) {
-      return Icon(Icons.close_rounded, size: 14, color: t.error);
-    }
+    if (result!.isError) return Icon(Icons.close_rounded, size: 14, color: t.error);
     return Icon(Icons.check_rounded, size: 14, color: t.success);
   }
 
@@ -171,9 +171,11 @@ class _ToolCallCardState extends State<ToolCallCard> {
     return content.toString();
   }
 
-  /// 是否有 input body 可展示。除少数没有 input 的工具，绝大多数都有；
-  /// Read/Grep/Glob 之前被特例化为"空"，但展开态应当能看到完整参数，所以一律 false。
   bool _isBodyEmpty(String name) => false;
+
+  /// Edit/Write/Bash 有专属"pretty"视图，显示 pretty|raw 切换。
+  bool _showViewToggle(String name) =>
+      name == 'Edit' || name == 'MultiEdit' || name == 'Write' || name == 'Bash';
 
   Color _colorFor(AppTokens t, String name) {
     switch (name) {
@@ -225,32 +227,44 @@ class _ToolCallCardState extends State<ToolCallCard> {
     }
   }
 
+  /// 标题行摘要文本。
+  /// - Bash：主命令（第一个 token）+ … + 尾部（让用户同时看到命令类型和目标）
+  /// - 文件操作：仅保留文件名（…/filename），路径可横划查看
+  /// - 其他：完整 pattern 或空
   Widget _summary(AppTokens t, String name, Map<String, dynamic> input) {
-    String? text;
+    final String text;
     switch (name) {
       case 'Edit':
       case 'Write':
       case 'MultiEdit':
       case 'Read':
-        text = (input['file_path'] ?? '').toString();
-        break;
+        final path = (input['file_path'] ?? '').toString();
+        text = path.contains('/') ? '…/${path.split('/').last}' : path;
       case 'Bash':
-        text = (input['command'] ?? '').toString();
-        break;
+        final cmd = (input['command'] ?? '').toString().trim();
+        final firstSpace = cmd.indexOf(' ');
+        if (firstSpace < 0 || firstSpace >= cmd.length - 1) {
+          text = cmd;
+        } else {
+          final head = cmd.substring(0, firstSpace);
+          final rest = cmd.substring(firstSpace + 1);
+          if (rest.length <= 28) {
+            text = '$head $rest'; // 整条命令短，不需要省略
+          } else {
+            // 取尾部最多 20 个字符，避免切断 unicode（简单字符边界）
+            final tailRaw = cmd.substring(cmd.length - 20);
+            text = '$head … $tailRaw';
+          }
+        }
       case 'Grep':
-        text = (input['pattern'] ?? '').toString();
-        break;
       case 'Glob':
         text = (input['pattern'] ?? '').toString();
-        break;
       default:
         return const SizedBox.shrink();
     }
-    final display = text.contains('/') ? '…/${text.split('/').last}' : text;
+    if (text.isEmpty) return const SizedBox.shrink();
     return Text(
-      display,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
+      text,
       style: TextStyle(
         fontFamily: 'monospace',
         fontSize: 11,
@@ -260,6 +274,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
   }
 
   Widget _renderBody(BuildContext context, AppTokens t, String name, Map<String, dynamic> input) {
+    // raw 模式：直接显示 JSON
+    if (_viewRaw) return _JsonBlock(value: input);
+
     switch (name) {
       case 'Edit':
       case 'MultiEdit':
@@ -271,17 +288,72 @@ class _ToolCallCardState extends State<ToolCallCard> {
         return _FilePreview(content: (input['content'] ?? '').toString());
       case 'Bash':
         return _BashLine(command: (input['command'] ?? '').toString());
-      // Read / Grep / Glob 直接走 _KeyValueList（default 分支），展示完整参数。
       case 'TodoWrite':
         return _TodoList(todos: input['todos']);
       default:
         final hasNested = input.values.any((v) => v is Map || v is List);
-        return hasNested
-            ? _JsonBlock(value: input)
-            : _KeyValueList(map: input);
+        return hasNested ? _JsonBlock(value: input) : _KeyValueList(map: input);
     }
   }
 }
+
+// ── Segmented control (pretty | raw) ─────────────────────────────────
+
+class _SegmentedControl extends StatelessWidget {
+  final bool isRaw;
+  final ValueChanged<bool> onChanged;
+  const _SegmentedControl({required this.isRaw, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      height: 20,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: t.border, width: 0.5),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _Seg(label: 'pretty', selected: !isRaw, onTap: () => onChanged(false), t: t),
+          Container(width: 0.5, color: t.border),
+          _Seg(label: 'raw', selected: isRaw, onTap: () => onChanged(true), t: t),
+        ],
+      ),
+    );
+  }
+}
+
+class _Seg extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final AppTokens t;
+  const _Seg({required this.label, required this.selected, required this.onTap, required this.t});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        color: selected ? t.accent : Colors.transparent,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: selected ? Colors.white : t.textMuted,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Section label ─────────────────────────────────────────────────────
 
 class _SectionLabel extends StatelessWidget {
   final String text;
@@ -302,6 +374,8 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
+// ── Input body widgets ────────────────────────────────────────────────
+
 class _BashLine extends StatelessWidget {
   final String command;
   const _BashLine({required this.command});
@@ -318,11 +392,7 @@ class _BashLine extends StatelessWidget {
       ),
       child: SelectableText(
         '\$ $command',
-        style: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 11,
-          color: t.text,
-        ),
+        style: TextStyle(fontFamily: 'monospace', fontSize: 11, color: t.text),
       ),
     );
   }
@@ -377,8 +447,7 @@ class _KeyValueList extends StatelessWidget {
   }
 }
 
-/// Pretty-JSON 代码块。用于嵌套结构（Map/List）的 tool input / 通用对象展示。
-/// 与 _outputBody 相同的视觉规格（黑底 + monospace + textMuted）。
+/// Pretty-JSON 代码块。
 class _JsonBlock extends StatelessWidget {
   final Object? value;
   const _JsonBlock({required this.value});
@@ -387,7 +456,6 @@ class _JsonBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     const enc = JsonEncoder.withIndent('  ');
-    // jsonEncode 对非 JSON-safe 值（如 DateTime）会抛；保护一下
     String text;
     try {
       text = enc.convert(value);
@@ -460,6 +528,8 @@ class _TodoList extends StatelessWidget {
   }
 }
 
+// ── ToolResultView (standalone, used outside ToolCallCard) ────────────
+
 class ToolResultView extends StatefulWidget {
   final ToolResultBlock toolResult;
   const ToolResultView({super.key, required this.toolResult});
@@ -478,8 +548,8 @@ class _ToolResultViewState extends State<ToolResultView> {
     final firstLine = _firstLine(text);
     final hasMore = text.length > firstLine.length;
     final preview = (_expanded
-            ? (text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text)
-            : firstLine);
+        ? (text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text)
+        : firstLine);
     final color = widget.toolResult.isError ? t.error : t.textMuted;
 
     return InkWell(

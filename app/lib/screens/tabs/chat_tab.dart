@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -75,6 +76,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   SseClient? _sseClient;
   String? _sessionId;
   final List<IncomingMessage> _messages = [];
+  /// Debug only: 保存每条消息对应的原始 SSE event JSON，供长按查看。
+  final Map<IncomingMessage, Map<String, dynamic>> _debugRaw = {};
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _connected = false;
@@ -196,6 +199,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _attemptedKey = key;
     setState(() {
       _messages.clear();
+      _debugRaw.clear();
       _sseClient = null;
       _sessionId = null;
       _chatApi = null;
@@ -575,6 +579,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _handleWireMessage(json);
   }
 
+  void _debugTrack(IncomingMessage msg, Map<String, dynamic> json) {
+    if (kDebugMode) _debugRaw[msg] = json;
+  }
+
   void _handleWireMessage(Map<String, dynamic> json) {
     if (!mounted) return;
     final msg = IncomingMessage.fromJson(json);
@@ -598,7 +606,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
         _currentBlockKind = null;
-        _messages.add(msg);
+        _messages.add(msg); _debugTrack(msg, json);
         // 当前轮结束 — 看看队列里有没有用户在 busy 期间堆的消息，
         // 有就出队继续发（递归触发下一轮）。
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -606,7 +614,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         });
       } else if (msg is ErrorMsg) {
         _error = msg.message;
-        _messages.add(msg);
+        _messages.add(msg); _debugTrack(msg, json);
       } else if (msg is StreamBlockStart) {
         _currentBlockKind = msg.kind;
         switch (msg.kind) {
@@ -662,9 +670,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // Final non-streaming assistant message arrives after streaming completes.
         // If we already streamed its text, replace the in-progress block.
         if (_messages.isNotEmpty && _messages.last is StreamingAssistant) {
-          _messages.removeLast();
+          final removed = _messages.removeLast();
+          _debugRaw.remove(removed);
         }
-        _messages.add(msg);
+        _messages.add(msg); _debugTrack(msg, json);
         // 拦截 TodoWrite 工具调用 → 更新全局 todoListProvider，让顶部 chip 反映进度。
         // 注意：tool_use 块本身仍保留在 message 里（_buildToolResultIndex 还要用），
         // tool_call_card 会在渲染时识别 TodoWrite 并跳过卡片显示。
@@ -682,9 +691,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // skip
       } else if (msg is CompactBoundaryMsg) {
         // 实时也可能收到（用户在会话中触发了 /compact）。
-        _messages.add(msg);
+        _messages.add(msg); _debugTrack(msg, json);
       } else {
-        _messages.add(msg);
+        _messages.add(msg); _debugTrack(msg, json);
       }
     });
     _scrollToEnd();
@@ -924,6 +933,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                           message: m,
                           toolResults: toolResults,
                           onAnswerQuestion: _sendAnswerQuestion,
+                          rawJson: kDebugMode ? _debugRaw[m] : null,
                         );
                       },
                     ),
