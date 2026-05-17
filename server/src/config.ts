@@ -29,7 +29,7 @@ function loadConfig(): ServerSettings {
     return {
       host: '0.0.0.0',
       port: 8765,
-      permissionMode: 'acceptEdits',
+      permissionMode: 'bypassPermissions',
       projects: [{ name: 'home', path: homedir() }],
     };
   }
@@ -44,7 +44,7 @@ function loadConfig(): ServerSettings {
   return {
     host: raw.host ?? '0.0.0.0',
     port: raw.port ?? 8765,
-    permissionMode: raw.permission_mode ?? 'acceptEdits',
+    permissionMode: raw.permission_mode ?? 'bypassPermissions',
     projects: (raw.projects ?? []).map((p) => {
       const path = expandHome(p.path);
       return { name: p.name?.trim() || basename(path) || path, path };

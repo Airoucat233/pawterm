@@ -8,8 +8,11 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../api/protocol.dart';
+import '../../api/sessions_api.dart';
 import '../../i18n/locale_provider.dart';
+import '../../i18n/strings.dart';
 import '../../utils/time_format.dart';
+import '../../state/prefs.dart';
 import '../../state/projects_store.dart';
 import '../../state/server_config.dart';
 import '../../theme.dart';
@@ -35,6 +38,8 @@ class _HistoryPage {
   final bool hasMore;
   const _HistoryPage({required this.messages, this.oldestUuid, required this.hasMore});
 }
+
+enum _HolderChoice { takeover, readOnly, cancel }
 
 class ChatTab extends ConsumerStatefulWidget {
   const ChatTab({super.key});
@@ -122,7 +127,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  String _sessionKey(CurrentSession s) => '${s.cwd}|${s.resumeId ?? "new"}';
+  String _sessionKey(CurrentSession s) =>
+      '${s.cwd}|${s.resumeId ?? "new"}|${s.readOnly ? "ro" : "rw"}';
 
   // Throttle reconnect attempts so a dead server doesn't trigger a tight loop.
   // Once attempted, only the user-visible "reconnect" button will retry.
@@ -131,7 +137,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _ensureConnected(CurrentSession session) {
     final key = _sessionKey(session);
-    if (_boundKey == key && _channel != null) return;
+    if (_boundKey == key && (_channel != null || session.readOnly)) return;
     if (_attemptedKey == key) return; // already tried, don't auto-retry
 
     _channel?.sink.close();
@@ -139,6 +145,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _attemptedKey = key;
     setState(() {
       _messages.clear();
+      _channel = null;
       _connected = false;
       _busy = false;
       _error = null;
@@ -154,12 +161,70 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       return;
     }
 
-    // If resuming an existing session, fetch historical messages first.
-    if (session.resumeId != null) {
+    // 只读模式：完全不开 ws，仅通过 HTTP 翻历史。
+    if (session.readOnly && session.resumeId != null) {
+      _attempting = false;
       _loadHistory(config.httpBase, session.cwd, session.resumeId!);
+      return;
     }
 
-    final uri = Uri.parse('${config.wsBase}/ws/session');
+    // 普通 resume：先看是否被其他 CLI 进程持有；命中则把决定权交给用户。
+    if (session.resumeId != null) {
+      _resumeWithHolderCheck(config.httpBase, config.wsBase, session);
+    } else {
+      _openSessionWebSocket(config.wsBase, session);
+    }
+  }
+
+  /// Resume 前先 GET /sessions/:id/holder。
+  /// - 没人持有：直接打开 ws。
+  /// - 有持有者：弹窗让用户选「接管」或「只读」。
+  ///   - 接管：照常打开 ws（jsonl 会出现两条分叉，但服务端目前没办法 kill 远端 CLI；
+  ///     这一步主要是把"明知有冲突"这个状态显式化）。
+  ///   - 只读：把 currentSession 切到 readOnly=true 重新走一遍 _ensureConnected。
+  Future<void> _resumeWithHolderCheck(
+    String httpBase,
+    String wsBase,
+    CurrentSession session,
+  ) async {
+    SessionHolder? holder;
+    try {
+      holder = await SessionsApi(httpBase).holder(session.resumeId!);
+    } catch (_) {
+      // 检测失败不阻塞使用，按"没人持有"继续。
+      holder = null;
+    }
+    if (!mounted) return;
+    if (holder == null) {
+      _openSessionWebSocket(wsBase, session);
+      return;
+    }
+    // 弹窗
+    final choice = await _showHolderDialog(holder);
+    if (!mounted) return;
+    if (choice == _HolderChoice.readOnly) {
+      // 切到只读再走一遍：_attemptedKey 也要跟着更新避免被去重。
+      _attemptedKey = null;
+      ref.read(currentSessionProvider.notifier).state =
+          session.copyWith(readOnly: true);
+      return;
+    }
+    if (choice == _HolderChoice.takeover) {
+      _openSessionWebSocket(wsBase, session);
+      return;
+    }
+    // 取消 / 关闭对话框：什么都不做，停留在空白态。
+    _attempting = false;
+  }
+
+  void _openSessionWebSocket(String wsBase, CurrentSession session) {
+    // History first — 让用户在 ws 建立期间就能看到历史消息。
+    final conn = ref.read(activeConnectionProvider);
+    if (conn != null && session.resumeId != null) {
+      _loadHistory(conn.httpBase, session.cwd, session.resumeId!);
+    }
+
+    final uri = Uri.parse('$wsBase/ws/session');
     try {
       _channel = WebSocketChannel.connect(uri);
     } catch (e) {
@@ -170,20 +235,94 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _channel!.stream.listen(_onData, onError: _onError, onDone: _onDone);
 
     final model = ref.read(currentModelProvider);
+    final permMode = ref.read(permissionModeProvider);
     final initMsg = {
       'type': 'init',
       'cwd': session.cwd,
-      'permission_mode': 'acceptEdits',
+      'permission_mode': permMode.wire,
       'model': model.id,
       if (session.resumeId != null) 'resume': session.resumeId,
     };
     _channel!.sink.add(jsonEncode(initMsg));
   }
 
+  Future<_HolderChoice?> _showHolderDialog(SessionHolder holder) async {
+    final t = AppTokens.of(context);
+    final fmt = DateTime.fromMillisecondsSinceEpoch(holder.startedAt);
+    final ago = DateTime.now().difference(fmt);
+    final agoStr = ago.inMinutes < 1
+        ? '刚刚'
+        : ago.inHours < 1
+            ? '${ago.inMinutes} 分钟前'
+            : ago.inDays < 1
+                ? '${ago.inHours} 小时前'
+                : '${ago.inDays} 天前';
+    return showDialog<_HolderChoice>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: t.surface,
+        title: Text('该会话正被另一个 Claude 进程使用',
+            style: TextStyle(color: t.text, fontSize: 15, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _kv('PID', '${holder.pid}', t),
+            _kv('启动于', agoStr, t),
+            if (holder.cwd.isNotEmpty) _kv('cwd', holder.cwd, t),
+            const SizedBox(height: 10),
+            Text(
+              '继续写入可能导致历史分叉、消息互相不可见。建议先关闭那个终端再回来；'
+              '或选择「只读」翻阅历史。',
+              style: TextStyle(color: t.textMuted, fontSize: 12, height: 1.5),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(_HolderChoice.cancel),
+            child: Text('取消', style: TextStyle(color: t.textMuted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(_HolderChoice.takeover),
+            child: Text('仍然接管', style: TextStyle(color: t.error)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(_HolderChoice.readOnly),
+            child: Text('只读查看', style: TextStyle(color: t.accent, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v, AppTokens t) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 56,
+              child: Text(k, style: TextStyle(color: t.textDim, fontSize: 12, fontFamily: 'monospace')),
+            ),
+            Expanded(
+              child: Text(v, style: TextStyle(color: t.text, fontSize: 12, fontFamily: 'monospace')),
+            ),
+          ],
+        ),
+      );
+
   void _switchModel(ModelOption m) {
     ref.read(currentModelProvider.notifier).state = m;
     if (_channel != null && _connected) {
       _channel!.sink.add(jsonEncode({'type': 'set_model', 'model': m.id}));
+    }
+  }
+
+  void _switchPermissionMode(CcPermissionMode m) {
+    ref.read(permissionModeProvider.notifier).set(m);
+    if (_channel != null && _connected) {
+      _channel!.sink.add(jsonEncode({'type': 'set_permission_mode', 'mode': m.wire}));
     }
   }
 
@@ -280,7 +419,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       final inner = env['message'];
       if (inner is Map<String, dynamic>) {
         final m = IncomingMessage.fromJson(inner);
-        if (m is AssistantMsg || m is UserMsg || m is ResultMsg) loaded.add(m);
+        if (m is AssistantMsg ||
+            m is UserMsg ||
+            m is ResultMsg ||
+            m is CompactBoundaryMsg) {
+          loaded.add(m);
+        }
       }
     }
     return _HistoryPage(
@@ -381,6 +525,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _messages.add(msg);
       } else if (msg is PongMsg || msg is SystemMsg) {
         // skip
+      } else if (msg is CompactBoundaryMsg) {
+        // 实时也可能收到（用户在会话中触发了 /compact）。
+        _messages.add(msg);
       } else {
         _messages.add(msg);
       }
@@ -477,12 +624,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
     return Column(
       children: [
-        _StatusRow(
-          connected: _connected,
-          busy: _busy,
-          error: _error,
-          onReconnect: _manualReconnect,
-        ),
+        if (session.readOnly)
+          _ReadOnlyBanner(
+            onExit: () {
+              _attemptedKey = null;
+              ref.read(currentSessionProvider.notifier).state =
+                  session.copyWith(readOnly: false);
+            },
+          )
+        else
+          _StatusRow(
+            connected: _connected,
+            busy: _busy,
+            error: _error,
+            onReconnect: _manualReconnect,
+          ),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         Expanded(
           child: Stack(
@@ -543,15 +699,60 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             dimColor: t.textDim,
           ),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
-        _Composer(
-          controller: _textController,
-          connected: _connected,
-          busy: _busy,
-          onSubmit: _submit,
-          onStop: _interrupt,
-          onSwitchModel: _switchModel,
-        ),
+        if (!session.readOnly)
+          _Composer(
+            controller: _textController,
+            connected: _connected,
+            busy: _busy,
+            onSubmit: _submit,
+            onStop: _interrupt,
+            onSwitchModel: _switchModel,
+            onSwitchPermissionMode: _switchPermissionMode,
+          ),
       ],
+    );
+  }
+}
+
+class _ReadOnlyBanner extends StatelessWidget {
+  final VoidCallback onExit;
+  const _ReadOnlyBanner({required this.onExit});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: t.surfaceHi,
+      child: Row(
+        children: [
+          Icon(Icons.visibility_outlined, size: 14, color: t.textMuted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '只读模式：会话被另一个 Claude 进程持有，仅展示历史',
+              style: TextStyle(fontSize: 12, color: t.textMuted),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          InkWell(
+            onTap: onExit,
+            borderRadius: BorderRadius.circular(4),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              child: Text(
+                '重新连接',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: t.accent,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -694,6 +895,7 @@ class _Composer extends ConsumerWidget {
   final VoidCallback onSubmit;
   final VoidCallback onStop;
   final void Function(ModelOption) onSwitchModel;
+  final void Function(CcPermissionMode) onSwitchPermissionMode;
   const _Composer({
     required this.controller,
     required this.connected,
@@ -701,6 +903,7 @@ class _Composer extends ConsumerWidget {
     required this.onSubmit,
     required this.onStop,
     required this.onSwitchModel,
+    required this.onSwitchPermissionMode,
   });
 
   @override
@@ -763,17 +966,9 @@ class _Composer extends ConsumerWidget {
               // 工具栏在按钮下方，左对齐。
               Row(
                 children: [
-                  _ToolBtn(
-                    icon: Icons.attach_file,
-                    tooltip: '附件',
-                    enabled: connected,
-                    onTap: () {},
-                  ),
-                  _ToolBtn(
-                    icon: Icons.alternate_email,
-                    tooltip: '引用文件',
-                    enabled: connected,
-                    onTap: () {},
+                  _PermissionModePicker(
+                    current: ref.watch(permissionModeProvider),
+                    onPick: onSwitchPermissionMode,
                   ),
                   _ModelPicker(current: model, onPick: onSwitchModel),
                   const Spacer(),
@@ -993,24 +1188,209 @@ class _ModelRow extends StatelessWidget {
   }
 }
 
-class _ToolBtn extends StatelessWidget {
-  final IconData icon;
-  final String tooltip;
-  final bool enabled;
+/// 权限模式 chip + bottom sheet selector，跟 ModelPicker 同款 UI 语言。
+class _PermissionModePicker extends ConsumerWidget {
+  final CcPermissionMode current;
+  final void Function(CcPermissionMode) onPick;
+  const _PermissionModePicker({required this.current, required this.onPick});
+
+  String _label(CcPermissionMode m, Strings s) {
+    switch (m) {
+      case CcPermissionMode.defaultMode: return s.permModeDefaultLabel;
+      case CcPermissionMode.acceptEdits: return s.permModeAcceptEditsLabel;
+      case CcPermissionMode.plan: return s.permModePlanLabel;
+      case CcPermissionMode.bypass: return s.permModeBypassLabel;
+    }
+  }
+
+  String _desc(CcPermissionMode m, Strings s) {
+    switch (m) {
+      case CcPermissionMode.defaultMode: return s.permModeDefaultDesc;
+      case CcPermissionMode.acceptEdits: return s.permModeAcceptEditsDesc;
+      case CcPermissionMode.plan: return s.permModePlanDesc;
+      case CcPermissionMode.bypass: return s.permModeBypassDesc;
+    }
+  }
+
+  (IconData, Color) _glyph(CcPermissionMode m, AppTokens t) {
+    switch (m) {
+      case CcPermissionMode.defaultMode: return (Icons.front_hand_outlined, t.warning);
+      case CcPermissionMode.acceptEdits: return (Icons.edit_note_outlined, t.accent);
+      case CcPermissionMode.plan: return (Icons.checklist_outlined, t.toolRead);
+      case CcPermissionMode.bypass: return (Icons.rocket_launch_outlined, t.toolBash);
+    }
+  }
+
+  Future<void> _openSheet(BuildContext context, WidgetRef ref) async {
+    final t = AppTokens.of(context);
+    final s = ref.read(stringsProvider);
+    final picked = await showModalBottomSheet<CcPermissionMode>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      builder: (ctx) => Container(
+        margin: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: t.border),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 10, bottom: 4),
+                child: Center(
+                  child: Container(
+                    width: 36, height: 4,
+                    decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.shield_outlined, size: 16, color: t.textMuted),
+                    const SizedBox(width: 8),
+                    Text(
+                      s.permModeTitle,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: t.text,
+                        letterSpacing: -0.1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              for (final m in CcPermissionMode.values) ...[
+                Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+                _PermissionModeRow(
+                  mode: m,
+                  label: _label(m, s),
+                  description: _desc(m, s),
+                  glyph: _glyph(m, t),
+                  selected: m == current,
+                  onTap: () => Navigator.of(ctx).pop(m),
+                ),
+              ],
+              const SizedBox(height: 6),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked != null) onPick(picked);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = AppTokens.of(context);
+    final s = ref.watch(stringsProvider);
+    final (icon, color) = _glyph(current, t);
+    return InkWell(
+      onTap: () => _openSheet(context, ref),
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        decoration: BoxDecoration(
+          color: t.surfaceHi,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: t.border, width: 0.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 6),
+            Text(
+              _label(current, s),
+              style: TextStyle(fontSize: 12, color: t.textMuted, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.expand_more, size: 14, color: t.textMuted),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PermissionModeRow extends StatelessWidget {
+  final CcPermissionMode mode;
+  final String label;
+  final String description;
+  final (IconData, Color) glyph;
+  final bool selected;
   final VoidCallback onTap;
-  const _ToolBtn({required this.icon, required this.tooltip, required this.enabled, required this.onTap});
+  const _PermissionModeRow({
+    required this.mode,
+    required this.label,
+    required this.description,
+    required this.glyph,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return Tooltip(
-      message: tooltip,
-      child: InkResponse(
-        onTap: enabled ? onTap : null,
-        radius: 22,
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Icon(icon, size: 18, color: enabled ? t.textMuted : t.textDim),
+    final (icon, color) = glyph;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Row(
+          children: [
+            Container(
+              width: 18, height: 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: selected ? t.accent : Colors.transparent,
+                border: Border.all(
+                  color: selected ? t.accent : t.border,
+                  width: 1.5,
+                ),
+              ),
+              child: selected
+                  ? const Icon(Icons.check, size: 11, color: Colors.white)
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Icon(icon, size: 16, color: color),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: t.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.1,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    description,
+                    style: TextStyle(
+                      color: t.textDim,
+                      fontSize: 11.5,
+                      letterSpacing: 0.1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

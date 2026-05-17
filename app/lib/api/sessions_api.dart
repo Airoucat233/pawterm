@@ -40,6 +40,29 @@ class SessionSummary {
   }
 }
 
+/// 当前某条 session 的活跃持有者（某个 claude CLI 进程）。
+/// 见服务端 `holder-detect.ts` —— 实际数据来自 `~/.claude/sessions/<pid>.json`。
+class SessionHolder {
+  final int pid;
+  final String cwd;
+  final int startedAt;
+  final String? kind;
+
+  const SessionHolder({
+    required this.pid,
+    required this.cwd,
+    required this.startedAt,
+    this.kind,
+  });
+
+  factory SessionHolder.fromJson(Map<String, dynamic> json) => SessionHolder(
+        pid: (json['pid'] as num).toInt(),
+        cwd: json['cwd'] as String? ?? '',
+        startedAt: (json['startedAt'] as num?)?.toInt() ?? 0,
+        kind: json['kind'] as String?,
+      );
+}
+
 class SessionsApi {
   final String baseUrl;
   SessionsApi(this.baseUrl);
@@ -56,6 +79,17 @@ class SessionsApi {
     }
     final list = jsonDecode(resp.body) as List;
     return list.map((e) => SessionSummary.fromJson(Map<String, dynamic>.from(e))).toList();
+  }
+
+  /// resume 之前调一次：返回 null = 没人持有，可以放心 resume；
+  /// 返回非 null = 当前有 CLI 进程在写这条 session，需要让用户选「接管 / 只读」。
+  Future<SessionHolder?> holder(String sessionId) async {
+    final resp = await http.get(_u('/sessions/$sessionId/holder')).timeout(const Duration(seconds: 4));
+    if (resp.statusCode != 200) return null;
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    final h = body['holder'];
+    if (h == null) return null;
+    return SessionHolder.fromJson(Map<String, dynamic>.from(h));
   }
 
   Future<void> rename(String sessionId, String cwd, String title) async {

@@ -13,6 +13,7 @@ export type ChatClientMessage =
   | { type: 'init'; cwd: string; permission_mode?: PermissionMode; resume?: string; model?: string }
   | { type: 'user_message'; text: string }
   | { type: 'set_model'; model: string }
+  | { type: 'set_permission_mode'; mode: PermissionMode }
   | { type: 'interrupt' }
   | { type: 'ping' };
 
@@ -32,6 +33,7 @@ export type ChatServerMessage =
   | { type: 'stream_block_start'; index: number; kind: string }
   | { type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string }
   | { type: 'stream_block_stop'; index: number }
+  | { type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number }
   | { type: 'error'; message: string }
   | { type: 'pong' };
 

@@ -42,11 +42,17 @@ export class ChatSession {
   };
 
   start(): AsyncIterableIterator<any> {
+    // bypassPermissions 模式必须额外传 allowDangerouslySkipPermissions=true，
+    // 否则 SDK 会拒绝启动。这个组合让 Claude 摆脱"只能读写 cwd 子树"的限制 ——
+    // 它能访问整个服务端文件系统（场景：LAN/Tailscale 私有部署，用户操作的是
+    // 自己拥有 shell 权限的机器，本来就该有全权访问）。
+    const bypassing = this.permissionMode === 'bypassPermissions';
     const options: Options = {
       cwd: this.cwd,
       permissionMode: this.permissionMode,
       // Emit SDKPartialAssistantMessage events for char-level streaming.
       includePartialMessages: true,
+      ...(bypassing ? { allowDangerouslySkipPermissions: true } : {}),
       ...(this.resume ? { resume: this.resume } : {}),
       ...(this.model ? { model: this.model } : {}),
     };
@@ -59,6 +65,14 @@ export class ChatSession {
     const iter = this.iter as any;
     if (iter?.setModel) {
       await iter.setModel(model);
+    }
+  }
+
+  /** Runtime permission-mode switch — SDK iterator has setPermissionMode. */
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    const iter = this.iter as any;
+    if (iter?.setPermissionMode) {
+      await iter.setPermissionMode(mode);
     }
   }
 

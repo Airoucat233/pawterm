@@ -45,13 +45,22 @@ class CurrentSession {
   final String? resumeId;
   /// human label shown in app bar
   final String label;
-  const CurrentSession({required this.cwd, required this.label, this.resumeId});
+  /// 只读模式：不开 WebSocket、只通过 HTTP 翻历史，禁用输入。
+  /// 用于"该 session 正被另一个 CLI 终端持有，用户选择不抢占"的场景。
+  final bool readOnly;
+  const CurrentSession({
+    required this.cwd,
+    required this.label,
+    this.resumeId,
+    this.readOnly = false,
+  });
 
-  CurrentSession copyWith({String? cwd, String? resumeId, String? label}) =>
+  CurrentSession copyWith({String? cwd, String? resumeId, String? label, bool? readOnly}) =>
       CurrentSession(
         cwd: cwd ?? this.cwd,
         resumeId: resumeId ?? this.resumeId,
         label: label ?? this.label,
+        readOnly: readOnly ?? this.readOnly,
       );
 }
 

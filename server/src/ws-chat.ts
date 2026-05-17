@@ -94,6 +94,13 @@ export function handleChatSocket(socket: WebSocket, _req: FastifyRequest): void 
         break;
       }
 
+      case 'set_permission_mode': {
+        session?.setPermissionMode(msg.mode).catch((err) => {
+          send({ type: 'error', message: `setPermissionMode failed: ${(err as Error).message}` });
+        });
+        break;
+      }
+
       case 'interrupt': {
         session?.interrupt().catch(() => {});
         break;

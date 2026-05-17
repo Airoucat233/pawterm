@@ -63,6 +63,10 @@ class MessageView extends StatelessWidget {
       return _ResultLine(message: msg);
     }
 
+    if (msg is CompactBoundaryMsg) {
+      return _CompactBoundaryLine(message: msg);
+    }
+
     if (msg is ErrorMsg) {
       return Container(
         margin: const EdgeInsets.symmetric(vertical: 6),
@@ -413,4 +417,75 @@ class _ResultLine extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         child: Text('·', style: TextStyle(color: t.textDim, fontSize: 11)),
       );
+}
+
+/// "上下文已压缩"分隔线：左右两条虚线 + 中央 chip。
+/// jsonl 里写的是 `{ type:'system', subtype:'compact_boundary' }`，SDK 重新加载
+/// 时会从该点起算，导致回看历史"前面消息消失"——我们在这里告诉用户原因。
+class _CompactBoundaryLine extends StatelessWidget {
+  final CompactBoundaryMsg message;
+  const _CompactBoundaryLine({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final trigger = message.trigger == 'manual'
+        ? '手动'
+        : message.trigger == 'auto'
+            ? '自动'
+            : null;
+    final pre = message.preTokens;
+    final post = message.postTokens;
+    final stat = (pre != null && post != null)
+        ? '${_fmtK(pre)} → ${_fmtK(post)} tok'
+        : null;
+    final parts = <String>[
+      '上下文已压缩',
+      if (trigger != null) trigger,
+      if (stat != null) stat,
+    ];
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(child: _dashed(t)),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: t.surfaceHi,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: t.border, width: 0.5),
+            ),
+            child: Text(
+              parts.join(' · '),
+              style: TextStyle(
+                fontSize: 10,
+                color: t.textMuted,
+                fontFamily: 'monospace',
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: _dashed(t)),
+        ],
+      ),
+    );
+  }
+
+  Widget _dashed(AppTokens t) => Container(
+        height: 0.5,
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: t.borderSubt, width: 0.5),
+          ),
+        ),
+      );
+
+  String _fmtK(int n) {
+    if (n < 1000) return '$n';
+    return '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k';
+  }
 }

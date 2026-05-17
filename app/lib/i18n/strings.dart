@@ -57,6 +57,28 @@ class Strings {
 
   // Files / Git placeholders
   final String filesComingSoon;
+  // Files
+  final String filesUp;
+  final String filesEmpty;
+  final String filesLoadFailedTpl; // {err}
+  final String filesDownloadStarted;
+  final String filesDownloadDoneTpl; // {name}
+  final String filesDownloadFailedTpl; // {err}
+  final String filesShareSavedFile;
+  final String filesConfirmDownloadTpl; // {name} {size}
+  final String filesCancel;
+  final String filesDownload;
+  final String filesDownloading;
+  // Permission modes
+  final String permModeTitle;
+  final String permModeDefaultLabel;
+  final String permModeDefaultDesc;
+  final String permModeAcceptEditsLabel;
+  final String permModeAcceptEditsDesc;
+  final String permModePlanLabel;
+  final String permModePlanDesc;
+  final String permModeBypassLabel;
+  final String permModeBypassDesc;
   final String gitComingSoon;
   final String gitStageAll;
   final String gitTitle;
@@ -218,6 +240,26 @@ class Strings {
     required this.shellCwdCopied,
     required this.shellCwdCopyTooltip,
     required this.filesComingSoon,
+    required this.filesUp,
+    required this.filesEmpty,
+    required this.filesLoadFailedTpl,
+    required this.filesDownloadStarted,
+    required this.filesDownloadDoneTpl,
+    required this.filesDownloadFailedTpl,
+    required this.filesShareSavedFile,
+    required this.filesConfirmDownloadTpl,
+    required this.filesCancel,
+    required this.filesDownload,
+    required this.filesDownloading,
+    required this.permModeTitle,
+    required this.permModeDefaultLabel,
+    required this.permModeDefaultDesc,
+    required this.permModeAcceptEditsLabel,
+    required this.permModeAcceptEditsDesc,
+    required this.permModePlanLabel,
+    required this.permModePlanDesc,
+    required this.permModeBypassLabel,
+    required this.permModeBypassDesc,
     required this.gitComingSoon,
     required this.gitStageAll,
     required this.gitTitle,
@@ -357,6 +399,26 @@ const Strings stringsEn = Strings(
   shellCwdCopied: 'Path copied',
   shellCwdCopyTooltip: 'Copy path',
   filesComingSoon: 'Files (coming soon)',
+  filesUp: 'Up',
+  filesEmpty: 'Empty folder',
+  filesLoadFailedTpl: 'Failed to load: {err}',
+  filesDownloadStarted: 'Downloading…',
+  filesDownloadDoneTpl: 'Saved {name}',
+  filesDownloadFailedTpl: 'Download failed: {err}',
+  filesShareSavedFile: 'Share / save…',
+  filesConfirmDownloadTpl: 'Download {name} ({size})?',
+  filesCancel: 'Cancel',
+  filesDownload: 'Download',
+  filesDownloading: 'Downloading',
+  permModeTitle: 'Permission mode',
+  permModeDefaultLabel: 'Ask each time',
+  permModeDefaultDesc: 'Confirm every tool call',
+  permModeAcceptEditsLabel: 'Auto-accept edits',
+  permModeAcceptEditsDesc: 'File edits run without prompting',
+  permModePlanLabel: 'Plan mode',
+  permModePlanDesc: 'Read-only — Claude plans, doesn\'t execute',
+  permModeBypassLabel: 'Bypass all',
+  permModeBypassDesc: 'No permission checks — full access',
   gitComingSoon: 'Git diff / stage / commit (coming soon)',
   gitStageAll: 'Stage All',
   gitTitle: 'Git',
@@ -500,6 +562,26 @@ const Strings stringsZh = Strings(
   shellCwdCopied: '路径已复制',
   shellCwdCopyTooltip: '复制路径',
   filesComingSoon: '文件树（即将上线）',
+  filesUp: '上级',
+  filesEmpty: '空目录',
+  filesLoadFailedTpl: '加载失败：{err}',
+  filesDownloadStarted: '下载中…',
+  filesDownloadDoneTpl: '已下载 {name}',
+  filesDownloadFailedTpl: '下载失败：{err}',
+  filesShareSavedFile: '分享 / 保存…',
+  filesConfirmDownloadTpl: '下载 {name}（{size}）？',
+  filesCancel: '取消',
+  filesDownload: '下载',
+  filesDownloading: '下载中',
+  permModeTitle: '权限模式',
+  permModeDefaultLabel: '每次询问',
+  permModeDefaultDesc: '每次工具调用都确认',
+  permModeAcceptEditsLabel: '自动编辑',
+  permModeAcceptEditsDesc: '文件编辑免确认',
+  permModePlanLabel: '计划模式',
+  permModePlanDesc: '只读 — Claude 规划但不执行',
+  permModeBypassLabel: '完全放开',
+  permModeBypassDesc: '跳过权限检查 — 完全访问',
   gitComingSoon: 'Git 差异 / 暂存 / 提交（即将上线）',
   gitStageAll: '全部暂存',
   gitTitle: 'Git',

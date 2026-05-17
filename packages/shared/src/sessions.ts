@@ -21,3 +21,15 @@ export interface HealthResponse {
   version: string;
   hostname: string;
 }
+
+/** 一条 session 当前的持有者：某个活着的 claude CLI 进程。 */
+export interface SessionHolder {
+  pid: number;
+  cwd: string;
+  startedAt: number;
+  kind?: string;
+}
+
+export interface SessionHolderResponse {
+  holder: SessionHolder | null;
+}

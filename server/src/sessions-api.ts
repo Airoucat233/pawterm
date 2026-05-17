@@ -14,6 +14,7 @@ import type { FastifyInstance } from 'fastify';
 import type { SessionSummary } from '@cc/shared';
 
 import { isPathAllowed } from './config.js';
+import { findHolder } from './holder-detect.js';
 import { messageToWire } from './serialize.js';
 
 function requirePath(cwd: string | undefined): string {
@@ -49,7 +50,15 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
     const offset = req.query.offset ? Number(req.query.offset) : 0;
     const includeSubdirs = req.query.include_subdirs === 'true';
 
-    const all = await listSessions({ dir: cwd, limit: 1000, offset: 0 });
+    // SDK 的 listSessions 是全局返回 + dir 过滤"松散"，且单次有 1000 条隐含上限。
+    // 这里循环 offset 拉满，避免重度用户的老 session 被切掉。
+    const all: SDKSessionInfo[] = [];
+    const pageSize = 1000;
+    for (let off = 0; ; off += pageSize) {
+      const page = await listSessions({ dir: cwd, limit: pageSize, offset: off });
+      all.push(...page);
+      if (page.length < pageSize) break;
+    }
     const filtered = all.filter((s) => {
       const sCwd = s.cwd ?? '';
       if (!sCwd) return false;
@@ -72,6 +81,19 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
       return info;
     },
   );
+
+  /**
+   * 检测 sessionId 是否正被某个 claude CLI 进程持有。
+   * 返回 { holder } —— 命中时 holder 是 { pid, cwd, startedAt, kind }，否则 null。
+   * 客户端在 resume 前先调一次，命中则提示用户「接管 / 只读」二选一。
+   *
+   * 没有 cwd 校验：持有者本身可能在别的目录里跑（用户走错路径开了 claude）；
+   * 不带 cwd 也能查得到，便于做"误开"提示。
+   */
+  app.get<{ Params: { id: string } }>('/sessions/:id/holder', async (req) => {
+    const holder = await findHolder(req.params.id);
+    return { holder };
+  });
 
   /**
    * Paginated session messages — reverse-infinite-scroll friendly.

@@ -91,10 +91,36 @@ abstract class IncomingMessage {
         );
       case 'stream_block_stop':
         return StreamBlockStop(index: (json['index'] as num?)?.toInt() ?? 0);
+      case 'compact_boundary':
+        return CompactBoundaryMsg(
+          trigger: json['trigger'] as String?,
+          preTokens: (json['pre_tokens'] as num?)?.toInt(),
+          postTokens: (json['post_tokens'] as num?)?.toInt(),
+          durationMs: (json['duration_ms'] as num?)?.toInt(),
+          timestamp: (json['timestamp'] as num?)?.toInt(),
+        );
       default:
         return UnknownMsg(raw: json);
     }
   }
+}
+
+/// jsonl 里的 `system / compact_boundary` 行：会话上下文被压缩的边界标记。
+/// 之前的消息在 jsonl 中仍在，但 SDK 在 resume 时会跳过，所以视觉上"消息消失"。
+/// 我们在历史流里画一条分隔线，告诉用户这里发生了什么。
+class CompactBoundaryMsg extends IncomingMessage {
+  final String? trigger; // 'manual' | 'auto' | null
+  final int? preTokens;
+  final int? postTokens;
+  final int? durationMs;
+  final int? timestamp;
+  CompactBoundaryMsg({
+    this.trigger,
+    this.preTokens,
+    this.postTokens,
+    this.durationMs,
+    this.timestamp,
+  });
 }
 
 class StreamBlockStart extends IncomingMessage {

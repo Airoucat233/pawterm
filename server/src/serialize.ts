@@ -14,6 +14,31 @@ export function messageToWire(msg: any): any | null {
 
   switch (type) {
     case 'system':
+      // compact_boundary 是会话被自动/手动压缩的边界标记，
+      // jsonl 里独立存为 { type:'system', subtype:'compact_boundary', compactMetadata: {...} }。
+      // 客户端按这个画一条分隔线，提示用户"前面消息已被压缩"。
+      //
+      // 注：截至 claude-agent-sdk 当前版本，getSessionMessages 会**直接吞掉**
+      // compact_boundary 之前的所有消息并过滤掉 boundary 本身，因此这条分支
+      // 在历史回放时永远命中不到。保留代码是为了：
+      //   1) SDK 哪天暴露元事件时自动接上；
+      //   2) 实时流（用户在会话中触发 /compact）若 SDK 转发，也能渲染。
+      // 要真正显示分隔线，需要服务端绕过 SDK 直接读 jsonl，目前不做。
+      if (msg.subtype === 'compact_boundary') {
+        const meta = (msg.compactMetadata ?? {}) as {
+          trigger?: string;
+          preTokens?: number;
+          postTokens?: number;
+          durationMs?: number;
+        };
+        return {
+          type: 'compact_boundary',
+          trigger: meta.trigger ?? null,
+          pre_tokens: meta.preTokens ?? null,
+          post_tokens: meta.postTokens ?? null,
+          duration_ms: meta.durationMs ?? null,
+        };
+      }
       return {
         type: 'system',
         subtype: msg.subtype ?? null,
