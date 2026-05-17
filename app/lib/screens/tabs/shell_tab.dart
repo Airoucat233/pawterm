@@ -277,6 +277,7 @@ class _ShellTabState extends ConsumerState<ShellTab> {
           onDown: () => _sendSpecial('\x1b[B'),
           onLeft: () => _sendSpecial('\x1b[D'),
           onRight: () => _sendSpecial('\x1b[C'),
+          onEnter: () => _sendSpecial('\r'),
           onPaste: _paste,
           onInterrupt: _interrupt,
           onToggleSearch: () => setState(() => _searching = !_searching),
@@ -299,6 +300,7 @@ class _VirtualKeyBar extends StatelessWidget {
   final VoidCallback onDown;
   final VoidCallback onLeft;
   final VoidCallback onRight;
+  final VoidCallback onEnter;
   final VoidCallback onPaste;
   final VoidCallback onInterrupt;
   final VoidCallback onToggleSearch;
@@ -316,6 +318,7 @@ class _VirtualKeyBar extends StatelessWidget {
     required this.onDown,
     required this.onLeft,
     required this.onRight,
+    required this.onEnter,
     required this.onPaste,
     required this.onInterrupt,
     required this.onToggleSearch,
@@ -373,6 +376,7 @@ class _VirtualKeyBar extends StatelessWidget {
             _key(context, '↑', onUp),
             _key(context, '→', onRight),
             const SizedBox(width: 8),
+            _key(context, '↵', onEnter),
             _key(context, '^C', onInterrupt),
             _key(context, '📋', onPaste),
             _key(context, '🔍', onToggleSearch, active: searching),
