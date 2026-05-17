@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AskUserQuestionRegistry } from '../ask-user-tool.js';
+import { AskUserQuestionRegistry, formatAnswers } from '../ask-user-tool.js';
 
 describe('AskUserQuestionRegistry', () => {
   it('resolves the registered promise when answer() is called', async () => {
@@ -41,5 +41,42 @@ describe('AskUserQuestionRegistry', () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toMatch(/30 minutes|within/i);
     vi.useRealTimers();
+  });
+
+  it('pendingToolUseId is initially null', () => {
+    const r = new AskUserQuestionRegistry();
+    expect(r.pendingToolUseId).toBeNull();
+  });
+
+  it('pendingToolUseId can be set and cleared externally', () => {
+    const r = new AskUserQuestionRegistry();
+    r.pendingToolUseId = 'toolu_abc';
+    expect(r.pendingToolUseId).toBe('toolu_abc');
+    r.pendingToolUseId = null;
+    expect(r.pendingToolUseId).toBeNull();
+  });
+});
+
+describe('formatAnswers', () => {
+  it('formats single question single answer', () => {
+    const out = formatAnswers({ 'Which library?': 'date-fns' });
+    expect(out).toContain('Q: Which library?');
+    expect(out).toContain('A: date-fns');
+    expect(out).toContain('User has answered your questions:');
+    expect(out).toContain('You can now continue');
+  });
+
+  it('separates multiple questions with blank line', () => {
+    const out = formatAnswers({ Q1: 'A1', Q2: 'A2' });
+    expect(out).toMatch(/Q: Q1\nA: A1\n\nQ: Q2\nA: A2/);
+  });
+
+  it('includes preview when annotation present', () => {
+    const out = formatAnswers(
+      { 'Which layout?': 'Sidebar' },
+      { 'Which layout?': { preview: '```\n[ nav | content ]\n```' } },
+    );
+    expect(out).toContain('selected preview:');
+    expect(out).toContain('[ nav | content ]');
   });
 });
