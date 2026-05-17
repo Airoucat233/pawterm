@@ -26,18 +26,14 @@ import '../../theme.dart';
 import '../../widgets/cc_spinner.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/todo_chip.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 class LocalUserInput extends IncomingMessage {
   final String text;
   final int timestamp;
   LocalUserInput(this.text, {int? timestamp})
       : timestamp = timestamp ?? DateTime.now().millisecondsSinceEpoch;
-}
-
-/// In-progress assistant message being built char-by-char from stream deltas.
-class StreamingAssistant extends IncomingMessage {
-  final StringBuffer text = StringBuffer();
-  bool stopped = false;
 }
 
 class _HistoryPage {
@@ -74,6 +70,8 @@ class ChatTab extends ConsumerStatefulWidget {
 class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   ChatApi? _chatApi;
   SseClient? _sseClient;
+  /// Claude session UUID. For new sessions: client-generated and persisted.
+  /// For resumed sessions: equals currentSession.resumeId.
   String? _sessionId;
   final List<IncomingMessage> _messages = [];
   /// Debug only: 保存每条消息对应的原始 SSE event JSON，供长按查看。
@@ -116,6 +114,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
   final List<_AttachmentState> _attachments = [];
+
+  // ── Sub-agent (Task tool) streaming ──────────────────────────────────
+  // keyed by the Task tool_use_id (= parent_tool_use_id on sub-agent msgs)
+  final Map<String, List<IncomingMessage>> _subMsgs = {};
+  /// Tracks the live StreamingAssistant per sub-agent so deltas can be appended.
+  final Map<String, StreamingAssistant> _subStreaming = {};
 
   @override
   void initState() {
@@ -200,6 +204,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     setState(() {
       _messages.clear();
       _debugRaw.clear();
+      _subMsgs.clear();
+      _subStreaming.clear();
       _sseClient = null;
       _sessionId = null;
       _chatApi = null;
@@ -232,7 +238,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (session.resumeId != null) {
       _resumeWithHolderCheck(config.httpBase, session);
     } else {
-      _openSseSession(config.httpBase, session);
+      _connectToSession(config.httpBase, session);
     }
   }
 
@@ -255,7 +261,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     if (!mounted) return;
     if (holder == null) {
-      _openSseSession(httpBase, session);
+      _connectToSession(httpBase, session);
       return;
     }
     // 弹窗
@@ -269,54 +275,61 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       return;
     }
     if (choice == _HolderChoice.takeover) {
-      _openSseSession(httpBase, session);
+      _connectToSession(httpBase, session);
       return;
     }
     // 取消 / 关闭对话框：什么都不做，停留在空白态。
     _attempting = false;
   }
 
-  Future<void> _openSseSession(String httpBase, CurrentSession session) async {
+  /// 建立到会话的连接。为新建会话生成 UUID，为已有会话使用 resumeId。
+  /// 仅建立 SSE 连接（如果 turn 已活跃）或等待用户发消息触发 turn。
+  Future<void> _connectToSession(String httpBase, CurrentSession session) async {
     // History first — 让用户在传输建立期间就能看到历史消息。
     if (session.resumeId != null) {
       _loadHistory(httpBase, session.cwd, session.resumeId!);
     }
 
+    final uuid = session.resumeId ?? const Uuid().v4();
+    _sessionId = uuid;
+
+    // 持久化 UUID（新建会话时尤其重要）
+    unawaited(_persistUuid(uuid));
+
     final api = ChatApi(httpBase);
     _chatApi = api;
-    final model = ref.read(currentModelProvider);
-    final permMode = ref.read(permissionModeProvider);
 
-    ChatStartResponse start;
+    // 检查是否有活跃 turn（服务端正在运行）。
+    TurnStatus turnStatus;
     try {
-      start = await api.start(
-        cwd: session.cwd,
-        permissionMode: permMode.wire,
-        resume: session.resumeId,
-        model: model.id,
-      );
-    } catch (e) {
-      _attempting = false;
-      if (!mounted) return;
-      setState(() {
-        _error = '$e';
-        _chatApi = null;
-      });
-      return;
+      turnStatus = await api.status(uuid);
+    } catch (_) {
+      turnStatus = TurnStatus(TurnState.unknown);
     }
-    if (!mounted) {
-      // Tab disposed between start() request and response — clean up.
-      unawaited(api.close(start.sessionId));
-      return;
-    }
+
+    if (!mounted) return;
+
     setState(() {
-      _sessionId = start.sessionId;
-      _connected = true;
       _attempting = false;
       _error = null;
     });
 
-    final sseUrl = Uri.parse('$httpBase/chat/${start.sessionId}/events');
+    if (turnStatus.state == TurnState.live) {
+      // 已有活跃 turn → 连接 SSE 接收输出
+      setState(() {
+        _connected = true;
+        _busy = true;
+        _busyStartedAt ??= DateTime.now();
+      });
+      _subscribeSse(httpBase, uuid);
+    } else {
+      // 空闲 → 标记为 connected，等用户发消息
+      setState(() => _connected = true);
+    }
+  }
+
+  void _subscribeSse(String httpBase, String uuid) {
+    final sseUrl = Uri.parse('$httpBase/chat/$uuid/events');
     final sse = SseClient(url: sseUrl);
     _sseClient = sse;
     sse.events.listen(_onSseEvent);
@@ -522,6 +535,18 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     );
   }
 
+  static const _kLastUuidKey = 'chat_last_uuid';
+
+  Future<void> _persistUuid(String uuid) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kLastUuidKey, uuid);
+  }
+
+  Future<String?> _loadPersistedUuid() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_kLastUuidKey);
+  }
+
   void _manualReconnect() {
     final priorSse = _sseClient;
     final priorApi = _chatApi;
@@ -583,9 +608,51 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (kDebugMode) _debugRaw[msg] = json;
   }
 
+  /// Routes messages that belong to a sub-agent (Task tool) into [_subMsgs].
+  /// Called inside setState so no extra setState needed.
+  void _handleSubAgentMsg(IncomingMessage msg, String parentId) {
+    _subMsgs.putIfAbsent(parentId, () => []);
+    final list = _subMsgs[parentId]!;
+
+    if (msg is AssistantMsg) {
+      // Replace the live StreamingAssistant (if any) with the final message.
+      if (list.isNotEmpty && list.last is StreamingAssistant) {
+        list.removeLast();
+      }
+      list.add(msg);
+    } else if (msg is UserMsg) {
+      list.add(msg);
+    } else if (msg is StreamBlockStart && msg.kind == 'text') {
+      final streaming = StreamingAssistant();
+      list.add(streaming);
+      _subStreaming[parentId] = streaming;
+    } else if (msg is StreamDelta && msg.kind == 'text') {
+      final streaming = _subStreaming[parentId];
+      if (streaming != null && !streaming.stopped) {
+        streaming.text.write(msg.text);
+      }
+    } else if (msg is StreamBlockStop) {
+      final streaming = _subStreaming[parentId];
+      if (streaming != null) {
+        streaming.stopped = true;
+        _subStreaming.remove(parentId);
+      }
+    }
+    // ResultMsg, ErrorMsg etc. from sub-agents are intentionally ignored.
+  }
+
   void _handleWireMessage(Map<String, dynamic> json) {
     if (!mounted) return;
     final msg = IncomingMessage.fromJson(json);
+
+    // Sub-agent messages carry parent_tool_use_id; route to nested map.
+    final parentId = json['parent_tool_use_id'] as String?;
+    if (parentId != null) {
+      setState(() => _handleSubAgentMsg(msg, parentId));
+      _scrollToEnd();
+      return;
+    }
+
     setState(() {
       if (msg is SessionReady) {
         _attempting = false;
@@ -611,6 +678,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // 有就出队继续发（递归触发下一轮）。
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _drainQueue();
+        });
+        // Turn finished — server will close SSE after grace; proactively disconnect.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            unawaited(_sseClient?.close() ?? Future.value());
+            setState(() => _sseClient = null);
+          }
         });
       } else if (msg is ErrorMsg) {
         _error = msg.message;
@@ -752,8 +826,31 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _thoughtSeconds = null;
       _thoughtForTimer?.cancel();
     });
-    if (_sessionId != null && _chatApi != null) {
-      unawaited(_chatApi!.sendMessage(_sessionId!, text));
+    final uuid = _sessionId;
+    final config = ref.read(activeConnectionProvider);
+    final session = ref.read(currentSessionProvider);
+    if (uuid != null && _chatApi != null && config != null && session != null) {
+      final model = ref.read(currentModelProvider);
+      final permMode = ref.read(permissionModeProvider);
+      unawaited(_chatApi!.turn(
+        uuid: uuid,
+        cwd: session.cwd,
+        text: text,
+        model: model.id,
+        permissionMode: permMode.wire,
+      ).then((_) {
+        // Turn started — connect SSE if not already connected.
+        if (mounted && _sseClient == null) {
+          _subscribeSse(config.httpBase, uuid);
+        }
+      }).catchError((e) {
+        if (mounted) {
+          setState(() {
+            _busy = false;
+            _error = '$e';
+          });
+        }
+      }));
     }
     _scrollToEnd(force: true);
   }
@@ -890,6 +987,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             connected: _connected,
             busy: _busy,
             error: _error,
+            uuid: _sessionId,
             onReconnect: _manualReconnect,
           ),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
@@ -932,6 +1030,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                         return MessageView(
                           message: m,
                           toolResults: toolResults,
+                          subMsgsMap: _subMsgs,
                           onAnswerQuestion: _sendAnswerQuestion,
                           rawJson: kDebugMode ? _debugRaw[m] : null,
                         );
@@ -1064,12 +1163,14 @@ class _StatusRow extends StatelessWidget {
   final bool connected;
   final bool busy;
   final String? error;
+  final String? uuid;
   final VoidCallback onReconnect;
   const _StatusRow({
     required this.connected,
     required this.busy,
     required this.error,
     required this.onReconnect,
+    this.uuid,
   });
 
   @override
@@ -1093,6 +1194,34 @@ class _StatusRow extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(statusText, style: TextStyle(fontSize: 11, color: t.textMuted)),
+          if (uuid != null) ...[
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: uuid!));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('UUID copied'), duration: Duration(seconds: 1)),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: AppTokens.of(context).surfaceHi,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: AppTokens.of(context).border, width: 0.5),
+                ),
+                child: Text(
+                  uuid!.length >= 8 ? uuid!.substring(0, 8) : uuid!,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                    color: AppTokens.of(context).textDim,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ),
+          ],
           const Spacer(),
           if (error != null || (!connected && !busy))
             InkWell(
