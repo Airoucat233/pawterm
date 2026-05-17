@@ -128,13 +128,23 @@ class MessageView extends StatelessWidget {
       // 用 ⏺ gutter 标记，整轮多条 assistant message 视觉上自然连成一片。
       final visible = msg.content.where((b) => b is! ThinkingBlock).toList();
       if (visible.isEmpty) return const SizedBox.shrink();
+      // 先渲染所有 block，过滤掉完全不可见的（如 TodoWrite 中间状态）
+      final rows = <Widget>[];
+      for (final b in visible) {
+        final content = _renderBlock(context, b);
+        final color = _gutterColor(t, b, toolResults);
+        final row = _gutterRow(
+          context, content, color,
+          centerDot: b is ToolUseBlock,
+        );
+        if (row is! SizedBox) rows.add(row);
+      }
+      if (rows.isEmpty) return const SizedBox.shrink();
       return Padding(
         padding: const EdgeInsets.only(bottom: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final b in visible) _gutterRow(context, _renderBlock(context, b)),
-          ],
+          children: rows,
         ),
       );
     }
@@ -195,34 +205,64 @@ class MessageView extends StatelessWidget {
   /// 复刻 claude-code 终端的 BLACK_CIRCLE gutter。
   /// 用 U+25CF `●`（Geometric Shapes，纯文本字符）而非 U+23FA `⏺`（emoji
   /// presentation，Android/iOS 会渲染成橙底方块）。
-  Widget _gutterRow(BuildContext context, Widget content) {
-    if (content is SizedBox && content.height == 0 && content.width == 0) {
-      return content;
-    }
-    final t = AppTokens.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
+  ///
+  /// [dotColor]：TextBlock→accent，tool 成功→success，tool 失败→error。
+  /// [centerDot]：true 时 dot 放在固定高度容器里居中，适用于 ToolCallCard——
+  ///   卡片展开后 dot 仍锚在第一行中心而不跟着整体居中。
+  ///   高度 = ToolCallCard 折叠态 header 高度：margin(4+4) + padding(10+10) + icon(14) = 42px。
+  Widget _gutterRow(
+    BuildContext context,
+    Widget content,
+    Color dotColor, {
+    bool centerDot = false,
+  }) {
+    if (content is SizedBox) return const SizedBox.shrink();
+    // ToolCallCard 折叠 header 高度（margin 4+4, padding 10+10, icon 14）
+    const cardHeaderH = 42.0;
+    final dotWidget = centerDot
+        ? SizedBox(
+            width: 18,
+            height: cardHeaderH,
+            child: Center(
+              child: Text(
+                '●',
+                style: TextStyle(fontSize: 11, color: dotColor),
+              ),
+            ),
+          )
+        : SizedBox(
             width: 18,
             child: Padding(
               padding: const EdgeInsets.only(top: 2),
               child: Text(
                 '●',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: t.text,
-                  height: 1.4,
-                ),
+                style: TextStyle(fontSize: 11, color: dotColor, height: 1.4),
               ),
             ),
-          ),
-          Expanded(child: content),
-        ],
+          );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [dotWidget, Expanded(child: content)],
       ),
     );
+  }
+
+  /// 根据 block 类型和 tool result 状态决定 gutter 圆点颜色。
+  Color _gutterColor(
+    AppTokens t,
+    ContentBlock block,
+    Map<String, ToolResultBlock>? toolResults,
+  ) {
+    if (block is TextBlock) return t.accent;
+    if (block is ToolUseBlock) {
+      final result = toolResults?[block.id];
+      if (result == null) return t.accent;     // 未返回 / 流式中
+      if (result.isError) return t.error;
+      return t.success;
+    }
+    return t.textDim;
   }
 
   Widget _renderBlock(BuildContext context, ContentBlock block) {

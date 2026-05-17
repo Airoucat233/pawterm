@@ -51,10 +51,15 @@ class _CcSpinnerState extends State<CcSpinner>
           child: Text(
             _frames[i],
             textAlign: TextAlign.center,
+            strutStyle: StrutStyle(
+              fontSize: widget.size,
+              height: 1.2,
+              forceStrutHeight: true,
+            ),
             style: TextStyle(
               fontSize: widget.size,
               color: widget.color,
-              height: 1.0,
+              height: 1.2,
               fontFamilyFallback: const ['Apple Color Emoji'],
             ),
           ),
@@ -166,6 +171,7 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           CcSpinner(size: 14, color: widget.color),
           const SizedBox(width: 8),

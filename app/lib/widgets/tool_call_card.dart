@@ -33,7 +33,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
 
   @override
   Widget build(BuildContext context) {
-    if (toolUse.name == 'TodoWrite') return const SizedBox.shrink();
+    if (toolUse.name == 'TodoWrite') return _todoWriteCard(context);
 
     final t = AppTokens.of(context);
     final color = _colorFor(t, toolUse.name);
@@ -172,6 +172,53 @@ class _ToolCallCardState extends State<ToolCallCard> {
   }
 
   bool _isBodyEmpty(String name) => false;
+
+  /// TodoWrite 显示逻辑：
+  ///   - 0 个完成 → 首次创建，显示「已创建 N 个任务」
+  ///   - 全部完成 → 最终汇报，显示「全部完成 N/N」
+  ///   - 中间状态 → 隐藏（只更新 TodoChip，不占 message 空间）
+  Widget _todoWriteCard(BuildContext context) {
+    final t = AppTokens.of(context);
+    final rawList = toolUse.input['todos'] as List<dynamic>? ?? const [];
+    final total = rawList.length;
+    if (total == 0) return const SizedBox.shrink();
+    final completed =
+        rawList.where((e) => (e as Map)['status'] == 'completed').length;
+    // 中间状态 → 完全隐藏，不渲染任何 widget
+    if (completed > 0 && completed < total) return const SizedBox.shrink();
+
+    final isFirst = completed == 0;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: t.border, width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isFirst ? Icons.checklist : Icons.check_circle_outline,
+            size: 13,
+            color: isFirst ? t.accent : t.success,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            isFirst
+                ? '已创建 $total 个任务'
+                : '全部完成 $completed/$total',
+            style: TextStyle(
+              fontSize: 12,
+              color: isFirst ? t.accent : t.success,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   /// Edit/Write/Bash 有专属"pretty"视图，显示 pretty|raw 切换。
   bool _showViewToggle(String name) =>
