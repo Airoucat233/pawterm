@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -11,6 +13,7 @@ import '../../api/chat_api.dart';
 import '../../api/protocol.dart';
 import '../../api/sessions_api.dart';
 import '../../api/sse_client.dart';
+import '../../api/upload_api.dart';
 import '../../i18n/locale_provider.dart';
 import '../../i18n/strings.dart';
 import '../../utils/time_format.dart';
@@ -44,6 +47,21 @@ class _HistoryPage {
 }
 
 enum _HolderChoice { takeover, readOnly, cancel }
+
+enum _AttachmentStatus { uploading, ready, failed }
+
+class _AttachmentState {
+  final String localName;
+  final String localPath;
+  String? remotePath;
+  String? errorMsg;
+  _AttachmentStatus status;
+  _AttachmentState({
+    required this.localName,
+    required this.localPath,
+    required this.status,
+  });
+}
 
 class ChatTab extends ConsumerStatefulWidget {
   const ChatTab({super.key});
@@ -91,6 +109,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// busy 解除（result 到达）后自动出队、依次发送。
   /// 参考 claude-code messageQueueManager.ts 的单优先级简化版本。
   final List<String> _pending = [];
+
+  /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
+  /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
+  final List<_AttachmentState> _attachments = [];
 
   @override
   void initState() {
@@ -684,9 +706,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _submit() {
-    final text = _textController.text.trim();
-    if (text.isEmpty || !_connected) return;
+    if (!_connected) return;
+    // 任何附件没就绪（uploading/failed）就不让发，UI 上 send 按钮已 disabled
+    // —— 这里二次防御，避免极端情况下漏掉一条 ref。
+    if (!_attachmentsAllReady) return;
+    final raw = _textController.text.trim();
+    final attachLines = _attachments
+        .where((a) => a.status == _AttachmentStatus.ready && a.remotePath != null)
+        .map((a) => '`${a.remotePath!}`')
+        .toList();
+    final text = attachLines.isEmpty
+        ? raw
+        : '$raw\n\n附件：\n${attachLines.join('\n')}';
+    if (text.isEmpty) return;
     _textController.clear();
+    setState(() => _attachments.clear());
     // busy 时排队，否则直接发。result 到达 → _drainQueue 出队继续。
     if (_busy) {
       setState(() => _pending.add(text));
@@ -732,6 +766,63 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       unawaited(_chatApi!.interrupt(_sessionId!));
     }
   }
+
+  /// 弹文件选择器，把每个选中的文件都登记为 uploading 状态并启动并发上传。
+  Future<void> _pickAndUploadAttachments() async {
+    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    if (result == null) return;
+    final session = ref.read(currentSessionProvider);
+    if (session == null) return;
+    final config = ref.read(activeConnectionProvider);
+    if (config == null) return;
+    final api = UploadApi(config.httpBase);
+    for (final pickedFile in result.files) {
+      final path = pickedFile.path;
+      if (path == null) continue;
+      final state = _AttachmentState(
+        localName: pickedFile.name,
+        localPath: path,
+        status: _AttachmentStatus.uploading,
+      );
+      setState(() => _attachments.add(state));
+      unawaited(_uploadOne(api, state, session.cwd));
+    }
+  }
+
+  Future<void> _uploadOne(UploadApi api, _AttachmentState state, String cwd) async {
+    try {
+      final result = await api.upload(File(state.localPath), cwd);
+      if (!mounted) return;
+      setState(() {
+        state.remotePath = result.path;
+        state.status = _AttachmentStatus.ready;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        state.errorMsg = e.toString();
+        state.status = _AttachmentStatus.failed;
+      });
+    }
+  }
+
+  void _removeAttachment(_AttachmentState a) {
+    setState(() => _attachments.remove(a));
+  }
+
+  Future<void> _retryAttachment(_AttachmentState a) async {
+    final session = ref.read(currentSessionProvider);
+    final config = ref.read(activeConnectionProvider);
+    if (session == null || config == null) return;
+    setState(() {
+      a.status = _AttachmentStatus.uploading;
+      a.errorMsg = null;
+    });
+    await _uploadOne(UploadApi(config.httpBase), a, session.cwd);
+  }
+
+  bool get _attachmentsAllReady =>
+      _attachments.every((a) => a.status == _AttachmentStatus.ready);
 
   @override
   Widget build(BuildContext context) {
@@ -862,6 +953,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             controller: _textController,
             connected: _connected,
             busy: _busy,
+            attachments: _attachments,
+            attachmentsAllReady: _attachmentsAllReady,
+            onPickAttachment: _pickAndUploadAttachments,
+            onRemoveAttachment: _removeAttachment,
+            onRetryAttachment: _retryAttachment,
             onSubmit: _submit,
             onStop: _interrupt,
             onSwitchModel: _switchModel,
@@ -1054,6 +1150,11 @@ class _Composer extends ConsumerWidget {
   final TextEditingController controller;
   final bool connected;
   final bool busy;
+  final List<_AttachmentState> attachments;
+  final bool attachmentsAllReady;
+  final VoidCallback onPickAttachment;
+  final void Function(_AttachmentState) onRemoveAttachment;
+  final void Function(_AttachmentState) onRetryAttachment;
   final VoidCallback onSubmit;
   final VoidCallback onStop;
   final void Function(ModelOption) onSwitchModel;
@@ -1062,6 +1163,11 @@ class _Composer extends ConsumerWidget {
     required this.controller,
     required this.connected,
     required this.busy,
+    required this.attachments,
+    required this.attachmentsAllReady,
+    required this.onPickAttachment,
+    required this.onRemoveAttachment,
+    required this.onRetryAttachment,
     required this.onSubmit,
     required this.onStop,
     required this.onSwitchModel,
@@ -1072,7 +1178,8 @@ class _Composer extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
     final model = ref.watch(currentModelProvider);
-    final canSend = connected && !busy;
+    // 任意附件没就绪（上传中/失败）都禁止发送，避免发出去的引用不可达。
+    final canSend = connected && !busy && attachmentsAllReady;
     final editable = connected; // 文本框 busy 时仍可编辑（用户能预写下一条），但发送被 stop 按钮替代。
     return SafeArea(
       top: false,
@@ -1087,7 +1194,25 @@ class _Composer extends ConsumerWidget {
           padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // 附件 chip 行：非空时显示在输入框上方。
+              if (attachments.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8, right: 8),
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final a in attachments)
+                        _AttachmentChip(
+                          state: a,
+                          onRemove: () => onRemoveAttachment(a),
+                          onRetry: () => onRetryAttachment(a),
+                        ),
+                    ],
+                  ),
+                ),
               // 输入框 + 发送/停止按钮：纵向居中。
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
@@ -1125,9 +1250,24 @@ class _Composer extends ConsumerWidget {
                 ],
               ),
               const SizedBox(height: 4),
-              // 工具栏在按钮下方，左对齐。
+              // 工具栏在按钮下方，左对齐。最左边是 + 按钮（附件上传）。
               Row(
                 children: [
+                  GestureDetector(
+                    onTap: connected ? onPickAttachment : null,
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      child: Icon(
+                        Icons.add_rounded,
+                        size: 20,
+                        color: connected ? t.textMuted : t.textDim,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
                   _PermissionModePicker(
                     current: ref.watch(permissionModeProvider),
                     onPick: onSwitchPermissionMode,
@@ -1602,6 +1742,96 @@ class _PermissionModeRow extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 附件 chip：固定 28pt 高，左侧显示文件类型图标 + 文件名（最多 200pt 截断），
+/// 右侧根据上传状态显示菊花 / 错误 ! / 关闭 × 三种态。
+/// - uploading：1.5pt 圆形 spinner
+/// - failed：t.error 图标，点击触发重传
+/// - ready：t.textMuted close 图标，点击从列表移除
+class _AttachmentChip extends StatelessWidget {
+  final _AttachmentState state;
+  final VoidCallback onRemove;
+  final VoidCallback onRetry;
+  const _AttachmentChip({
+    required this.state,
+    required this.onRemove,
+    required this.onRetry,
+  });
+
+  IconData _iconForName(String name) {
+    final lower = name.toLowerCase();
+    if (RegExp(r'\.(png|jpg|jpeg|webp|heic|heif|gif|bmp)$').hasMatch(lower)) {
+      return Icons.image_outlined;
+    }
+    if (lower.endsWith('.pdf')) return Icons.picture_as_pdf_outlined;
+    if (RegExp(r'\.(ts|tsx|js|jsx|py|dart|go|rs|java|c|cpp|h|hpp|json|yaml|yml|md|sh)$').hasMatch(lower)) {
+      return Icons.code;
+    }
+    return Icons.insert_drive_file_outlined;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final failed = state.status == _AttachmentStatus.failed;
+    return Container(
+      height: 28,
+      padding: const EdgeInsets.only(left: 8, right: 4),
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: failed ? t.error.withValues(alpha: 0.5) : t.border,
+          width: 0.5,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(_iconForName(state.localName), size: 14, color: t.textMuted),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 200),
+            child: Text(
+              state.localName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: t.text),
+            ),
+          ),
+          const SizedBox(width: 6),
+          if (state.status == _AttachmentStatus.uploading)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 2),
+              child: SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 1.5),
+              ),
+            )
+          else if (failed)
+            GestureDetector(
+              onTap: onRetry,
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(Icons.error_outline, size: 14, color: t.error),
+              ),
+            )
+          else
+            GestureDetector(
+              onTap: onRemove,
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(Icons.close_rounded, size: 14, color: t.textMuted),
+              ),
+            ),
+        ],
       ),
     );
   }
