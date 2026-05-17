@@ -152,11 +152,21 @@ function normalizeToolResultContent(content: unknown): any {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content.map((item: any) => {
-      if (item && typeof item === 'object' && 'text' in item) {
-        return { type: 'text', text: String(item.text) };
+      if (item && typeof item === 'object' && item.type === 'image') {
+        // Preserve image blocks as-is — they have base64 source we shouldn't stringify.
+        return item;
       }
-      return { type: 'text', text: String(item) };
+      if (item && typeof item === 'object' && 'text' in item) {
+        const t = item.text;
+        const text = typeof t === 'string' ? t : JSON.stringify(t, null, 2);
+        return { type: 'text', text };
+      }
+      // Anything else (including raw JSON objects from MCP tools): stringify whole item.
+      return { type: 'text', text: JSON.stringify(item, null, 2) };
     });
+  }
+  if (typeof content === 'object') {
+    return JSON.stringify(content, null, 2);
   }
   return String(content);
 }
