@@ -1,4 +1,4 @@
-import type { HealthResponse, Project, SessionSummary } from '@cc/shared';
+import type { HealthResponse, Project, SessionSummary } from '@pawterm/shared';
 
 const BASE = '/api';
 

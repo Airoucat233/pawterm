@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { resolve } from 'node:path';
 import { getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 
-import type { AnswerQuestionRequest, PermissionMode } from '@cc/shared';
+import type { AnswerQuestionRequest, PermissionMode } from '@pawterm/shared';
 
 import { isPathAllowed, settings } from './config.js';
 import { AskUserQuestionRegistry } from './ask-user-tool.js';

@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Bot, ChevronDown, ChevronRight, Folder, FolderOpen, Plus, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 
-import type { Project, SessionSummary } from '@cc/shared';
+import type { Project, SessionSummary } from '@pawterm/shared';
 
 import { api } from '../api/rest';
 import { useAppStore } from '../state/store';

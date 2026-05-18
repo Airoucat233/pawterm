@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Project, PermissionMode } from '@cc/shared';
+import type { Project, PermissionMode } from '@pawterm/shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

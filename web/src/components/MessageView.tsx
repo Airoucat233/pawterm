@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import type { ContentBlock } from '@cc/shared';
+import type { ContentBlock } from '@pawterm/shared';
 
 import { ToolCard } from './ToolCard';
 

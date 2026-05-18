@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@cc/shared';
+import type { ContentBlock } from '@pawterm/shared';
 
 /**
  * Convert raw SDK messages (from @anthropic-ai/claude-agent-sdk) to wire dicts.

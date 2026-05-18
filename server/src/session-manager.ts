@@ -1,6 +1,6 @@
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 
-import type { PermissionMode } from '@cc/shared';
+import type { PermissionMode } from '@pawterm/shared';
 import { type AskUserQuestionRegistry, formatAnswers, makeAskUserMcpServer } from './ask-user-tool.js';
 
 /**

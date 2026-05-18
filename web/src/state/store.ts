@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import type { Project, SessionSummary } from '@cc/shared';
+import type { Project, SessionSummary } from '@pawterm/shared';
 
 export type TabId = 'chat' | 'shell' | 'files' | 'git';
 

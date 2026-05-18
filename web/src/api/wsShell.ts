@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import type { ShellClientMessage, ShellServerMessage } from '@cc/shared';
+import type { ShellClientMessage, ShellServerMessage } from '@pawterm/shared';
 
 interface UseShellOptions {
   cwd: string;

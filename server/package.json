@@ -33,7 +33,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cc/shared": "workspace:*",
+    "@pawterm/shared": "workspace:*",
     "@types/node": "^22.10.0",
     "pino-pretty": "^11.3.0",
     "tsup": "^8.5.1",

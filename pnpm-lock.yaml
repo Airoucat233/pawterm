@@ -19,9 +19,6 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.141
         version: 0.2.141(zod@4.4.3)
-      '@cc/shared':
-        specifier: workspace:*
-        version: link:../packages/shared
       '@fastify/cors':
         specifier: ^11.0.0
         version: 11.2.0
@@ -41,6 +38,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@pawterm/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
       '@types/node':
         specifier: ^22.10.0
         version: 22.19.19
@@ -62,7 +62,7 @@ importers:
 
   web:
     dependencies:
-      '@cc/shared':
+      '@pawterm/shared':
         specifier: workspace:*
         version: link:../packages/shared
       '@tanstack/react-query':

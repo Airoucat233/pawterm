@@ -5,8 +5,8 @@ export default defineConfig({
   format: ['esm'],
   target: 'node20',
   bundle: true,
-  // inline @cc/shared so the published package has no workspace dependency
-  noExternal: ['@cc/shared'],
+  // inline @pawterm/shared so the published package has no workspace dependency
+  noExternal: ['@pawterm/shared'],
   // keep native modules (node-pty) as external — they ship prebuilds
   external: ['node-pty'],
   outDir: 'dist',

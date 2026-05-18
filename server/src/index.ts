@@ -9,7 +9,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import type { HealthResponse, Project } from '@cc/shared';
+import type { HealthResponse, Project } from '@pawterm/shared';
 
 import { registerChatRest } from './chat-rest.js';
 import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath } from './config.js';

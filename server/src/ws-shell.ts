@@ -6,7 +6,7 @@ import type { WebSocket } from '@fastify/websocket';
 import type { FastifyRequest } from 'fastify';
 import * as pty from 'node-pty';
 
-import type { ShellClientMessage, ShellServerMessage } from '@cc/shared';
+import type { ShellClientMessage, ShellServerMessage } from '@pawterm/shared';
 
 import { isPathAllowed } from './config.js';
 

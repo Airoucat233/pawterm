@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@cc/shared';
+import type { ContentBlock } from '@pawterm/shared';
 
 import { getToolConfig, toolColor } from '../tools/toolConfigs';
 import { DiffView } from './DiffView';

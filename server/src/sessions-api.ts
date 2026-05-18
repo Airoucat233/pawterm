@@ -11,7 +11,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { FastifyInstance } from 'fastify';
 
-import type { SessionSummary } from '@cc/shared';
+import type { SessionSummary } from '@pawterm/shared';
 
 import { isPathAllowed } from './config.js';
 import { messageToWire } from './serialize.js';

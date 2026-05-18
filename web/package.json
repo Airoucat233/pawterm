@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cc/shared": "workspace:*",
+    "@pawterm/shared": "workspace:*",
     "@tanstack/react-query": "^5.62.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",

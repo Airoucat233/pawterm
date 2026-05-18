@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
-import type { ChatClientMessage, ChatServerMessage } from '@cc/shared';
+import type { ChatClientMessage, ChatServerMessage } from '@pawterm/shared';
 
 export interface ChatTurn {
   kind: 'local-user' | 'assistant' | 'tool-result' | 'system-result' | 'error';
