@@ -20,6 +20,7 @@ export interface ServerSettings {
   projects: Project[];
   logLevel: string;
   logFormat: LogFormat;
+  logFile: string | null;
 }
 
 function expandHome(p: string): string {
@@ -52,6 +53,7 @@ function loadConfig(): ServerSettings {
       projects: [],
       logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? 'info',
       logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? defaultLogFormat) as LogFormat,
+      logFile: expandHome(process.env.PAWTERM_LOG_FILE ?? '') || null,
     };
   }
 
@@ -62,6 +64,7 @@ function loadConfig(): ServerSettings {
     projects?: Array<{ name?: string; path: string }>;
     log_level?: string;
     log_format?: LogFormat;
+    log_file?: string;
   };
 
   const defaultLogFormat: LogFormat = process.env.NODE_ENV === 'production' ? 'json' : 'pretty';
@@ -77,6 +80,7 @@ function loadConfig(): ServerSettings {
     // env var > config.json > default
     logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? raw.log_level ?? 'info',
     logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? raw.log_format ?? defaultLogFormat) as LogFormat,
+    logFile: expandHome(process.env.PAWTERM_LOG_FILE ?? raw.log_file ?? '') || null,
   };
 }
 

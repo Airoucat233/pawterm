@@ -248,6 +248,7 @@ async function main(): Promise<void> {
       `│  listen   : http://${settings.host}:${settings.port}`,
       `│  config   : ${configPath}`,
       `│  perm mode: ${settings.permissionMode}`,
+      `│  log      : ${settings.logFormat} / ${settings.logLevel}${settings.logFile ? ` → ${settings.logFile}` : ''}`,
       `│  projects :`,
       ...settings.projects.map((p) => `│    • ${p.name}  (${p.path})`),
       ...(settings.projects.length === 0 ? ['│    (none)'] : []),
