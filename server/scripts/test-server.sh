@@ -4,7 +4,7 @@
 # 跟 `pnpm dev` 的主 server（端口 8765）完全隔离 —— 各自一份 config.json，
 # 各自一份 SDK session map。改源码不会自动 reload（避免热重载链断流）。
 #
-#   ./scripts/test-server.sh start    # 后台起 → /tmp/cc-test-server.log
+#   ./scripts/test-server.sh start    # 后台起 → /tmp/pawterm-test-server.log
 #   ./scripts/test-server.sh stop     # 杀进程
 #   ./scripts/test-server.sh restart  # 停 → 起
 #   ./scripts/test-server.sh status   # 看是否在跑
@@ -19,8 +19,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_FILE="$SERVER_DIR/config.test.json"
-LOG_FILE="/tmp/cc-test-server.log"
-PID_FILE="/tmp/cc-test-server.pid"
+LOG_FILE="/tmp/pawterm-test-server.log"
+PID_FILE="/tmp/pawterm-test-server.pid"
 PORT=8766
 
 # ── colors ────────────────────────────────────────────────────────────
