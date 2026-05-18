@@ -53,7 +53,7 @@ function loadConfig(): ServerSettings {
       projects: [],
       logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? 'info',
       logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? defaultLogFormat) as LogFormat,
-      logFile: expandHome(process.env.PAWTERM_LOG_FILE ?? '') || null,
+      logFile: (() => { const p = process.env.PAWTERM_LOG_FILE; return p ? expandHome(p) : null; })(),
     };
   }
 
@@ -80,7 +80,7 @@ function loadConfig(): ServerSettings {
     // env var > config.json > default
     logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? raw.log_level ?? 'info',
     logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? raw.log_format ?? defaultLogFormat) as LogFormat,
-    logFile: expandHome(process.env.PAWTERM_LOG_FILE ?? raw.log_file ?? '') || null,
+    logFile: (() => { const p = process.env.PAWTERM_LOG_FILE ?? raw.log_file; return p ? expandHome(p) : null; })(),
   };
 }
 
