@@ -5,9 +5,7 @@ import Fastify from 'fastify';
 import { createReadStream } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
+import { basename, join, resolve } from 'node:path';
 
 import type { HealthResponse, Project } from '@pawterm/shared';
 
@@ -18,9 +16,8 @@ import { registerSessionsApi } from './sessions-api.js';
 import { registerUpload } from './upload.js';
 import { handleShellSocket } from './ws-shell.js';
 
-const _require = createRequire(import.meta.url);
-const _pkg = _require(join(dirname(fileURLToPath(import.meta.url)), '../../package.json')) as { version: string };
-const VERSION: string = _pkg.version;
+declare const __SERVER_VERSION__: string;
+const VERSION: string = __SERVER_VERSION__;
 
 async function main(): Promise<void> {
   const app = Fastify({ logger: buildLoggerOptions() });

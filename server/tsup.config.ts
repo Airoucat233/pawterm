@@ -1,4 +1,5 @@
 import { defineConfig } from 'tsup';
+import { version } from './package.json';
 
 export default defineConfig({
   entry: ['src/index.ts'],
@@ -12,6 +13,9 @@ export default defineConfig({
   outDir: 'dist',
   clean: true,
   sourcemap: false,
+  define: {
+    __SERVER_VERSION__: JSON.stringify(version),
+  },
   banner: {
     js: '#!/usr/bin/env node',
   },
