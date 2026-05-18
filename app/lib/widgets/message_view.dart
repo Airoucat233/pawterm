@@ -134,12 +134,17 @@ class MessageView extends StatelessWidget {
       if (visible.isEmpty) return const SizedBox.shrink();
       // 先渲染所有 block，过滤掉完全不可见的（如 TodoWrite 中间状态）
       final rows = <Widget>[];
-      for (final b in visible) {
+      for (int i = 0; i < visible.length; i++) {
+        final b = visible[i];
         final content = _renderBlock(context, b);
         final color = _gutterColor(t, b, toolResults);
+        // 相邻两个工具卡片之间用更小的间距（2px），其余保持 6px
+        final nextIsTool = i + 1 < visible.length && visible[i + 1] is ToolUseBlock;
+        final bottomSpacing = (b is ToolUseBlock && nextIsTool) ? 2.0 : 6.0;
         final row = _gutterRow(
           context, content, color,
-          centerDot: b is ToolUseBlock,
+          dotTopOffset: b is ToolUseBlock ? 13.0 : 2.0,
+          bottomSpacing: bottomSpacing,
         );
         if (row is! SizedBox) rows.add(row);
       }
@@ -218,37 +223,27 @@ class MessageView extends StatelessWidget {
     BuildContext context,
     Widget content,
     Color dotColor, {
-    bool centerDot = false,
+    double dotTopOffset = 2,
+    double bottomSpacing = 6,
   }) {
     if (content is SizedBox) return const SizedBox.shrink();
-    // ToolCallCard 折叠 header 高度（margin 4+4, padding 10+10, icon 14）
-    const cardHeaderH = 42.0;
-    final dotWidget = centerDot
-        ? SizedBox(
-            width: 18,
-            height: cardHeaderH,
-            child: Center(
-              child: Text(
-                '●',
-                style: TextStyle(fontSize: 11, color: dotColor),
-              ),
-            ),
-          )
-        : SizedBox(
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomSpacing),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
             width: 18,
             child: Padding(
-              padding: const EdgeInsets.only(top: 2),
+              padding: EdgeInsets.only(top: dotTopOffset),
               child: Text(
                 '●',
                 style: TextStyle(fontSize: 11, color: dotColor, height: 1.4),
               ),
             ),
-          );
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [dotWidget, Expanded(child: content)],
+          ),
+          Expanded(child: content),
+        ],
       ),
     );
   }
@@ -259,7 +254,7 @@ class MessageView extends StatelessWidget {
     ContentBlock block,
     Map<String, ToolResultBlock>? toolResults,
   ) {
-    if (block is TextBlock) return t.accent;
+    if (block is TextBlock) return t.success;
     if (block is ToolUseBlock) {
       final result = toolResults?[block.id];
       if (result == null) return t.accent;     // 未返回 / 流式中
@@ -397,6 +392,10 @@ Widget? _tryParseCommandChip(String text) {
   // 5) 本地命令注入的免责声明（"Caveat: The messages below were generated..."）
   if (trimmed.startsWith('<local-command-caveat>')) {
     return const SizedBox.shrink();
+  }
+  // 6) SDK 写入的手动中断标记
+  if (trimmed == '[Request interrupted by user]') {
+    return const _InterruptedChip();
   }
   return null;
 }
@@ -758,4 +757,56 @@ class _CompactBoundaryLine extends StatelessWidget {
     if (n < 1000) return '$n';
     return '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k';
   }
+}
+
+/// SDK 写入的手动中断标记：居中小 chip，样式区别于用户气泡。
+class _InterruptedChip extends StatelessWidget {
+  const _InterruptedChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Expanded(child: _dash(t)),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: t.surfaceHi,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: t.border, width: 0.5),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.stop_circle_outlined, size: 11, color: t.textDim),
+                const SizedBox(width: 4),
+                Text(
+                  '已中断',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: t.textMuted,
+                    fontFamily: 'monospace',
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: _dash(t)),
+        ],
+      ),
+    );
+  }
+
+  Widget _dash(AppTokens t) => Container(
+        height: 0.5,
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: t.borderSubt, width: 0.5)),
+        ),
+      );
 }

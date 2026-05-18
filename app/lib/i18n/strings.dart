@@ -225,6 +225,18 @@ class Strings {
   // Time labels
   final String timeYesterday;
 
+  // Check for updates
+  final String settingsCheckUpdate;
+  final String updateChecking;
+  final String updateUpToDate;
+  final String updateAvailableTpl; // {version}
+  final String updateDialogTitle;
+  final String updateDownloadInstall;
+  final String updateInstall;
+  final String updateCheckFailed;
+  final String updateNoApk;
+  final String updateDownloadFailed;
+
   // Generic
   final String genericRetry;
   final String genericClose;
@@ -410,6 +422,16 @@ class Strings {
     required this.thinkingCollapsed,
     required this.thinkingExpanded,
     required this.timeYesterday,
+    required this.settingsCheckUpdate,
+    required this.updateChecking,
+    required this.updateUpToDate,
+    required this.updateAvailableTpl,
+    required this.updateDialogTitle,
+    required this.updateDownloadInstall,
+    required this.updateInstall,
+    required this.updateCheckFailed,
+    required this.updateNoApk,
+    required this.updateDownloadFailed,
     required this.genericRetry,
     required this.genericClose,
     required this.genericConfirm,
@@ -601,6 +623,16 @@ const Strings stringsEn = Strings(
   thinkingCollapsed: 'Thinking…',
   thinkingExpanded: 'Thinking trace',
   timeYesterday: 'Yesterday',
+  settingsCheckUpdate: 'Check for updates',
+  updateChecking: 'Checking…',
+  updateUpToDate: 'Up to date',
+  updateAvailableTpl: '{version} available',
+  updateDialogTitle: 'Update available',
+  updateDownloadInstall: 'Download & Install',
+  updateInstall: 'Install',
+  updateCheckFailed: 'Check failed',
+  updateNoApk: 'No APK found',
+  updateDownloadFailed: 'Download failed',
   genericRetry: 'Retry',
   genericClose: 'Close',
   genericConfirm: 'OK',
@@ -791,6 +823,16 @@ const Strings stringsZh = Strings(
   thinkingCollapsed: '思考片段',
   thinkingExpanded: '思考过程',
   timeYesterday: '昨天',
+  settingsCheckUpdate: '检测更新',
+  updateChecking: '检测中…',
+  updateUpToDate: '已是最新',
+  updateAvailableTpl: '有新版本 {version}',
+  updateDialogTitle: '发现新版本',
+  updateDownloadInstall: '下载并安装',
+  updateInstall: '立即安装',
+  updateCheckFailed: '检测失败',
+  updateNoApk: '未找到适用的 APK',
+  updateDownloadFailed: '下载失败',
   genericRetry: '重试',
   genericClose: '关闭',
   genericConfirm: '确定',

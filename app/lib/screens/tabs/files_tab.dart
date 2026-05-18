@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:permission_handler/permission_handler.dart';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -45,7 +47,9 @@ _PreviewType _previewTypeFor(String name) {
 
 // ── file action enum ────────────────────────────────────────────────
 
-enum _FileAction { preview, open, save }
+enum _FileAction { preview, open, save, install }
+
+bool _isApk(String name) => name.toLowerCase().endsWith('.apk');
 
 // ── main tab ────────────────────────────────────────────────────────
 
@@ -135,7 +139,28 @@ class _FilesTabState extends ConsumerState<FilesTab> {
         await _doOpen(entry);
       case _FileAction.save:
         await _doSave(entry);
+      case _FileAction.install:
+        await _doInstall(entry);
     }
+  }
+
+  /// 获取系统 Downloads 目录。
+  /// Android: /storage/emulated/0/Download（从 getExternalStorageDirectory 反推）
+  /// iOS: Documents 目录（Files app 可见）
+  Future<Directory> _getDownloadsDir() async {
+    if (Platform.isAndroid) {
+      final ext = await getExternalStorageDirectory();
+      if (ext != null) {
+        final parts = ext.path.split('/');
+        final androidIdx = parts.indexOf('Android');
+        if (androidIdx > 0) {
+          final base = parts.sublist(0, androidIdx).join('/');
+          return Directory('$base/Download');
+        }
+      }
+      return Directory('/storage/emulated/0/Download');
+    }
+    return getApplicationDocumentsDirectory();
   }
 
   // ── generic download helper ──────────────────────────────────────
@@ -150,6 +175,9 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     final cancelToken = Completer<void>();
     bool dialogOpen = true;
 
+    // dispose 必须在 dialog 完全退出后执行（动画结束后 then 回调里），
+    // 不能放 finally：pop() 触发的退出动画还未结束时就 dispose 会导致
+    // ValueListenableBuilder 读取已释放的 notifier，dialog 冻结。
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -160,7 +188,10 @@ class _FilesTabState extends ConsumerState<FilesTab> {
           if (!cancelToken.isCompleted) cancelToken.complete();
         },
       ),
-    ).then((_) => dialogOpen = false);
+    ).then((_) {
+      dialogOpen = false;
+      progressNotifier.dispose();
+    });
 
     try {
       await destDir.create(recursive: true);
@@ -193,8 +224,6 @@ class _FilesTabState extends ConsumerState<FilesTab> {
         ));
       }
       return null;
-    } finally {
-      progressNotifier.dispose();
     }
   }
 
@@ -219,8 +248,11 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   }
 
   Future<void> _doOpen(FsEntry entry) async {
-    final tmpDir = await getTemporaryDirectory();
-    final file = await _downloadTo(entry, Directory('${tmpDir.path}/cc-open'));
+    // APK 必须放到可被 FileProvider 服务的目录，否则 Android 报 permission denied
+    final destDir = _isApk(entry.name)
+        ? await _getDownloadsDir()
+        : Directory('${(await getTemporaryDirectory()).path}/cc-open');
+    final file = await _downloadTo(entry, destDir);
     if (file == null || !mounted) return;
     final result = await OpenFile.open(file.path);
     if (result.type != ResultType.done && mounted) {
@@ -232,20 +264,89 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   }
 
   Future<void> _doSave(FsEntry entry) async {
-    final docsDir = await getApplicationDocumentsDirectory();
-    final file = await _downloadTo(entry, Directory('${docsDir.path}/downloads'));
+    final dlDir = await _getDownloadsDir();
+    final file = await _downloadTo(entry, dlDir);
     if (file == null || !mounted) return;
-    final s = ref.read(stringsProvider);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(s.filesDownloadDoneTpl.replaceAll('{name}', entry.name)),
-      action: SnackBarAction(
-        label: s.filesShare,
-        onPressed: () async {
-          // ignore: deprecated_member_use
-          await Share.shareXFiles([XFile(file.path, name: entry.name)]);
-        },
+    final t = AppTokens.of(context);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: t.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Icon(Icons.check_circle_outline, color: t.success, size: 20),
+            const SizedBox(width: 8),
+            Text('已保存到 Downloads', style: TextStyle(fontSize: 16, color: t.text)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('路径（可长按复制）:', style: TextStyle(fontSize: 12, color: t.textMuted)),
+            const SizedBox(height: 6),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: t.surfaceHi,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: t.border, width: 0.5),
+              ),
+              child: SelectableText(
+                file.path,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  color: t.text,
+                  height: 1.5,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('好', style: TextStyle(color: t.accent)),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              // ignore: deprecated_member_use
+              await Share.shareXFiles([XFile(file.path, name: entry.name)]);
+            },
+            child: Text('分享', style: TextStyle(color: t.textMuted)),
+          ),
+        ],
       ),
-    ));
+    );
+  }
+
+  Future<void> _doInstall(FsEntry entry) async {
+    // Android 8+ 需要先确认具备安装未知来源权限，否则跳到系统开关页
+    if (Platform.isAndroid) {
+      final status = await Permission.requestInstallPackages.status;
+      if (!status.isGranted) {
+        await Permission.requestInstallPackages.request();
+        if (!mounted) return;
+        // 用户从系统页面返回后再检查一次
+        final after = await Permission.requestInstallPackages.status;
+        if (!after.isGranted) return;
+      }
+    }
+
+    final dlDir = await _getDownloadsDir();
+    final file = await _downloadTo(entry, dlDir);
+    if (file == null || !mounted) return;
+    final result = await OpenFile.open(file.path);
+    if (!mounted) return;
+    if (result.type != ResultType.done && result.type != ResultType.noAppToOpen) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('安装失败: ${result.message}')),
+      );
+    }
   }
 
   // ── build ────────────────────────────────────────────────────────
@@ -619,6 +720,12 @@ class _FileActionSheet extends ConsumerWidget {
             ),
             onTap: previewEnabled ? () => Navigator.of(context).pop(_FileAction.preview) : null,
           ),
+          if (_isApk(entry.name))
+            ListTile(
+              leading: Icon(Icons.install_mobile_outlined, color: t.success),
+              title: Text('安装 APK', style: TextStyle(color: t.text)),
+              onTap: () => Navigator.of(context).pop(_FileAction.install),
+            ),
           ListTile(
             leading: Icon(Icons.open_in_new, color: t.text),
             title: Text(s.filesOpenWith, style: TextStyle(color: t.text)),

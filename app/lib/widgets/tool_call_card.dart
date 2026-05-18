@@ -55,82 +55,89 @@ class _ToolCallCardState extends State<ToolCallCard> {
     return InkWell(
       onTap: canExpand ? () => setState(() => _expanded = !_expanded) : null,
       borderRadius: BorderRadius.circular(8),
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-        decoration: BoxDecoration(
-          color: t.surface,
-          border: Border(
-            top: BorderSide(color: t.border, width: 0.5),
-            right: BorderSide(color: t.border, width: 0.5),
-            bottom: BorderSide(color: t.border, width: 0.5),
-            left: BorderSide(color: color, width: 3),
-          ),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 2, bottom: 4),
+        child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            decoration: BoxDecoration(
+              color: t.surface,
+              border: Border(
+                top: BorderSide(color: t.border, width: 0.5),
+                right: BorderSide(color: t.border, width: 0.5),
+                bottom: BorderSide(color: t.border, width: 0.5),
+                left: BorderSide(color: color, width: 3),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, size: 14, color: color),
-                const SizedBox(width: 8),
-                Text(
-                  toolUse.name,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: t.text,
-                  ),
+                Row(
+                  children: [
+                    Icon(icon, size: 14, color: color),
+                    const SizedBox(width: 8),
+                    Text(
+                      toolUse.name,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: t.text,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: _summary(t, toolUse.name, toolUse.input),
+                        ),
+                      ),
+                    ),
+                    _statusBadge(t),
+                    if (canExpand) ...[
+                      const SizedBox(width: 6),
+                      Icon(
+                        _expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 14,
+                        color: t.textDim,
+                      ),
+                    ],
+                  ],
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: _summary(t, toolUse.name, toolUse.input),
-                  ),
-                ),
-                _statusBadge(t),
-                if (canExpand) ...[
-                  const SizedBox(width: 6),
-                  Icon(
-                    _expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 14,
-                    color: t.textDim,
-                  ),
+                if (_expanded && canExpand) ...[
+                  const SizedBox(height: 10),
+                  if (hasInputBody) ...[
+                    Row(
+                      children: [
+                        _SectionLabel('Input', t),
+                        const Spacer(),
+                        if (_showViewToggle(toolUse.name))
+                          _SegmentedControl(
+                            isRaw: _viewRaw,
+                            onChanged: (v) => setState(() => _viewRaw = v),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    _renderBody(context, t, toolUse.name, toolUse.input),
+                  ],
+                  // Sub-agent transcript (Task tool)
+                  if (widget.subAgentMsgs != null) ...[
+                    if (hasInputBody) const SizedBox(height: 10),
+                    _SubAgentTranscript(messages: widget.subAgentMsgs!),
+                  ],
+                  if (hasOutput) ...[
+                    if (hasInputBody || widget.subAgentMsgs != null) const SizedBox(height: 10),
+                    _SectionLabel('Output', t),
+                    const SizedBox(height: 4),
+                    _outputBody(t, result!),
+                  ],
                 ],
               ],
             ),
-            if (_expanded && canExpand) ...[
-              const SizedBox(height: 10),
-              if (hasInputBody) ...[
-                Row(
-                  children: [
-                    _SectionLabel('Input', t),
-                    const Spacer(),
-                    if (_showViewToggle(toolUse.name))
-                      _SegmentedControl(
-                        isRaw: _viewRaw,
-                        onChanged: (v) => setState(() => _viewRaw = v),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                _renderBody(context, t, toolUse.name, toolUse.input),
-              ],
-              // Sub-agent transcript (Task tool)
-              if (widget.subAgentMsgs != null) ...[
-                if (hasInputBody) const SizedBox(height: 10),
-                _SubAgentTranscript(messages: widget.subAgentMsgs!),
-              ],
-              if (hasOutput) ...[
-                if (hasInputBody || widget.subAgentMsgs != null) const SizedBox(height: 10),
-                _SectionLabel('Output', t),
-                const SizedBox(height: 4),
-                _outputBody(t, result!),
-              ],
-            ],
-          ],
+          ),
         ),
       ),
     );
@@ -751,88 +758,5 @@ class _SubMdRow extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-// ── ToolResultView (standalone, used outside ToolCallCard) ────────────
-
-class ToolResultView extends StatefulWidget {
-  final ToolResultBlock toolResult;
-  const ToolResultView({super.key, required this.toolResult});
-
-  @override
-  State<ToolResultView> createState() => _ToolResultViewState();
-}
-
-class _ToolResultViewState extends State<ToolResultView> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    final text = _extractText(widget.toolResult.content);
-    final firstLine = _firstLine(text);
-    final hasMore = text.length > firstLine.length;
-    final preview = (_expanded
-        ? (text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text)
-        : firstLine);
-    final color = widget.toolResult.isError ? t.error : t.textMuted;
-
-    return InkWell(
-      onTap: hasMore ? () => setState(() => _expanded = !_expanded) : null,
-      child: Container(
-        margin: const EdgeInsets.only(top: 2, bottom: 10),
-        padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
-        decoration: BoxDecoration(
-          border: Border(left: BorderSide(color: color.withValues(alpha: 0.4), width: 1.5)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: SelectableText(
-                preview,
-                maxLines: _expanded ? null : 1,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 11,
-                  color: widget.toolResult.isError ? t.error : t.textMuted,
-                  height: 1.5,
-                ),
-              ),
-            ),
-            if (hasMore) ...[
-              const SizedBox(width: 6),
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 14,
-                  color: t.textDim,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _firstLine(String text) {
-    final newline = text.indexOf('\n');
-    if (newline < 0) return text;
-    return text.substring(0, newline);
-  }
-
-  String _extractText(dynamic content) {
-    if (content == null) return '';
-    if (content is String) return content;
-    if (content is List) {
-      return content.map((b) {
-        if (b is Map && b['text'] != null) return b['text'].toString();
-        return b.toString();
-      }).join('\n');
-    }
-    return content.toString();
   }
 }

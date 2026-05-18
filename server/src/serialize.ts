@@ -54,6 +54,8 @@ export function messageToWire(msg: any): any | null {
       };
 
     case 'user':
+      // isMeta=true：harness 注入的元消息（如 skill 内容），不应展示给用户。
+      if (msg.isMeta) return null;
       return {
         type: 'user',
         content: extractContent(msg.message?.content ?? msg.content ?? []),
