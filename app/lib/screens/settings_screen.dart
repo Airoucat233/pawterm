@@ -7,8 +7,12 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../i18n/locale_provider.dart';
 import '../state/app_info.dart';
+import '../state/prefs.dart';
+import '../state/projects_store.dart';
 import '../theme.dart';
 import '../utils/update_checker.dart';
+
+// ── Public standalone screen (used from MainShell top-bar gear button) ────────
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -17,7 +21,6 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
     final s = ref.watch(stringsProvider);
-    final pref = ref.watch(langPrefProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -28,76 +31,233 @@ class SettingsScreen extends ConsumerWidget {
           tooltip: s.settingsBack,
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        children: [
-          _SectionHeader(label: s.settingsLanguage),
-          for (final option in LangPref.values)
-            _LangTile(
-              option: option,
-              selected: pref == option,
-              label: option.label(s),
-              onTap: () => ref.read(langPrefProvider.notifier).set(option),
-            ),
-          const SizedBox(height: 24),
-          _SectionHeader(label: s.settingsAbout),
-          ListTile(
-            leading: Icon(Icons.info_outline, size: 18, color: t.textMuted),
-            title: Text(s.appTitle, style: TextStyle(color: t.text, fontSize: 13)),
-            subtitle: Text(s.appTagline, style: TextStyle(color: t.textMuted, fontSize: 11)),
-            dense: true,
-          ),
-          ListTile(
-            leading: Icon(Icons.bookmark_outline, size: 18, color: t.textMuted),
-            title: Text(s.settingsVersion, style: TextStyle(color: t.text, fontSize: 13)),
-            trailing: ref.watch(packageInfoProvider).when(
-              data: (info) => Text(
-                'v${info.version}',
-                style: TextStyle(color: t.textDim, fontSize: 11, fontFamily: 'monospace'),
-              ),
-              loading: () => Text('…', style: TextStyle(color: t.textDim, fontSize: 11)),
-              error: (_, __) => Text('—', style: TextStyle(color: t.textDim, fontSize: 11)),
-            ),
-            dense: true,
-          ),
-          const _CheckUpdateTile(),
-        ],
-      ),
+      body: const SettingsBody(),
     );
   }
 }
 
-class _SectionHeader extends StatelessWidget {
+// ── Shared body — used both in SettingsScreen and in ConnectionsScreen tab ─────
+
+class SettingsBody extends ConsumerWidget {
+  const SettingsBody({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
+    final themeMode = ref.watch(prefsProvider);
+    final langPref = ref.watch(langPrefProvider);
+    final model = ref.watch(currentModelProvider);
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      children: [
+        // ── 外观 ──────────────────────────────────────
+        _SettingSection(s.settingsAppearance),
+        _SettingCard(children: [
+          _SegmentRow(
+            label: s.settingsTheme,
+            icon: Icons.brightness_6_outlined,
+            options: [s.settingsThemeSystem, s.settingsThemeLight, s.settingsThemeDark],
+            selected: switch (themeMode) {
+              ThemeMode.light => 1,
+              ThemeMode.dark => 2,
+              _ => 0,
+            },
+            onChanged: (i) => ref.read(prefsProvider.notifier).setTheme(
+                  [ThemeMode.system, ThemeMode.light, ThemeMode.dark][i],
+                ),
+          ),
+          _Divider(),
+          _SegmentRow(
+            label: s.settingsLanguage,
+            icon: Icons.translate_outlined,
+            options: [s.settingsLanguageSystem, 'English', '中文'],
+            selected: switch (langPref) {
+              LangPref.en => 1,
+              LangPref.zh => 2,
+              _ => 0,
+            },
+            onChanged: (i) => ref.read(langPrefProvider.notifier).set(
+                  [LangPref.system, LangPref.en, LangPref.zh][i],
+                ),
+          ),
+        ]),
+
+        // ── Claude 模型 ───────────────────────────────
+        _SettingSection(s.settingsClaudeModel),
+        _SettingCard(children: [
+          for (final m in knownModels) ...[
+            _RadioRow(
+              label: m.label,
+              icon: Icons.auto_awesome_outlined,
+              subtitle: m.description,
+              selected: model.id == m.id,
+              onTap: () => ref.read(currentModelProvider.notifier).state = m,
+            ),
+            if (m != knownModels.last) _Divider(),
+          ],
+        ]),
+
+        // ── 关于 ──────────────────────────────────────
+        _SettingSection(s.settingsAbout),
+        _SettingCard(children: [
+          _InfoRow(
+            icon: Icons.info_outline,
+            label: s.settingsVersion,
+            valueWidget: ref.watch(packageInfoProvider).when(
+              data: (info) => Text(
+                'v${info.version}',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppTokens.of(context).textMuted,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              loading: () => Text('…',
+                  style: TextStyle(fontSize: 13, color: AppTokens.of(context).textDim)),
+              error: (_, __) => Text('—',
+                  style: TextStyle(fontSize: 13, color: AppTokens.of(context).textDim)),
+            ),
+          ),
+          _Divider(),
+          _InfoRow(
+            icon: Icons.person_outline,
+            label: s.settingsAuthor,
+            value: 'airoucat',
+          ),
+          _Divider(),
+          const _CheckUpdateTile(),
+        ]),
+      ],
+    );
+  }
+}
+
+// ── Shared UI building blocks ──────────────────────────────────────────────────
+
+class _SettingSection extends StatelessWidget {
   final String label;
-  const _SectionHeader({required this.label});
+  const _SettingSection(this.label);
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+      padding: const EdgeInsets.fromLTRB(2, 16, 2, 8),
       child: Text(
-        label,
+        label.toUpperCase(),
         style: TextStyle(
-          fontSize: 11,
+          fontSize: 10.5,
           fontWeight: FontWeight.w600,
-          color: t.textMuted,
-          letterSpacing: 0.6,
+          color: t.textDim,
+          letterSpacing: 0.7,
         ),
       ),
     );
   }
 }
 
-class _LangTile extends StatelessWidget {
-  final LangPref option;
-  final bool selected;
+class _SettingCard extends StatelessWidget {
+  final List<Widget> children;
+  const _SettingCard({required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      decoration: BoxDecoration(
+        color: t.surface,
+        border: Border.all(color: t.border),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: Column(children: children),
+    );
+  }
+}
+
+class _Divider extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Divider(color: t.borderSubt, height: 1, indent: 44);
+  }
+}
+
+class _SegmentRow extends StatelessWidget {
   final String label;
-  final VoidCallback onTap;
-  const _LangTile({
-    required this.option,
-    required this.selected,
+  final IconData icon;
+  final List<String> options;
+  final int selected;
+  final ValueChanged<int> onChanged;
+  const _SegmentRow({
     required this.label,
+    required this.icon,
+    required this.options,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: t.textMuted),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(fontSize: 14, color: t.text)),
+          const Spacer(),
+          Container(
+            decoration: BoxDecoration(
+              color: t.surfaceHi,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: t.border),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(options.length, (i) {
+                final active = i == selected;
+                return GestureDetector(
+                  onTap: () => onChanged(i),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: active ? t.accent : Colors.transparent,
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: Text(
+                      options[i],
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                        color: active ? Colors.white : t.textMuted,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RadioRow extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback onTap;
+  const _RadioRow({
+    required this.label,
+    required this.icon,
+    required this.subtitle,
+    required this.selected,
     required this.onTap,
   });
 
@@ -107,23 +267,36 @@ class _LangTile extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
           children: [
-            Icon(
-              selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-              size: 18,
-              color: selected ? t.accent : t.textMuted,
-            ),
-            const SizedBox(width: 12),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 14,
-                color: selected ? t.accent : t.text,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            Icon(icon, size: 18, color: selected ? t.accent : t.textMuted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      color: t.text,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: t.textDim.withValues(alpha: 0.85),
+                      letterSpacing: 0.1,
+                    ),
+                  ),
+                ],
               ),
             ),
+            if (selected) Icon(Icons.check_rounded, size: 18, color: t.accent),
           ],
         ),
       ),
@@ -131,7 +304,40 @@ class _LangTile extends StatelessWidget {
   }
 }
 
-// ── Check for updates tile ────────────────────────────────────────────────
+class _InfoRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? value;
+  final Widget? valueWidget;
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    this.value,
+    this.valueWidget,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: t.textMuted),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(fontSize: 14, color: t.text)),
+          const Spacer(),
+          if (valueWidget != null)
+            valueWidget!
+          else
+            Text(value ?? '', style: TextStyle(fontSize: 13, color: t.textMuted)),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Check for updates ──────────────────────────────────────────────────────────
 
 enum _UpdateStatus { idle, checking, upToDate, hasUpdate, checkFailed }
 
@@ -219,20 +425,42 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
         titleColor = t.accent;
     }
 
-    return ListTile(
-      leading: Icon(Icons.system_update_outlined, size: 18, color: t.textMuted),
-      title: Text(s.settingsCheckUpdate, style: TextStyle(color: titleColor, fontSize: 13)),
-      subtitle: subtitle.isNotEmpty
-          ? Text(subtitle, style: TextStyle(color: t.textMuted, fontSize: 11))
-          : null,
-      trailing: trailing,
-      dense: true,
+    return InkWell(
       onTap: _status == _UpdateStatus.hasUpdate ? _showDialog : _check,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Icon(Icons.system_update_outlined, size: 18, color: t.textMuted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s.settingsCheckUpdate,
+                    style: TextStyle(fontSize: 14, color: titleColor),
+                  ),
+                  if (subtitle.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        subtitle,
+                        style: TextStyle(fontSize: 11, color: t.textMuted),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            trailing,
+          ],
+        ),
+      ),
     );
   }
 }
 
-// ── Update download dialog ────────────────────────────────────────────────
+// ── Update download dialog ─────────────────────────────────────────────────────
 
 enum _DlStatus { idle, downloading, done, failed, noApk }
 

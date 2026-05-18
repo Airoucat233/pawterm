@@ -89,10 +89,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     Expanded(
                       child: SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: _summary(t, toolUse.name, toolUse.input),
-                        ),
+                        child: _summary(t, toolUse.name, toolUse.input),
                       ),
                     ),
                     _statusBadge(t),
