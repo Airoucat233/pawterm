@@ -50,12 +50,14 @@ export function messageToWire(msg: any): any | null {
         type: 'assistant',
         model: msg.message?.model ?? msg.model,
         content: extractContent(msg.message?.content ?? msg.content),
+        parent_tool_use_id: msg.parent_tool_use_id ?? null,
       };
 
     case 'user':
       return {
         type: 'user',
         content: extractContent(msg.message?.content ?? msg.content ?? []),
+        parent_tool_use_id: msg.parent_tool_use_id ?? null,
       };
 
     case 'result':
@@ -84,6 +86,7 @@ export function messageToWire(msg: any): any | null {
             index: ev.index,
             kind: 'text',
             text: delta.text,
+            parent_tool_use_id: msg.parent_tool_use_id ?? null,
           };
         }
         if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
@@ -92,6 +95,7 @@ export function messageToWire(msg: any): any | null {
             index: ev.index,
             kind: 'thinking',
             text: delta.thinking,
+            parent_tool_use_id: msg.parent_tool_use_id ?? null,
           };
         }
       }
@@ -100,10 +104,15 @@ export function messageToWire(msg: any): any | null {
           type: 'stream_block_start',
           index: ev.index,
           kind: ev.content_block?.type ?? 'unknown',
+          parent_tool_use_id: msg.parent_tool_use_id ?? null,
         };
       }
       if (ev.type === 'content_block_stop') {
-        return { type: 'stream_block_stop', index: ev.index };
+        return {
+          type: 'stream_block_stop',
+          index: ev.index,
+          parent_tool_use_id: msg.parent_tool_use_id ?? null,
+        };
       }
       return null;
     }

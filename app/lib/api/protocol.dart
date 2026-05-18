@@ -1,4 +1,4 @@
-// Wire protocol between the Flutter app and the Claude Companion server.
+// Wire protocol between the Flutter app and the PawTerm server.
 
 sealed class OutgoingMessage {
   Map<String, dynamic> toJson();
@@ -53,6 +53,7 @@ abstract class IncomingMessage {
               .map((b) => ContentBlock.fromJson(Map<String, dynamic>.from(b)))
               .toList(),
           timestamp: (json['timestamp'] as num?)?.toInt(),
+          parentToolUseId: json['parent_tool_use_id'] as String?,
         );
       case 'user':
         return UserMsg(
@@ -60,6 +61,7 @@ abstract class IncomingMessage {
               .map((b) => ContentBlock.fromJson(Map<String, dynamic>.from(b)))
               .toList(),
           timestamp: (json['timestamp'] as num?)?.toInt(),
+          parentToolUseId: json['parent_tool_use_id'] as String?,
         );
       case 'result':
         return ResultMsg(
@@ -83,15 +85,20 @@ abstract class IncomingMessage {
         return StreamBlockStart(
           index: (json['index'] as num?)?.toInt() ?? 0,
           kind: json['kind'] as String? ?? 'unknown',
+          parentToolUseId: json['parent_tool_use_id'] as String?,
         );
       case 'stream_delta':
         return StreamDelta(
           index: (json['index'] as num?)?.toInt() ?? 0,
           kind: json['kind'] as String? ?? 'text',
           text: json['text'] as String? ?? '',
+          parentToolUseId: json['parent_tool_use_id'] as String?,
         );
       case 'stream_block_stop':
-        return StreamBlockStop(index: (json['index'] as num?)?.toInt() ?? 0);
+        return StreamBlockStop(
+          index: (json['index'] as num?)?.toInt() ?? 0,
+          parentToolUseId: json['parent_tool_use_id'] as String?,
+        );
       case 'compact_boundary':
         return CompactBoundaryMsg(
           trigger: json['trigger'] as String?,
@@ -127,19 +134,22 @@ class CompactBoundaryMsg extends IncomingMessage {
 class StreamBlockStart extends IncomingMessage {
   final int index;
   final String kind;
-  StreamBlockStart({required this.index, required this.kind});
+  final String? parentToolUseId;
+  StreamBlockStart({required this.index, required this.kind, this.parentToolUseId});
 }
 
 class StreamDelta extends IncomingMessage {
   final int index;
   final String kind;
   final String text;
-  StreamDelta({required this.index, required this.kind, required this.text});
+  final String? parentToolUseId;
+  StreamDelta({required this.index, required this.kind, required this.text, this.parentToolUseId});
 }
 
 class StreamBlockStop extends IncomingMessage {
   final int index;
-  StreamBlockStop({required this.index});
+  final String? parentToolUseId;
+  StreamBlockStop({required this.index, this.parentToolUseId});
 }
 
 class SessionReady extends IncomingMessage {
@@ -161,13 +171,26 @@ class AssistantMsg extends IncomingMessage {
   final List<ContentBlock> content;
   final String? model;
   final int? timestamp; // epoch ms; null when server didn't tag it
-  AssistantMsg({required this.content, this.model, this.timestamp});
+  /// Non-null when this message belongs to a sub-agent (Task tool).
+  /// Value is the tool_use_id of the Task call that spawned the sub-agent.
+  final String? parentToolUseId;
+  AssistantMsg({required this.content, this.model, this.timestamp, this.parentToolUseId});
 }
 
 class UserMsg extends IncomingMessage {
   final List<ContentBlock> content;
   final int? timestamp;
-  UserMsg({required this.content, this.timestamp});
+  /// Non-null when this message belongs to a sub-agent (Task tool).
+  final String? parentToolUseId;
+  UserMsg({required this.content, this.timestamp, this.parentToolUseId});
+}
+
+/// In-progress assistant message built char-by-char from stream deltas.
+/// Not a wire protocol type; created locally by the chat state machine to
+/// represent a streaming response before the final AssistantMsg arrives.
+class StreamingAssistant extends IncomingMessage {
+  final StringBuffer text = StringBuffer();
+  bool stopped = false;
 }
 
 class ResultMsg extends IncomingMessage {

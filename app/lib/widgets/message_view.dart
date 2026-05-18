@@ -14,6 +14,9 @@ class MessageView extends StatelessWidget {
   /// tool_use_id → ToolResultBlock 索引（由 ChatTab 提前扫一遍消息列表得到）。
   /// 让 ToolUseBlock 渲染时能找到对应 result，合并成一个折叠卡。
   final Map<String, ToolResultBlock>? toolResults;
+  /// tool_use_id → sub-agent messages（Task 工具专用）。
+  /// ToolCallCard 展开时用于渲染嵌套的子 Agent 对话流。
+  final Map<String, List<IncomingMessage>>? subMsgsMap;
   /// 提交 AskUserQuestion 答案的回调（仅 AskUserQuestion 工具需要）。
   final void Function(
     String toolUseId,
@@ -28,6 +31,7 @@ class MessageView extends StatelessWidget {
     super.key,
     required this.message,
     this.toolResults,
+    this.subMsgsMap,
     this.onAnswerQuestion,
     this.rawJson,
   });
@@ -333,6 +337,7 @@ class MessageView extends StatelessWidget {
       return ToolCallCard(
         toolUse: block,
         result: result,
+        subAgentMsgs: subMsgsMap?[block.id],
       );
     }
 

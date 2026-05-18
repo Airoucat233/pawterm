@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../api/protocol.dart';
 import '../theme.dart';
@@ -17,8 +18,16 @@ class ToolCallCard extends StatefulWidget {
   final ToolUseBlock toolUse;
   /// 可选：和这次调用匹配的结果（通过 tool_use_id 配对）。null 表示尚未返回。
   final ToolResultBlock? result;
+  /// Task 工具专用：子 Agent 流式对话消息列表（keyed by parent_tool_use_id）。
+  /// 非 null 表示这是一个 Task 调用，展开后显示嵌套子 Agent 对话。
+  final List<IncomingMessage>? subAgentMsgs;
 
-  const ToolCallCard({super.key, required this.toolUse, this.result});
+  const ToolCallCard({
+    super.key,
+    required this.toolUse,
+    this.result,
+    this.subAgentMsgs,
+  });
 
   @override
   State<ToolCallCard> createState() => _ToolCallCardState();
@@ -40,7 +49,8 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final icon = _iconFor(toolUse.name);
     final hasInputBody = !_isBodyEmpty(toolUse.name);
     final hasOutput = result != null;
-    final canExpand = hasInputBody || hasOutput;
+    // Task tool: expandable as soon as sub-agent messages are being tracked
+    final canExpand = hasInputBody || hasOutput || (widget.subAgentMsgs != null);
 
     return InkWell(
       onTap: canExpand ? () => setState(() => _expanded = !_expanded) : null,
@@ -108,8 +118,13 @@ class _ToolCallCardState extends State<ToolCallCard> {
                 const SizedBox(height: 4),
                 _renderBody(context, t, toolUse.name, toolUse.input),
               ],
-              if (hasOutput) ...[
+              // Sub-agent transcript (Task tool)
+              if (widget.subAgentMsgs != null) ...[
                 if (hasInputBody) const SizedBox(height: 10),
+                _SubAgentTranscript(messages: widget.subAgentMsgs!),
+              ],
+              if (hasOutput) ...[
+                if (hasInputBody || widget.subAgentMsgs != null) const SizedBox(height: 10),
                 _SectionLabel('Output', t),
                 const SizedBox(height: 4),
                 _outputBody(t, result!),
@@ -332,6 +347,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'Grep':
       case 'Glob':
         text = (input['pattern'] ?? '').toString();
+      case 'Task':
+        final raw = (input['description'] ?? input['prompt'] ?? '').toString().trim();
+        text = raw.length > 60 ? '${raw.substring(0, 60)}…' : raw;
       default:
         return const SizedBox.shrink();
     }
@@ -597,6 +615,141 @@ class _TodoList extends StatelessWidget {
           ),
         );
       }).toList(),
+    );
+  }
+}
+
+// ── Sub-agent transcript (Task tool expanded view) ────────────────────
+
+/// Renders the nested sub-agent conversation inside an expanded Task tool card.
+/// Receives the list of [IncomingMessage]s routed via [parent_tool_use_id].
+class _SubAgentTranscript extends StatelessWidget {
+  final List<IncomingMessage> messages;
+  const _SubAgentTranscript({required this.messages});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+
+    // Build sub-agent tool-result index from its own UserMsgs.
+    final toolResults = <String, ToolResultBlock>{};
+    for (final m in messages) {
+      if (m is UserMsg) {
+        for (final b in m.content) {
+          if (b is ToolResultBlock && b.toolUseId.isNotEmpty) {
+            toolResults[b.toolUseId] = b;
+          }
+        }
+      }
+    }
+
+    final rows = <Widget>[];
+    for (final m in messages) {
+      if (m is StreamingAssistant) {
+        final text = m.text.toString();
+        if (text.isNotEmpty) {
+          rows.add(_SubMdRow(text: text));
+        }
+      } else if (m is AssistantMsg) {
+        for (final b in m.content) {
+          if (b is TextBlock && b.text.trim().isNotEmpty) {
+            rows.add(_SubMdRow(text: b.text));
+          } else if (b is ToolUseBlock) {
+            rows.add(Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: ToolCallCard(
+                toolUse: b,
+                result: toolResults[b.id],
+                // No recursive sub-agent tracking for nested tasks.
+              ),
+            ));
+          }
+          // ThinkingBlock: skip (same policy as main transcript)
+        }
+      }
+      // UserMsg (tool_result only): skip — results shown in tool cards above.
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(
+            color: t.textDim.withValues(alpha: 0.25),
+            width: 1.5,
+          ),
+        ),
+      ),
+      padding: const EdgeInsets.only(left: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header label
+          Row(
+            children: [
+              Icon(Icons.smart_toy_outlined, size: 11, color: t.textDim),
+              const SizedBox(width: 4),
+              Text(
+                'Sub-agent',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: t.textDim,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (rows.isEmpty)
+            Text(
+              '等待子 Agent…',
+              style: TextStyle(
+                fontSize: 11,
+                color: t.textDim,
+                fontStyle: FontStyle.italic,
+              ),
+            )
+          else
+            ...rows,
+        ],
+      ),
+    );
+  }
+}
+
+/// Compact markdown row used inside the sub-agent transcript.
+class _SubMdRow extends StatelessWidget {
+  final String text;
+  const _SubMdRow({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: MarkdownBody(
+        data: text,
+        selectable: true,
+        styleSheet: MarkdownStyleSheet(
+          p: TextStyle(color: t.text, fontSize: 12, height: 1.5),
+          code: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 11,
+            color: t.accent,
+            backgroundColor: t.surfaceHi,
+          ),
+          codeblockDecoration: BoxDecoration(
+            color: t.surfaceHi,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: t.border, width: 0.5),
+          ),
+          codeblockPadding: const EdgeInsets.all(8),
+          h1: TextStyle(color: t.text, fontSize: 14, fontWeight: FontWeight.w600),
+          h2: TextStyle(color: t.text, fontSize: 13, fontWeight: FontWeight.w600),
+          h3: TextStyle(color: t.text, fontSize: 12, fontWeight: FontWeight.w600),
+          listBullet: TextStyle(color: t.textMuted, fontSize: 12),
+        ),
+      ),
     );
   }
 }
