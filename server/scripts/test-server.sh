@@ -89,7 +89,7 @@ cmd_start() {
   cd "$SERVER_DIR"
   # nohup + setsid + disown：彻底脱离 controlling terminal、shell job table、父进程组。
   # 这样 claude code 重启 / 终端关 / shell 退出，都不会发 SIGHUP/SIGTERM 把它带走。
-  nohup env CC_CONFIG="$CONFIG_FILE" pnpm exec tsx src/index.ts \
+  nohup env PAWTERM_CONFIG="$CONFIG_FILE" pnpm exec tsx src/index.ts \
     > "$LOG_FILE" 2>&1 &
   local started=$!
   disown "$started" 2>/dev/null || true

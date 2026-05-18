@@ -57,16 +57,16 @@ function setupShellInjection(shell: string): {
   // zsh 启动顺序：.zshenv → (.zprofile) → .zshrc → (.zlogin)。
   // 我们把 ZDOTDIR 指到临时目录，因此每个阶段都要主动 source 用户原文件，
   // 否则用户在 .zshenv 设置的 PATH/环境变量会全丢。
-  const userHome = '$_CC_USER_ZDOTDIR';
+  const userHome = '$_PAWTERM_USER_ZDOTDIR';
   const sourceUserFile = (name: string) => `
-if [ -n "$_CC_USER_ZDOTDIR" ] && [ -f "${userHome}/${name}" ]; then
-  ZDOTDIR="$_CC_USER_ZDOTDIR"
+if [ -n "$_PAWTERM_USER_ZDOTDIR" ] && [ -f "${userHome}/${name}" ]; then
+  ZDOTDIR="$_PAWTERM_USER_ZDOTDIR"
   source "${userHome}/${name}"
-  ZDOTDIR="$_CC_INJECT_ZDOTDIR"
+  ZDOTDIR="$_PAWTERM_INJECT_ZDOTDIR"
 fi`;
 
   const zshEnv = `
-export _CC_INJECT_ZDOTDIR="$ZDOTDIR"${sourceUserFile('.zshenv')}
+export _PAWTERM_INJECT_ZDOTDIR="$ZDOTDIR"${sourceUserFile('.zshenv')}
 `;
   const zshProfile = `${sourceUserFile('.zprofile')}\n`;
   // 注入放在 source 用户 zshrc 之**后**——这样用户 zshrc 里若重置 precmd_functions
@@ -100,7 +100,7 @@ __cc_emit_cwd
     writeFileSync(join(tmpDir, '.zlogin'), zshLogin, { mode: 0o600 });
     return {
       env: {
-        _CC_USER_ZDOTDIR: process.env.ZDOTDIR ?? process.env.HOME ?? '',
+        _PAWTERM_USER_ZDOTDIR: process.env.ZDOTDIR ?? process.env.HOME ?? '',
         ZDOTDIR: tmpDir,
       },
       args: ['-l'],

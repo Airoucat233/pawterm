@@ -24,7 +24,7 @@ function expandHome(p: string): string {
   return resolve(p);
 }
 
-export const configPath = process.env.CC_CONFIG ?? DEFAULT_CONFIG_PATH;
+export const configPath = process.env.PAWTERM_CONFIG ?? process.env.CC_CONFIG ?? DEFAULT_CONFIG_PATH;
 
 function loadConfig(): ServerSettings {
   if (!existsSync(configPath)) {
