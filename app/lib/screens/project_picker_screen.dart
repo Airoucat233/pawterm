@@ -186,6 +186,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       cwd: project.path,
       label: '${project.name} · ${session.displayTitle}',
       resumeId: session.sessionId,
+      preloadedHolder: session.holder,
     );
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),
@@ -653,32 +654,14 @@ class _ProjectList extends ConsumerWidget {
           ),
         ),
         for (final p in projects)
-          Slidable(
+          _SlidableProjectCard(
             key: ValueKey(p.path),
-            groupTag: 'project-cards',
-            endActionPane: ActionPane(
-              motion: const DrawerMotion(),
-              extentRatio: 0.22,
-              children: [
-                SlidableAction(
-                  onPressed: (_) => onDelete(p),
-                  backgroundColor: const Color(0xFFEF4444),
-                  foregroundColor: Colors.white,
-                  icon: Icons.delete_outline,
-                  label: '移除',
-                  borderRadius: BorderRadius.circular(16),
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                ),
-              ],
-            ),
-            child: _ProjectCard(
-              project: p,
-              isExpanded: expanded.contains(p.path),
-              onToggle: () => onToggle(p.path),
-              onNewSession: () => onNewSession(p),
-              onPickSession: (s) => onPickSession(p, s),
-              onDelete: () => onDelete(p),
-            ),
+            project: p,
+            isExpanded: expanded.contains(p.path),
+            onToggle: () => onToggle(p.path),
+            onNewSession: () => onNewSession(p),
+            onPickSession: (s) => onPickSession(p, s),
+            onDelete: () => onDelete(p),
           ),
         const SizedBox(height: 8),
         _AddCard(onTap: onAdd),
@@ -688,6 +671,58 @@ class _ProjectList extends ConsumerWidget {
 }
 
 // ── Project card (expandable) ─────────────────────────────────
+
+/// 折叠时支持左滑删除，展开时禁用滑动（改用展开内的删除图标按钮）。
+class _SlidableProjectCard extends StatelessWidget {
+  final Project project;
+  final bool isExpanded;
+  final VoidCallback onToggle;
+  final VoidCallback onNewSession;
+  final void Function(SessionSummary) onPickSession;
+  final VoidCallback onDelete;
+
+  const _SlidableProjectCard({
+    super.key,
+    required this.project,
+    required this.isExpanded,
+    required this.onToggle,
+    required this.onNewSession,
+    required this.onPickSession,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final card = _ProjectCard(
+      project: project,
+      isExpanded: isExpanded,
+      onToggle: onToggle,
+      onNewSession: onNewSession,
+      onPickSession: onPickSession,
+      onDelete: onDelete,
+    );
+    if (isExpanded) return card;
+    return Slidable(
+      groupTag: 'project-cards',
+      endActionPane: ActionPane(
+        motion: const DrawerMotion(),
+        extentRatio: 0.22,
+        children: [
+          SlidableAction(
+            onPressed: (_) => onDelete(),
+            backgroundColor: const Color(0xFFEF4444),
+            foregroundColor: Colors.white,
+            icon: Icons.delete_outline,
+            label: '移除',
+            borderRadius: BorderRadius.circular(16),
+            padding: const EdgeInsets.symmetric(vertical: 4),
+          ),
+        ],
+      ),
+      child: card,
+    );
+  }
+}
 
 class _ProjectCard extends ConsumerWidget {
   final Project project;
@@ -862,7 +897,7 @@ class _ProjectCard extends ConsumerWidget {
                               ),
                             ),
                           ),
-                          for (final s in sessions.take(6))
+                          for (final s in sessions)
                             _SessionRow(session: s, onTap: () => onPickSession(s)),
                           const SizedBox(height: 6),
                         ],
@@ -911,11 +946,29 @@ class _SessionRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    session.displayTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 13, color: t.text),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          session.displayTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: session.holder != null ? t.textMuted : t.text,
+                          ),
+                        ),
+                      ),
+                      if (session.holder != null) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          width: 6, height: 6,
+                          decoration: BoxDecoration(color: t.warning, shape: BoxShape.circle),
+                        ),
+                        const SizedBox(width: 3),
+                        Text('占用中', style: TextStyle(fontSize: 10, color: t.warning)),
+                      ],
+                    ],
                   ),
                   if (timeText.isNotEmpty)
                     Text(

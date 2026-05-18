@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'chat_api.dart' show SessionHolder;
+
 class SessionSummary {
   final String sessionId;
   final String? summary;
@@ -11,6 +13,9 @@ class SessionSummary {
   final String? cwd;
   final int? numMessages;
   final double? totalCostUsd;
+  /// 若该 session 当前被某个 claude CLI 进程持有，此字段不为 null。
+  /// 可用于在点击会话时直接跳过 /chat/status 查询。
+  final SessionHolder? holder;
 
   SessionSummary({
     required this.sessionId,
@@ -21,12 +26,14 @@ class SessionSummary {
     this.cwd,
     this.numMessages,
     this.totalCostUsd,
+    this.holder,
   });
 
   String get displayTitle => title ?? summary ?? '(Untitled)';
 
   factory SessionSummary.fromJson(Map<String, dynamic> json) {
     final tagsRaw = json['tags'] as List? ?? const [];
+    final holderJson = json['holder'] as Map<String, dynamic>?;
     return SessionSummary(
       sessionId: json['session_id'] as String,
       summary: json['summary'] as String?,
@@ -36,6 +43,7 @@ class SessionSummary {
       cwd: json['cwd'] as String?,
       numMessages: (json['num_messages'] as num?)?.toInt(),
       totalCostUsd: (json['total_cost_usd'] as num?)?.toDouble(),
+      holder: holderJson != null ? SessionHolder.fromJson(holderJson) : null,
     );
   }
 }
