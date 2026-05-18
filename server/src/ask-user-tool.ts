@@ -1,16 +1,26 @@
 // ============================================================
 // ask-user-tool.ts
 // ============================================================
-// AskUserQuestionRegistry — suspends an MCP tool handler until
-// the client answers, then resolves with a formatted result.
+// AskUserQuestionRegistry — suspends an ask-question handler
+// (either MCP or native canUseTool) until the client answers,
+// then resolves with the appropriate result type.
 //
-// Linking tool_use_id to the MCP call:
-//   The SDK's MCP extra is a standard MCP RequestHandlerExtra
-//   (has requestId, signal, etc. — but NOT the Anthropic
-//   tool_use_id). Instead, chat-rest.ts sets
-//   `registry.pendingToolUseId` right after broadcasting the
-//   assistant message containing the AskUserQuestion tool_use
-//   block, before the SDK calls our handler.
+// Two execution paths share this registry:
+//
+//   'mcp'    — Claude calls mcp__ask-user-question__AskUserQuestion.
+//              The MCP handler suspends via register('mcp', toolUseId)
+//              and expects a CallToolResult back.
+//              chat-rest.ts pre-sets pendingToolUseId after broadcasting
+//              the assistant message, before the MCP handler fires.
+//
+//   'native' — Claude calls the built-in AskUserQuestion tool.
+//              The SDK's canUseTool callback suspends via
+//              register('native', toolUseId) and expects a
+//              PermissionResult { behavior:'allow', updatedInput } back.
+//
+// Both paths surface to the client through the same /chat/answer
+// endpoint. The `mode` field on each pending entry is the internal
+// marker that drives dispatch inside answer() — callers never see it.
 // ============================================================
 
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
@@ -19,14 +29,19 @@ import { z } from 'zod';
 // Use the MCP SDK's CallToolResult type as imported by the agent SDK.
 // Fallback local definition to avoid sub-path import brittleness:
 type CallToolResult = { content: Array<{ type: 'text'; text: string }> };
+type PermissionResult = { behavior: 'allow'; updatedInput: Record<string, unknown> };
 
-type Resolver = (result: CallToolResult) => void;
 type Rejecter = (err: Error) => void;
+
+// The subtle mode marker: each pending entry knows which resolver shape to use.
+type PendingEntry =
+  | { mode: 'mcp';    resolve: (r: CallToolResult)   => void; reject: Rejecter; timer: ReturnType<typeof setTimeout> }
+  | { mode: 'native'; resolve: (r: PermissionResult) => void; reject: Rejecter; timer: ReturnType<typeof setTimeout> };
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
 export class AskUserQuestionRegistry {
-  private pending = new Map<string, { resolve: Resolver; reject: Rejecter; timer: ReturnType<typeof setTimeout> }>();
+  private pending = new Map<string, PendingEntry>();
   private readonly timeoutMs: number;
 
   /**
@@ -40,24 +55,43 @@ export class AskUserQuestionRegistry {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  register(toolUseId: string): Promise<CallToolResult> {
-    return new Promise<CallToolResult>((resolve, reject) => {
+  /** MCP path: resolves with a text CallToolResult. */
+  register(mode: 'mcp', toolUseId: string): Promise<CallToolResult>;
+  /** Native canUseTool path: resolves with a PermissionResult. */
+  register(mode: 'native', toolUseId: string): Promise<PermissionResult>;
+  register(mode: 'mcp' | 'native', toolUseId: string): Promise<CallToolResult | PermissionResult> {
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.has(toolUseId)) {
           this.pending.delete(toolUseId);
-          reject(new Error(`User did not answer within 30 minutes`));
+          reject(new Error('User did not answer within 30 minutes'));
         }
       }, this.timeoutMs);
-      this.pending.set(toolUseId, { resolve, reject, timer });
+      // Cast is safe: the overloads guarantee resolve type matches mode.
+      this.pending.set(toolUseId, { mode, resolve, reject, timer } as PendingEntry);
     });
   }
 
-  answer(toolUseId: string, formatted: string): boolean {
+  /**
+   * Called by /chat/answer for both paths.
+   * Dispatches based on the hidden `mode` marker — callers don't need to know.
+   */
+  answer(
+    toolUseId: string,
+    answers: Record<string, string>,
+    annotations?: Record<string, { preview?: string; notes?: string }>,
+  ): boolean {
     const entry = this.pending.get(toolUseId);
     if (!entry) return false;
     clearTimeout(entry.timer);
     this.pending.delete(toolUseId);
-    entry.resolve({ content: [{ type: 'text', text: formatted }] });
+
+    if (entry.mode === 'mcp') {
+      entry.resolve({ content: [{ type: 'text', text: formatAnswers(answers, annotations) }] });
+    } else {
+      // native: return structured updatedInput so the SDK passes it into call()
+      entry.resolve({ behavior: 'allow', updatedInput: { answers, ...(annotations && { annotations }) } });
+    }
     return true;
   }
 
@@ -128,7 +162,7 @@ export function makeAskUserMcpServer(registry: AskUserQuestionRegistry) {
             );
           }
           registry.pendingToolUseId = null;
-          return registry.register(toolUseId);
+          return registry.register('mcp', toolUseId);
         },
       ),
     ],

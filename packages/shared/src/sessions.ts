@@ -14,6 +14,8 @@ export interface SessionSummary {
   cwd?: string | null;
   num_messages?: number | null;
   total_cost_usd?: number | null;
+  /** 若该 session 当前被某个 claude CLI 进程持有，此字段包含进程信息。null 表示无持有者。 */
+  holder?: SessionHolder | null;
 }
 
 export interface HealthResponse {

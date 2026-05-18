@@ -46,21 +46,26 @@ class _CcSpinnerState extends State<CcSpinner>
       animation: _ctrl,
       builder: (_, __) {
         final i = (_ctrl.value * _frames.length).floor() % _frames.length;
+        // 显式设置 width 和 height，确保 bounding box 与行内 Text 对齐。
+        // height 取 size * 1.4 ≈ 文字行高（fontSize * defaultLineHeight）。
         return SizedBox(
           width: widget.size * 1.2,
-          child: Text(
-            _frames[i],
-            textAlign: TextAlign.center,
-            strutStyle: StrutStyle(
-              fontSize: widget.size,
-              height: 1.2,
-              forceStrutHeight: true,
-            ),
-            style: TextStyle(
-              fontSize: widget.size,
-              color: widget.color,
-              height: 1.2,
-              fontFamilyFallback: const ['Apple Color Emoji'],
+          height: widget.size * 1.4,
+          child: Center(
+            child: Text(
+              _frames[i],
+              textAlign: TextAlign.center,
+              strutStyle: StrutStyle(
+                fontSize: widget.size,
+                height: 1.0,
+                forceStrutHeight: true,
+              ),
+              style: TextStyle(
+                fontSize: widget.size,
+                color: widget.color,
+                height: 1.0,
+                fontFamilyFallback: const ['Apple Color Emoji'],
+              ),
             ),
           ),
         );
@@ -179,6 +184,7 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
             _label(ref),
             style: TextStyle(
               fontSize: 12,
+              height: 1.2,
               color: widget.color,
               fontWeight: FontWeight.w500,
             ),
@@ -188,6 +194,7 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
             _formatElapsed(_elapsed),
             style: TextStyle(
               fontSize: 11,
+              height: 1.2,
               color: widget.dimColor,
               fontFamily: 'monospace',
             ),

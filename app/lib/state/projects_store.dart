@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../api/chat_api.dart' show SessionHolder;
 import '../api/sessions_api.dart';
 import 'server_config.dart';
 
@@ -48,19 +49,25 @@ class CurrentSession {
   /// 只读模式：不开 WebSocket、只通过 HTTP 翻历史，禁用输入。
   /// 用于"该 session 正被另一个 CLI 终端持有，用户选择不抢占"的场景。
   final bool readOnly;
+  /// 从会话列表预加载的 holder 信息。非 null 表示该 session 当前被另一个
+  /// claude CLI 进程持有，可直接跳过 /chat/status 查询并展示接管弹窗。
+  final SessionHolder? preloadedHolder;
+
   const CurrentSession({
     required this.cwd,
     required this.label,
     this.resumeId,
     this.readOnly = false,
+    this.preloadedHolder,
   });
 
-  CurrentSession copyWith({String? cwd, String? resumeId, String? label, bool? readOnly}) =>
+  CurrentSession copyWith({String? cwd, String? resumeId, String? label, bool? readOnly, SessionHolder? preloadedHolder}) =>
       CurrentSession(
         cwd: cwd ?? this.cwd,
         resumeId: resumeId ?? this.resumeId,
         label: label ?? this.label,
         readOnly: readOnly ?? this.readOnly,
+        preloadedHolder: preloadedHolder ?? this.preloadedHolder,
       );
 }
 

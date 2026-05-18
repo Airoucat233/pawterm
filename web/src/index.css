@@ -26,6 +26,16 @@
     U+F0001-U+F0500;
 }
 
+/* AskUserQuestion card pulse — triggered by adding .ask-shake class imperatively */
+@keyframes ask-shake {
+  0%,  100% { box-shadow: none; }
+  30%        { box-shadow: 0 0 0 3px #F97316cc; }
+  70%        { box-shadow: 0 0 0 3px #F9731644; }
+}
+.ask-shake {
+  animation: ask-shake 0.5s ease-out;
+}
+
 @layer base {
   html,
   body,

@@ -100,6 +100,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   bool _stickToBottom = true;
   static const double _stickToBottomThreshold = 80.0;
 
+  // 键盘弹出跟随：记录上一帧键盘高度，用于判断键盘是否正在弹出。
+  double _prevKeyboardHeight = 0;
+
   // 历史消息反向分页（首屏 50 条，滚到顶取上一页）。
   static const int _historyPageSize = 50;
   static const double _loadMoreThreshold = 200.0;
@@ -183,6 +186,27 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
+  /// 键盘弹出时，消息列表"追着"跟上去：延迟 80ms 再做动画，
+  /// 产生轻微的"活力感"；只在用户已经贴底（_stickToBottom）时触发。
+  @override
+  void didChangeMetrics() {
+    final keyboardHeight = WidgetsBinding
+        .instance.platformDispatcher.views.first.viewInsets.bottom;
+    final opening = keyboardHeight > _prevKeyboardHeight;
+    _prevKeyboardHeight = keyboardHeight;
+
+    if (opening && _stickToBottom) {
+      Future.delayed(const Duration(milliseconds: 80), () {
+        if (!mounted || !_scrollController.hasClients) return;
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+      });
+    }
+  }
+
   String _sessionKey(CurrentSession s) => '${s.cwd}|${s.resumeId ?? "new"}';
 
   // Throttle session-start attempts so a dead server doesn't trigger a tight loop.
@@ -237,6 +261,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 处理会话冲突（另一个 CLI 进程持有该会话）。
   /// 弹窗让用户选择：旁观、接管、或取消。
+  ///
+  /// 当通过 preloadedHolder 快速路径进入时，历史尚未开始加载；
+  /// 用户确认继续（旁观/接管）后再触发，避免取消时的多余请求。
   Future<void> _handleConflict(
     String httpBase,
     CurrentSession session,
@@ -247,8 +274,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (!mounted) return;
     switch (choice) {
       case _ConflictChoice.observe:
+        // 旁观前先加载一次历史，确保消息列表有内容。
+        if (session.resumeId != null && _messages.isEmpty) {
+          _loadHistory(httpBase, session.cwd, session.resumeId!);
+        }
         _startObserveMode(httpBase, session, uuid, holder);
       case _ConflictChoice.takeover:
+        if (session.resumeId != null && _messages.isEmpty) {
+          _loadHistory(httpBase, session.cwd, session.resumeId!);
+        }
         unawaited(_doTakeover(httpBase, session, uuid));
       case null:
       case _ConflictChoice.cancel:
@@ -385,17 +419,29 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 建立到会话的连接。为新建会话生成 UUID，为已有会话使用 resumeId。
   /// 根据 /chat/status 结果决定：直连 SSE（live）、等待发消息（idle）或进入冲突处理（running）。
+  ///
+  /// 快速路径：若 session.preloadedHolder 不为 null（会话列表已经告知存在 holder），
+  /// 直接跳过 /chat/status 网络请求，立即弹出接管对话框。
   Future<void> _connectToSession(String httpBase, CurrentSession session) async {
-    if (session.resumeId != null) {
-      _loadHistory(httpBase, session.cwd, session.resumeId!);
-    }
-
     final uuid = session.resumeId ?? const Uuid().v4();
     _sessionId = uuid;
     unawaited(_persistUuid(uuid));
 
     final api = ChatApi(httpBase, token: _serverToken);
     _chatApi = api;
+
+    // 快速路径：会话列表已提供 holder 信息，无需再发 /chat/status 请求。
+    // 同时推迟 _loadHistory：若用户取消冲突弹窗，避免多余的历史加载。
+    if (session.preloadedHolder != null) {
+      setState(() => _attempting = false);
+      unawaited(_handleConflict(httpBase, session, uuid, session.preloadedHolder!));
+      return;
+    }
+
+    // 常规路径：先开始加载历史（与状态查询并行），再检测是否有冲突。
+    if (session.resumeId != null) {
+      _loadHistory(httpBase, session.cwd, session.resumeId!);
+    }
 
     TurnStatus turnStatus;
     try {
@@ -497,7 +543,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _hasMoreHistory = page.hasMore;
           _loadingHistory = false;
         });
-        _scrollToEnd(force: true);
+        // ListView.builder 惰性布局：第一帧 maxScrollExtent 是基于可见条目的估算值，
+        // 直接 animateTo 会停在中间。双帧 jumpTo 解决：
+        //   第 1 帧：跳到估算底部，触发底部附近条目的布局；
+        //   第 2 帧：再跳一次，此时所有底部条目已构建，extent 精确。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scrollController.hasClients) return;
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          if (mounted) setState(() => _stickToBottom = true);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || !_scrollController.hasClients) return;
+            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          });
+        });
       } else {
         setState(() => _loadingHistory = false);
       }
@@ -532,20 +590,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         setState(() => _loadingOlder = false);
         return;
       }
+      // 先插入消息，保持 spinner 可见（_loadingOlder 仍为 true），
+      // 下一帧 layout 完成后先恢复视口位置再隐藏 spinner——
+      // 这样 spinner 遮住了位置跳动的那一帧，过渡更平滑。
       setState(() {
         _messages.insertAll(0, page.messages);
         _oldestUuid = page.oldestUuid ?? _oldestUuid;
         _hasMoreHistory = page.hasMore;
-        _loadingOlder = false;
       });
-      // 等下一帧 layout 完，根据高度增量保持视口
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scrollController.hasClients) return;
-        final postMax = _scrollController.position.maxScrollExtent;
-        final delta = postMax - preMax;
-        if (delta > 0) {
-          _scrollController.jumpTo(preOffset + delta);
+        if (_scrollController.hasClients) {
+          final postMax = _scrollController.position.maxScrollExtent;
+          final delta = postMax - preMax;
+          if (delta > 0) _scrollController.jumpTo(preOffset + delta);
         }
+        if (mounted) setState(() => _loadingOlder = false);
       });
     } catch (_) {
       if (mounted) setState(() => _loadingOlder = false);
@@ -1058,40 +1117,46 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                               ? '旁观中…'
                               : (_connected ? s.chatStartTalking : s.chatConnecting),
                         ))
-                  : ListView.builder(
+                  : Scrollbar(
                       controller: _scrollController,
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                      // +1 用于在顶部插入"加载更早消息"指示
-                      itemCount: _messages.length + 1,
-                      itemBuilder: (_, i) {
-                        if (i == 0) {
-                          if (_loadingOlder) {
-                            return const Padding(
-                              padding: EdgeInsets.symmetric(vertical: 14),
-                              child: Center(
-                                child: SizedBox(
-                                  width: 16, height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                      thumbVisibility: false,
+                      thickness: 3,
+                      radius: const Radius.circular(1.5),
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.fromLTRB(16, 12, 19, 8),
+                        // +1 用于在顶部插入"加载更早消息"指示
+                        itemCount: _messages.length + 1,
+                        itemBuilder: (_, i) {
+                          if (i == 0) {
+                            if (_loadingOlder) {
+                              return const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 14),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: 16, height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                                  ),
                                 ),
-                              ),
-                            );
+                              );
+                            }
+                            // 没在加载也要占位（哪怕高度 0），保证 itemCount 一致
+                            return const SizedBox.shrink();
                           }
-                          // 没在加载也要占位（哪怕高度 0），保证 itemCount 一致
-                          return const SizedBox.shrink();
-                        }
-                        final m = _messages[i - 1];
-                        if (m is LocalUserInput) {
-                          return _UserMessage(text: m.text, timestamp: m.timestamp);
-                        }
-                        if (m is StreamingAssistant) return _StreamingMessage(buffer: m);
-                        return MessageView(
-                          message: m,
-                          toolResults: toolResults,
-                          subMsgsMap: _subMsgs,
-                          onAnswerQuestion: _sendAnswerQuestion,
-                          rawJson: kDebugMode ? _debugRaw[m] : null,
-                        );
-                      },
+                          final m = _messages[i - 1];
+                          if (m is LocalUserInput) {
+                            return _UserMessage(text: m.text, timestamp: m.timestamp);
+                          }
+                          if (m is StreamingAssistant) return _StreamingMessage(buffer: m);
+                          return MessageView(
+                            message: m,
+                            toolResults: toolResults,
+                            subMsgsMap: _subMsgs,
+                            onAnswerQuestion: _sendAnswerQuestion,
+                            rawJson: kDebugMode ? _debugRaw[m] : null,
+                          );
+                        },
+                      ),
                     ),
               // Right-bottom "jump to bottom" button — only shown when the user
               // scrolled away from the latest message.
@@ -1263,6 +1328,7 @@ class _StatusRow extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(statusText, style: TextStyle(fontSize: 11, color: t.textMuted)),
+          const Spacer(),
           if (uuid != null) ...[
             GestureDetector(
               onTap: () {
@@ -1273,7 +1339,6 @@ class _StatusRow extends StatelessWidget {
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                margin: const EdgeInsets.only(right: 6),
                 decoration: BoxDecoration(
                   color: AppTokens.of(context).surfaceHi,
                   borderRadius: BorderRadius.circular(4),
@@ -1290,8 +1355,8 @@ class _StatusRow extends StatelessWidget {
                 ),
               ),
             ),
+            const SizedBox(width: 6),
           ],
-          const Spacer(),
           if (error != null || (!connected && !busy))
             InkWell(
               onTap: onReconnect,
@@ -1669,33 +1734,29 @@ class _ModelPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return InkWell(
+    return GestureDetector(
       onTap: () => _openSheet(context),
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        decoration: BoxDecoration(
-          color: t.surfaceHi,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: t.border, width: 0.5),
-        ),
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.auto_awesome, size: 12, color: t.textMuted),
-            const SizedBox(width: 6),
-            Text(
-              current.label,
-              style: TextStyle(fontSize: 12, color: t.textMuted, fontWeight: FontWeight.w500),
-            ),
+            Icon(Icons.auto_awesome, size: 11, color: t.textDim),
             const SizedBox(width: 4),
-            Icon(Icons.expand_more, size: 14, color: t.textMuted),
+            Text(
+              _shortLabel(current.label),
+              style: TextStyle(fontSize: 11.5, color: t.textMuted, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(width: 2),
+            Icon(Icons.expand_more, size: 13, color: t.textDim),
           ],
         ),
       ),
     );
   }
+
+  String _shortLabel(String label) => label.split(' ').first;
 }
 
 class _ModelRow extends StatelessWidget {
@@ -1767,12 +1828,13 @@ class _PermissionModePicker extends ConsumerWidget {
   final void Function(CcPermissionMode) onPick;
   const _PermissionModePicker({required this.current, required this.onPick});
 
-  String _label(CcPermissionMode m, Strings s) {
+  // 权限名称固定英文，不随语言设置变化
+  String _label(CcPermissionMode m) {
     switch (m) {
-      case CcPermissionMode.defaultMode: return s.permModeDefaultLabel;
-      case CcPermissionMode.acceptEdits: return s.permModeAcceptEditsLabel;
-      case CcPermissionMode.plan: return s.permModePlanLabel;
-      case CcPermissionMode.bypass: return s.permModeBypassLabel;
+      case CcPermissionMode.defaultMode: return 'Default';
+      case CcPermissionMode.acceptEdits: return 'Accept Edits';
+      case CcPermissionMode.plan: return 'Plan';
+      case CcPermissionMode.bypass: return 'Bypass';
     }
   }
 
@@ -1844,7 +1906,7 @@ class _PermissionModePicker extends ConsumerWidget {
                 Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
                 _PermissionModeRow(
                   mode: m,
-                  label: _label(m, s),
+                  label: _label(m),
                   description: _desc(m, s),
                   glyph: _glyph(m, t),
                   selected: m == current,
@@ -1863,31 +1925,18 @@ class _PermissionModePicker extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
-    final s = ref.watch(stringsProvider);
     final (icon, color) = _glyph(current, t);
-    return InkWell(
-      onTap: () => _openSheet(context, ref),
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        decoration: BoxDecoration(
-          color: t.surfaceHi,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: t.border, width: 0.5),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 12, color: color),
-            const SizedBox(width: 6),
-            Text(
-              _label(current, s),
-              style: TextStyle(fontSize: 12, color: t.textMuted, fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(width: 4),
-            Icon(Icons.expand_more, size: 14, color: t.textMuted),
-          ],
+    return Tooltip(
+      message: _label(current),
+      preferBelow: false,
+      child: GestureDetector(
+        onTap: () => _openSheet(context, ref),
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          width: 32,
+          height: 32,
+          alignment: Alignment.center,
+          child: Icon(icon, size: 17, color: color),
         ),
       ),
     );
@@ -2143,6 +2192,8 @@ class _StreamingMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
+    final text = buffer.text.toString();
+    final approxTokens = (text.length / 4).round();
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
@@ -2152,20 +2203,76 @@ class _StreamingMessage extends StatelessWidget {
             width: 18,
             child: Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                '●',
-                style: TextStyle(fontSize: 11, color: t.text, height: 1.4),
-              ),
+              child: _PulsingDot(color: t.textMuted),
             ),
           ),
           Expanded(
-            child: MarkdownBody(
-              data: buffer.text.toString(),
-              selectable: true,
-              styleSheet: streamingMarkdownStyle(t),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                MarkdownBody(
+                  data: text,
+                  selectable: true,
+                  styleSheet: streamingMarkdownStyle(t),
+                ),
+                if (approxTokens > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '~$approxTokens tokens',
+                      style: TextStyle(fontSize: 10, color: t.textDim),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PulsingDot extends StatefulWidget {
+  final Color color;
+  const _PulsingDot({required this.color});
+
+  @override
+  State<_PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<_PulsingDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _anim;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _anim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _opacity = Tween<double>(begin: 0.25, end: 1.0).animate(
+      CurvedAnimation(parent: _anim, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _opacity,
+      builder: (_, __) => Opacity(
+        opacity: _opacity.value,
+        child: Text(
+          '●',
+          style: TextStyle(fontSize: 11, color: widget.color, height: 1.4),
+        ),
       ),
     );
   }
@@ -2263,13 +2370,13 @@ class _ChatSkeletonState extends State<_ChatSkeleton>
     );
   }
 
-  Widget _skelLine(Color c, double widthFactor, {double height = 12}) {
+  Widget _skelLine(Color c, double widthFactor, {double height = 16}) {
     return FractionallySizedBox(
       alignment: Alignment.centerLeft,
       widthFactor: widthFactor,
       child: Container(
         height: height,
-        margin: const EdgeInsets.symmetric(vertical: 4),
+        margin: const EdgeInsets.symmetric(vertical: 3),
         decoration: BoxDecoration(
           color: c,
           borderRadius: BorderRadius.circular(4),

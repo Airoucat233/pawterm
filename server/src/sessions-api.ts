@@ -15,6 +15,8 @@ import type { SessionSummary } from '@pawterm/shared';
 
 import { isPathAllowed } from './config.js';
 import { messageToWire } from './serialize.js';
+import { findAllHolders } from './holder-detect.js';
+import type { SessionHolder } from './holder-detect.js';
 
 import { readFile, access, readdir, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -93,7 +95,7 @@ function requirePath(cwd: string | undefined): string {
   return cwd;
 }
 
-function toSummary(s: SDKSessionInfo): SessionSummary {
+function toSummary(s: SDKSessionInfo, holder: SessionHolder | null = null): SessionSummary {
   return {
     session_id: s.sessionId,
     summary: s.summary ?? s.firstPrompt ?? null,
@@ -103,6 +105,7 @@ function toSummary(s: SDKSessionInfo): SessionSummary {
     cwd: s.cwd ?? null,
     num_messages: null,
     total_cost_usd: null,
+    holder: holder,
   };
 }
 
@@ -144,7 +147,10 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
       if (jsonlPath && await isSidechainSession(jsonlPath)) continue;
       result.push(s);
     }
-    return result.map(toSummary);
+    // 一次性扫描 ~/.claude/sessions/ 获取所有活跃 holder，
+    // 避免为每条 session 单独扫描（O(n) 次目录读取 → 1 次）。
+    const allHolders = await findAllHolders();
+    return result.map((s) => toSummary(s, allHolders.get(s.sessionId) ?? null));
   });
 
   app.get<{ Params: { id: string }; Querystring: { cwd: string } }>(
@@ -287,6 +293,7 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
       timestamp?: string | number;
       message?: unknown;
       isSidechain?: boolean;
+      isMeta?: boolean;
       type?: string;
       [k: string]: unknown;
     };
@@ -299,8 +306,9 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
       } catch {
         continue;
       }
-      // Skip sidechain, metadata-only, and non-conversation entries.
+      // Skip sidechain, meta-injections (isMeta=true, e.g. skill content), and non-conversation entries.
       if (entry.isSidechain) continue;
+      if ((entry as any).isMeta) continue;
       const t = entry.type;
       if (t !== 'user' && t !== 'assistant' && t !== 'result') continue;
       // Skip user messages that are only tool_results (no human text).

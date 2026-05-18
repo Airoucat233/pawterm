@@ -7,6 +7,7 @@ import '../i18n/locale_provider.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
+import 'settings_screen.dart';
 import 'tabs/chat_tab.dart';
 import 'tabs/files_tab.dart';
 import 'tabs/shell_tab.dart';
@@ -20,12 +21,13 @@ class MainShell extends ConsumerStatefulWidget {
 
 class _MainShellState extends ConsumerState<MainShell> {
   int _index = 0;
+  // 保留弹出栏的展开状态，关闭再打开时保持上次展开的项目。
+  final Set<String> _sheetExpanded = {};
 
   @override
   Widget build(BuildContext context) {
     final conn = ref.watch(activeConnectionProvider);
     final session = ref.watch(currentSessionProvider);
-    final model = ref.watch(currentModelProvider);
     final s = ref.watch(stringsProvider);
     final t = AppTokens.of(context);
 
@@ -43,7 +45,6 @@ class _MainShellState extends ConsumerState<MainShell> {
             _TopBar(
               conn: conn,
               session: session,
-              model: model,
               onSessionTap: () => _showSessionSwitcher(context),
             ),
             Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
@@ -74,6 +75,10 @@ class _MainShellState extends ConsumerState<MainShell> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => _SessionSwitcherSheet(
+        initialExpanded: _sheetExpanded,
+        onExpandedChanged: (updated) => _sheetExpanded
+          ..clear()
+          ..addAll(updated),
         onPop: () => Navigator.of(ctx).pop(),
       ),
     );
@@ -150,12 +155,10 @@ class _LazyTabSwitcherState extends State<_LazyTabSwitcher> {
 class _TopBar extends StatelessWidget {
   final ServerEntry? conn;
   final CurrentSession? session;
-  final ModelOption model;
   final VoidCallback onSessionTap;
   const _TopBar({
     required this.conn,
     required this.session,
-    required this.model,
     required this.onSessionTap,
   });
 
@@ -225,22 +228,14 @@ class _TopBar extends StatelessWidget {
               ),
             ),
 
-            // Right: model chip
-            InkWell(
-              onTap: () {},
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: t.accentSubt,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: t.accent.withValues(alpha: 0.2)),
-                ),
-                child: Text(
-                  _shortModelName(model.label),
-                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: t.accent),
-                ),
+            // Right: settings button
+            IconButton(
+              icon: Icon(Icons.settings_outlined, size: 19, color: t.textMuted),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
               ),
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             ),
           ],
         ),
@@ -248,24 +243,32 @@ class _TopBar extends StatelessWidget {
     );
   }
 
-  String _shortModelName(String label) {
-    // "Sonnet 4.6" → "Sonnet", "Opus 4.7" → "Opus", "Haiku 4.5" → "Haiku"
-    return label.split(' ').first;
-  }
 }
 
 // ── Session switcher sheet ────────────────────────────────────
 
 class _SessionSwitcherSheet extends ConsumerStatefulWidget {
+  final Set<String> initialExpanded;
+  final void Function(Set<String>) onExpandedChanged;
   final VoidCallback onPop;
-  const _SessionSwitcherSheet({required this.onPop});
+  const _SessionSwitcherSheet({
+    required this.initialExpanded,
+    required this.onExpandedChanged,
+    required this.onPop,
+  });
 
   @override
   ConsumerState<_SessionSwitcherSheet> createState() => _SessionSwitcherSheetState();
 }
 
 class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
-  final Set<String> _expanded = {};
+  late final Set<String> _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = Set.of(widget.initialExpanded);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -348,6 +351,7 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                               } else {
                                 _expanded.add(p.path);
                               }
+                              widget.onExpandedChanged(_expanded);
                             }),
                             onNewSession: () {
                               ref.read(selectedProjectProvider.notifier).state = p;
@@ -361,6 +365,7 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                                 cwd: p.path,
                                 resumeId: s.sessionId,
                                 label: '${p.name} · ${s.displayTitle}',
+                                preloadedHolder: s.holder,
                               );
                               widget.onPop();
                             },
@@ -577,10 +582,19 @@ class _SheetSessionTile extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 13,
                             fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w400,
-                            color: isCurrent ? t.accent : t.text,
+                            color: isCurrent ? t.accent : (session.holder != null ? t.textMuted : t.text),
                           ),
                         ),
                       ),
+                      if (session.holder != null) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          width: 6, height: 6,
+                          decoration: BoxDecoration(color: t.warning, shape: BoxShape.circle),
+                        ),
+                        const SizedBox(width: 3),
+                        Text('占用中', style: TextStyle(fontSize: 10, color: t.warning)),
+                      ],
                     ],
                   ),
                   if (timeText.isNotEmpty)

@@ -5,6 +5,7 @@ import {
   FilePlus,
   FolderSearch,
   Globe,
+  HelpCircle,
   ListChecks,
   Search,
   Sparkles,
@@ -12,7 +13,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
-export type ToolColorKey = 'edit' | 'bash' | 'read' | 'grep' | 'todo' | 'web' | 'task' | 'generic';
+export type ToolColorKey = 'edit' | 'bash' | 'read' | 'grep' | 'todo' | 'web' | 'task' | 'ask' | 'generic';
 
 export const toolColor: Record<ToolColorKey, string> = {
   edit: '#10B981',
@@ -22,6 +23,7 @@ export const toolColor: Record<ToolColorKey, string> = {
   todo: '#A78BFA',
   web: '#EAB308',
   task: '#F472B6',
+  ask: '#F97316',
   generic: '#6B746F',
 };
 
@@ -29,7 +31,7 @@ export interface ToolConfig {
   icon: LucideIcon;
   color: ToolColorKey;
   inputSummaryKey?: string; // which input field to show after the name (e.g. file_path)
-  showBody: 'diff' | 'file' | 'bash' | 'kv' | 'todo' | 'none';
+  showBody: 'diff' | 'file' | 'bash' | 'kv' | 'todo' | 'ask' | 'none';
 }
 
 export const toolConfigs: Record<string, ToolConfig> = {
@@ -44,6 +46,9 @@ export const toolConfigs: Record<string, ToolConfig> = {
   WebFetch: { icon: Globe, color: 'web', inputSummaryKey: 'url', showBody: 'kv' },
   WebSearch: { icon: Globe, color: 'web', inputSummaryKey: 'query', showBody: 'kv' },
   Task: { icon: Sparkles, color: 'task', inputSummaryKey: 'description', showBody: 'kv' },
+  // AskUserQuestion: two names, same config (MCP path has prefix, native path doesn't)
+  AskUserQuestion: { icon: HelpCircle, color: 'ask', showBody: 'ask' },
+  'mcp__ask-user-question__AskUserQuestion': { icon: HelpCircle, color: 'ask', showBody: 'ask' },
 };
 
 export function getToolConfig(name: string): ToolConfig {

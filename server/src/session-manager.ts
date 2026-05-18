@@ -1,7 +1,7 @@
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 
 import type { PermissionMode } from '@pawterm/shared';
-import { type AskUserQuestionRegistry, formatAnswers, makeAskUserMcpServer } from './ask-user-tool.js';
+import { type AskUserQuestionRegistry, makeAskUserMcpServer } from './ask-user-tool.js';
 
 /**
  * One ClaudeSDK conversation. We use the SDK's streaming `query()` with an
@@ -70,6 +70,15 @@ export class ChatSession {
       mcpServers: {
         'ask-user-question': makeAskUserMcpServer(this.askRegistry),
       },
+      // Native built-in AskUserQuestion path: checkPermissions returns behavior:'ask',
+      // which triggers canUseTool. We suspend here (register 'native') and wait for
+      // /chat/answer — same client flow as the MCP path, different internal resolver shape.
+      canUseTool: async (toolName, _input, opts) => {
+        if (toolName === 'AskUserQuestion') {
+          return this.askRegistry.register('native', opts.toolUseID);
+        }
+        return { behavior: 'allow' as const };
+      },
       ...(bypassing ? { allowDangerouslySkipPermissions: true } : {}),
       // resume takes priority; sessionId is for brand-new sessions only
       ...(this.resume
@@ -122,7 +131,18 @@ export class ChatSession {
     answers: Record<string, string>,
     annotations?: Record<string, { preview?: string; notes?: string }>,
   ): boolean {
-    return this.askRegistry.answer(toolUseId, formatAnswers(answers, annotations));
+    // registry.answer() dispatches internally based on the hidden mode marker:
+    // 'mcp'    → formats text, resolves CallToolResult
+    // 'native' → resolves PermissionResult { behavior:'allow', updatedInput }
+    return this.askRegistry.answer(toolUseId, answers, annotations);
+  }
+
+  async getContextUsage(): Promise<unknown> {
+    const iter = this.iter as any;
+    if (!iter?.getContextUsage) {
+      throw new Error('getContextUsage not available — session not started');
+    }
+    return iter.getContextUsage();
   }
 
   async interrupt(): Promise<void> {

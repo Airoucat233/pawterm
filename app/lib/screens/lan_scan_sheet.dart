@@ -60,7 +60,21 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
         type: InternetAddressType.IPv4,
         includeLoopback: false,
       );
+      // Prefer WiFi: wlan* (Android), en* (iOS). Skip cellular: rmnet*, ccmni*, pdp*, utun*
+      const wifiPrefixes = ['wlan', 'en'];
+      const skipPrefixes = ['rmnet', 'ccmni', 'pdp', 'utun', 'ipsec', 'ppp'];
       for (final iface in interfaces) {
+        final name = iface.name.toLowerCase();
+        if (!wifiPrefixes.any((p) => name.startsWith(p))) continue;
+        if (skipPrefixes.any((p) => name.startsWith(p))) continue;
+        for (final addr in iface.addresses) {
+          if (!addr.isLinkLocal) return addr.address;
+        }
+      }
+      // Fallback: any non-cellular non-link-local address
+      for (final iface in interfaces) {
+        final name = iface.name.toLowerCase();
+        if (skipPrefixes.any((p) => name.startsWith(p))) continue;
         for (final addr in iface.addresses) {
           if (!addr.isLinkLocal) return addr.address;
         }
@@ -73,7 +87,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
     try {
       final resp = await http
           .get(Uri.parse('http://$ip:$port/health'))
-          .timeout(const Duration(milliseconds: 600));
+          .timeout(const Duration(milliseconds: 800));
       if (resp.statusCode == 200) {
         return jsonDecode(resp.body) as Map<String, dynamic>;
       }

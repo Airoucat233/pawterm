@@ -4,7 +4,9 @@
          Android 9+ 默认禁止明文流量，会导致 connect/WebSocket 静默失败。
          这里全局放开 — 安全模型依赖 LAN/Tailscale 网络本身，不依赖 HTTP 层。 -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- 允许安装 APK（通过 open_file_plus 打开 .apk 文件时需要） -->
+    <!-- Android 9 及以下写公共 Downloads 目录需要；10+ scoped storage 无需申请 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+    <!-- 允许安装 APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- 相机权限：扫描二维码连接服务端 -->
     <uses-permission android:name="android.permission.CAMERA"/>

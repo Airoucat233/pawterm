@@ -48,6 +48,46 @@ export async function killHolder(pid: number): Promise<boolean> {
   return false;
 }
 
+/**
+ * 一次性读取 ~/.claude/sessions/ 目录，返回所有活跃 holder 的 Map（sessionId → holder）。
+ * 比对每个 session 逐一调用 findHolder() 只需一次目录扫描，适合批量注解。
+ */
+export async function findAllHolders(): Promise<Map<string, SessionHolder>> {
+  let files: string[];
+  try {
+    files = await readdir(sessionsDir());
+  } catch {
+    return new Map();
+  }
+
+  const result = new Map<string, SessionHolder>();
+  for (const file of files) {
+    if (!/^\d+\.json$/.test(file)) continue;
+    const pid = parseInt(file.slice(0, -5), 10);
+    let raw: string;
+    try {
+      raw = await readFile(join(sessionsDir(), file), 'utf-8');
+    } catch {
+      continue;
+    }
+    let parsed: { sessionId?: string; cwd?: string; startedAt?: number; kind?: string };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!parsed.sessionId) continue;
+    if (!isProcessRunning(pid)) continue;
+    result.set(parsed.sessionId, {
+      pid,
+      cwd: parsed.cwd ?? '',
+      startedAt: parsed.startedAt ?? 0,
+      kind: parsed.kind,
+    });
+  }
+  return result;
+}
+
 /** 返回该 sessionId 当前的持有者（活进程）；没有则 null。 */
 export async function findHolder(sessionId: string): Promise<SessionHolder | null> {
   let files: string[];

@@ -1,4 +1,4 @@
-import type { HealthResponse, Project, SessionSummary } from '@pawterm/shared';
+import type { AnswerQuestionRequest, HealthResponse, Project, SessionSummary } from '@pawterm/shared';
 
 const BASE = '/api';
 
@@ -8,8 +8,13 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
-async function post<T>(path: string): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, { method: 'POST' });
+async function post<T>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    ...(body !== undefined
+      ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      : {}),
+  });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
@@ -36,4 +41,6 @@ export const api = {
     post<{ session_id: string | null }>(`/sessions/${id}/fork?cwd=${encodeURIComponent(cwd)}`),
   deleteSession: (id: string, cwd: string) =>
     del<{ ok: boolean }>(`/sessions/${id}?cwd=${encodeURIComponent(cwd)}`),
+  answerQuestion: (req: AnswerQuestionRequest) =>
+    post<{ ok: boolean }>('/chat/answer', req),
 };
