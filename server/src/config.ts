@@ -11,11 +11,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_DIR = resolve(homedir(), '.config', 'pawterm');
 const DEFAULT_CONFIG_PATH = resolve(DEFAULT_CONFIG_DIR, 'config.json');
 
+export type LogFormat = 'pretty' | 'json';
+
 export interface ServerSettings {
   host: string;
   port: number;
   permissionMode: PermissionMode;
   projects: Project[];
+  logLevel: string;
+  logFormat: LogFormat;
 }
 
 function expandHome(p: string): string {
@@ -40,11 +44,14 @@ function loadConfig(): ServerSettings {
       console.info(`[config] Created default config at ${configPath}`);
       console.info(`[config] Edit it to add your project paths, then restart.`);
     } catch { /* ignore write errors (e.g. read-only fs) */ }
+    const defaultLogFormat: LogFormat = process.env.NODE_ENV === 'production' ? 'json' : 'pretty';
     return {
       host: defaultConfig.host,
       port: defaultConfig.port,
       permissionMode: 'bypassPermissions',
       projects: [],
+      logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? 'info',
+      logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? defaultLogFormat) as LogFormat,
     };
   }
 
@@ -53,7 +60,11 @@ function loadConfig(): ServerSettings {
     port?: number;
     permission_mode?: PermissionMode;
     projects?: Array<{ name?: string; path: string }>;
+    log_level?: string;
+    log_format?: LogFormat;
   };
+
+  const defaultLogFormat: LogFormat = process.env.NODE_ENV === 'production' ? 'json' : 'pretty';
 
   return {
     host: raw.host ?? '0.0.0.0',
@@ -63,6 +74,9 @@ function loadConfig(): ServerSettings {
       const path = expandHome(p.path);
       return { name: p.name?.trim() || basename(path) || path, path };
     }),
+    // env var > config.json > default
+    logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? raw.log_level ?? 'info',
+    logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? raw.log_format ?? defaultLogFormat) as LogFormat,
   };
 }
 

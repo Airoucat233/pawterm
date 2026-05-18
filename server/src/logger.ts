@@ -1,17 +1,9 @@
 import type { FastifyServerOptions } from 'fastify';
 
-/**
- * Build Fastify logger config.
- *
- * Two modes (controlled by env `PAWTERM_LOG_FORMAT`):
- *   - "pretty" (default in dev): colored, time + level + msg human format.
- *   - "json"   (default in prod): machine-readable single-line JSON (pino).
- *
- * Level controlled by env `PAWTERM_LOG_LEVEL` (default "info").
- */
+import { settings } from './config.js';
+
 export function buildLoggerOptions(): FastifyServerOptions['logger'] {
-  const level = process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? 'info';
-  const format = process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? (process.env.NODE_ENV === 'production' ? 'json' : 'pretty');
+  const { logLevel: level, logFormat: format } = settings;
 
   if (format === 'json') {
     return { level };
