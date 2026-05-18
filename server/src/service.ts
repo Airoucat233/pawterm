@@ -174,6 +174,25 @@ export function runServiceCommand(cmd: string): void {
     return;
   }
 
+  if (cmd === 'help') {
+    console.log(`
+Usage: pawterm-server [command]
+
+  (no command)       Start the server in foreground
+  install            Install and start as a background service (auto-starts at login)
+  uninstall          Remove the background service
+  start              Start the background service
+  stop               Stop the background service
+  restart            Restart the background service
+  status             Show service status
+  update             Update to the latest version and restart
+  logs [n]           Tail service logs (default: last 50 lines)
+  --version, -v      Print version
+  help               Show this help
+`);
+    return;
+  }
+
   if (cmd === 'update') {
     console.log('Updating pawterm-server...');
     exec('npm install -g pawterm-server');
