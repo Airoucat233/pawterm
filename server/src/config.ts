@@ -49,7 +49,7 @@ function loadConfig(): ServerSettings {
       console.info(`[config] Created default config at ${configPath}`);
       console.info(`[config] Edit it to add your project paths, then restart.`);
     } catch { /* ignore write errors (e.g. read-only fs) */ }
-    const defaultLogFormat: LogFormat = process.stdout.isTTY ? 'pretty' : 'json';
+    const defaultLogFormat: LogFormat = 'pretty';
     return {
       host: defaultConfig.host,
       port: defaultConfig.port,
@@ -80,7 +80,7 @@ function loadConfig(): ServerSettings {
     writeFileSync(configPath, JSON.stringify(updated, null, 2));
   }
 
-  const defaultLogFormat: LogFormat = process.stdout.isTTY ? 'pretty' : 'json';
+  const defaultLogFormat: LogFormat = 'pretty';
 
   return {
     host: raw.host ?? '0.0.0.0',

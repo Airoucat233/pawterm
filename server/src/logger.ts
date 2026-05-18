@@ -19,15 +19,18 @@ export function buildLoggerOptions(): FastifyServerOptions['logger'] {
     return { level, transport: { target: 'pino-pretty', options: PRETTY_OPTIONS } };
   }
 
-  // Tee: stdout (pretty or json) + file (always json for machine parsing).
+  // Tee: stdout + file, both using the configured format.
+  const fileTarget = format === 'json'
+    ? { target: 'pino/file', options: { destination: logFile, append: true, mkdir: true }, level }
+    : { target: 'pino-pretty', options: { ...PRETTY_OPTIONS, colorize: false, destination: logFile, append: true, mkdir: true }, level };
   return {
     level,
     transport: {
       targets: [
         format === 'json'
-          ? { target: 'pino/file', options: { destination: 1 }, level }          // stdout json
-          : { target: 'pino-pretty', options: { ...PRETTY_OPTIONS, destination: 1 }, level }, // stdout pretty
-        { target: 'pino/file', options: { destination: logFile, append: true, mkdir: true }, level },
+          ? { target: 'pino/file', options: { destination: 1 }, level }
+          : { target: 'pino-pretty', options: { ...PRETTY_OPTIONS, destination: 1 }, level },
+        fileTarget,
       ],
     },
   };
