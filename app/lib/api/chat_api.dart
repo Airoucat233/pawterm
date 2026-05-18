@@ -61,7 +61,11 @@ class ChatApiException implements Exception {
 /// SSE stream is handled separately via SseClient.
 class ChatApi {
   final String httpBase;
-  ChatApi(this.httpBase);
+  final String? _token;
+  ChatApi(this.httpBase, {String? token}) : _token = token;
+
+  Map<String, String> get _auth =>
+      _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
   /// Send a message and start streaming the response.
   /// Events arrive via GET /chat/events?uuid= (SseClient).
@@ -75,7 +79,7 @@ class ChatApi {
   }) async {
     final resp = await http.post(
       Uri.parse('$httpBase/chat/stream'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._auth},
       body: jsonEncode({
         'uuid': uuid,
         'cwd': cwd,
@@ -99,7 +103,7 @@ class ChatApi {
   /// Check run state: live / done / running / unknown.
   Future<TurnStatus> status(String uuid) async {
     final resp = await http
-        .get(Uri.parse('$httpBase/chat/status?uuid=${Uri.encodeQueryComponent(uuid)}'))
+        .get(Uri.parse('$httpBase/chat/status?uuid=${Uri.encodeQueryComponent(uuid)}'), headers: _auth)
         .timeout(const Duration(seconds: 4));
     if (resp.statusCode != 200) return TurnStatus(TurnState.unknown);
     return TurnStatus.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
@@ -114,7 +118,7 @@ class ChatApi {
   ) async {
     final resp = await http.post(
       Uri.parse('$httpBase/chat/answer'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._auth},
       body: jsonEncode({
         'uuid': uuid,
         'tool_use_id': toolUseId,
@@ -131,7 +135,7 @@ class ChatApi {
   Future<void> interrupt(String uuid) async {
     await http.post(
       Uri.parse('$httpBase/chat/interrupt'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._auth},
       body: jsonEncode({'uuid': uuid}),
     );
   }
@@ -140,7 +144,7 @@ class ChatApi {
   Future<void> model(String uuid, String modelId) async {
     await http.post(
       Uri.parse('$httpBase/chat/model'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._auth},
       body: jsonEncode({'uuid': uuid, 'model': modelId}),
     );
   }
@@ -149,7 +153,7 @@ class ChatApi {
   Future<void> permission(String uuid, String mode) async {
     await http.post(
       Uri.parse('$httpBase/chat/permission'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._auth},
       body: jsonEncode({'uuid': uuid, 'mode': mode}),
     );
   }
@@ -159,7 +163,7 @@ class ChatApi {
   Future<void> takeover(String uuid) async {
     final resp = await http.post(
       Uri.parse('$httpBase/chat/takeover'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ..._auth},
       body: jsonEncode({'uuid': uuid}),
     );
     if (resp.statusCode != 200) {

@@ -8,7 +8,7 @@ import * as pty from 'node-pty';
 
 import type { ShellClientMessage, ShellServerMessage } from '@pawterm/shared';
 
-import { isPathAllowed } from './config.js';
+import { isPathAllowed, settings } from './config.js';
 
 /**
  * Pick a usable login shell. Order:
@@ -251,6 +251,11 @@ export function handleShellSocket(socket: WebSocket, _req: FastifyRequest): void
       case 'init': {
         if (initialized) {
           send({ type: 'error', message: 'Already initialized; open a new socket to re-init' });
+          return;
+        }
+        if (msg.token !== settings.token) {
+          send({ type: 'error', message: 'unauthorized' });
+          try { socket.close(4001, 'unauthorized'); } catch { /* ignore */ }
           return;
         }
         const cwd = resolve(msg.cwd);

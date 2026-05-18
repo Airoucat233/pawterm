@@ -22,11 +22,16 @@ class UploadException implements Exception {
 
 class UploadApi {
   final String httpBase;
-  UploadApi(this.httpBase);
+  final String? _token;
+  UploadApi(this.httpBase, {String? token}) : _token = token;
+
+  Map<String, String> get _auth =>
+      _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
   Future<UploadedFile> upload(File file, String cwd) async {
     final uri = Uri.parse('$httpBase/upload').replace(queryParameters: {'cwd': cwd});
     final req = http.MultipartRequest('POST', uri);
+    req.headers.addAll(_auth);
     req.files.add(await http.MultipartFile.fromPath('file', file.path));
     final streamed = await req.send();
     final resp = await http.Response.fromStream(streamed);

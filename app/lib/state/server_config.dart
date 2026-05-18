@@ -9,6 +9,7 @@ class ServerEntry {
   final String name;
   final String emoji;
   final String url;
+  final String? token;
   final DateTime? lastConnected;
 
   const ServerEntry({
@@ -16,16 +17,23 @@ class ServerEntry {
     required this.name,
     required this.emoji,
     required this.url,
+    this.token,
     this.lastConnected,
   });
 
   String get httpBase => url;
   String get wsBase => url.replaceFirst(RegExp(r'^http'), 'ws');
 
+  Map<String, String> get authHeaders =>
+      token != null && token!.isNotEmpty
+          ? {'Authorization': 'Bearer $token'}
+          : const {};
+
   ServerEntry copyWith({
     String? name,
     String? emoji,
     String? url,
+    String? token,
     DateTime? lastConnected,
   }) =>
       ServerEntry(
@@ -33,6 +41,7 @@ class ServerEntry {
         name: name ?? this.name,
         emoji: emoji ?? this.emoji,
         url: url ?? this.url,
+        token: token ?? this.token,
         lastConnected: lastConnected ?? this.lastConnected,
       );
 
@@ -41,6 +50,7 @@ class ServerEntry {
         'name': name,
         'emoji': emoji,
         'url': url,
+        if (token != null) 'token': token,
         'lastConnected': lastConnected?.toIso8601String(),
       };
 
@@ -49,6 +59,7 @@ class ServerEntry {
         name: j['name'] as String,
         emoji: j['emoji'] as String? ?? '🖥️',
         url: j['url'] as String,
+        token: j['token'] as String?,
         lastConnected: j['lastConnected'] != null
             ? DateTime.tryParse(j['lastConnected'] as String)
             : null,
@@ -86,8 +97,9 @@ class ConnectionsNotifier extends StateNotifier<List<ServerEntry>> {
     required String name,
     required String emoji,
     required String url,
+    String? token,
   }) async {
-    final entry = ServerEntry(id: _uuid.v4(), name: name, emoji: emoji, url: url);
+    final entry = ServerEntry(id: _uuid.v4(), name: name, emoji: emoji, url: url, token: token);
     state = [...state, entry];
     await _save();
     return entry;

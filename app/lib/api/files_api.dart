@@ -7,12 +7,16 @@ import 'package:http/http.dart' as http;
 /// 服务端文件系统 API 客户端。
 class FilesApi {
   final String baseUrl;
-  FilesApi(this.baseUrl);
+  final String? _token;
+  FilesApi(this.baseUrl, {String? token}) : _token = token;
+
+  Map<String, String> get _auth =>
+      _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
   /// 列出 [path] 下的文件夹和文件。
   Future<FsListing> ls(String path) async {
     final uri = Uri.parse('$baseUrl/fs/ls').replace(queryParameters: {'path': path});
-    final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+    final resp = await http.get(uri, headers: _auth).timeout(const Duration(seconds: 10));
     if (resp.statusCode == 403) {
       throw FsForbiddenException(path);
     }
@@ -39,6 +43,7 @@ class FilesApi {
     final client = http.Client();
     try {
       final req = http.Request('GET', uri);
+      req.headers.addAll(_auth);
       final streamed = await client.send(req).timeout(const Duration(seconds: 15));
       if (streamed.statusCode == 403) throw FsForbiddenException(remotePath);
       if (streamed.statusCode == 404) throw FsNotFoundException(remotePath);

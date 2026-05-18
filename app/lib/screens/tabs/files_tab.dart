@@ -93,7 +93,7 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     });
 
     try {
-      final api = FilesApi(conn.httpBase);
+      final api = FilesApi(conn.httpBase, token: conn.token);
       final listing = await api.ls(path);
       if (!mounted) return;
       _cache[listing.path] = listing;
@@ -165,7 +165,7 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     try {
       await destDir.create(recursive: true);
       final dest = File('${destDir.path}/${entry.name}');
-      final api = FilesApi(conn.httpBase);
+      final api = FilesApi(conn.httpBase, token: conn.token);
       final file = await api.download(
         remotePath: entry.path,
         destFile: dest,

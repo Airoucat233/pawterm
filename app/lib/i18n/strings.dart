@@ -173,6 +173,26 @@ class Strings {
   final String addConnectionConnectBtn;
   final String addConnectionServerReturnedTpl; // "服务端返回 {code}"
   final String addConnectionUnreachable;
+  final String addConnectionToken;
+  final String addConnectionTokenHint;
+  final String addConnectionScanQr;
+  final String addConnectionFindLan;
+  final String addConnectionOrManual;
+  final String addConnectionUnauthorized;
+
+  // LAN scan sheet
+  final String lanScanTitle;
+  final String lanScanScanning;
+  final String lanScanNoResults;
+  final String lanScanDoneTpl; // "Found {n}"
+  final String lanScanRetry;
+  final String lanScanEnterToken;
+  final String lanScanTokenHint;
+  final String lanScanConnectBtn;
+
+  // QR scan screen
+  final String qrScanTitle;
+  final String qrScanHint;
 
   // Add-project sheet
   final String addProjectEmptyDir;
@@ -351,6 +371,22 @@ class Strings {
     required this.addConnectionConnectBtn,
     required this.addConnectionServerReturnedTpl,
     required this.addConnectionUnreachable,
+    required this.addConnectionToken,
+    required this.addConnectionTokenHint,
+    required this.addConnectionScanQr,
+    required this.addConnectionFindLan,
+    required this.addConnectionOrManual,
+    required this.addConnectionUnauthorized,
+    required this.lanScanTitle,
+    required this.lanScanScanning,
+    required this.lanScanNoResults,
+    required this.lanScanDoneTpl,
+    required this.lanScanRetry,
+    required this.lanScanEnterToken,
+    required this.lanScanTokenHint,
+    required this.lanScanConnectBtn,
+    required this.qrScanTitle,
+    required this.qrScanHint,
     required this.addProjectEmptyDir,
     required this.addProjectGoParent,
     required this.addProjectNewFolder,
@@ -522,6 +558,22 @@ const Strings stringsEn = Strings(
   addConnectionConnectBtn: 'Connect',
   addConnectionServerReturnedTpl: 'Server returned {code}',
   addConnectionUnreachable: 'Cannot connect, check the address and port',
+  addConnectionToken: 'Auth Token',
+  addConnectionTokenHint: 'sk-…',
+  addConnectionScanQr: 'Scan QR',
+  addConnectionFindLan: 'Find on LAN',
+  addConnectionOrManual: 'or enter manually',
+  addConnectionUnauthorized: 'Wrong token — check the server terminal',
+  lanScanTitle: 'Find on LAN',
+  lanScanScanning: 'Scanning local network…',
+  lanScanNoResults: 'No PawTerm servers found',
+  lanScanDoneTpl: 'Found {n} server(s)',
+  lanScanRetry: 'Scan again',
+  lanScanEnterToken: 'Enter auth token',
+  lanScanTokenHint: 'Paste the sk-… token from the server terminal',
+  lanScanConnectBtn: 'Connect',
+  qrScanTitle: 'Scan QR Code',
+  qrScanHint: 'Point at the QR code shown in the server terminal',
   addProjectEmptyDir: 'Empty directory',
   addProjectGoParent: 'Up',
   addProjectNewFolder: 'New folder',
@@ -696,6 +748,22 @@ const Strings stringsZh = Strings(
   addConnectionConnectBtn: '连接',
   addConnectionServerReturnedTpl: '服务端返回 {code}',
   addConnectionUnreachable: '无法连接，请检查地址和端口',
+  addConnectionToken: 'Token',
+  addConnectionTokenHint: 'sk-…',
+  addConnectionScanQr: '扫码连接',
+  addConnectionFindLan: '局域网扫描',
+  addConnectionOrManual: '或手动输入',
+  addConnectionUnauthorized: 'Token 错误，请查看服务端终端',
+  lanScanTitle: '局域网扫描',
+  lanScanScanning: '正在扫描局域网…',
+  lanScanNoResults: '未找到 PawTerm 服务端',
+  lanScanDoneTpl: '发现 {n} 台服务端',
+  lanScanRetry: '重新扫描',
+  lanScanEnterToken: '输入认证 Token',
+  lanScanTokenHint: '粘贴服务端终端打印的 sk-… Token',
+  lanScanConnectBtn: '连接',
+  qrScanTitle: '扫描二维码',
+  qrScanHint: '对准服务端终端中的二维码',
   addProjectEmptyDir: '空目录',
   addProjectGoParent: '上级',
   addProjectNewFolder: '新建',

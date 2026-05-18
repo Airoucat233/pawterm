@@ -279,7 +279,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     final conn = ref.read(activeConnectionProvider);
     if (conn == null) return;
     try {
-      await ProjectsApi(conn.httpBase).removeProject(project.path);
+      await ProjectsApi(conn.httpBase, token: conn.token).removeProject(project.path);
       ref.invalidate(projectsProvider);
       // 如果当前会话用的就是这个项目，清理一下
       final current = ref.read(currentSessionProvider);

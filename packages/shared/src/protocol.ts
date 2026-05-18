@@ -63,7 +63,7 @@ export interface AnswerQuestionRequest {
 // ============== Shell WebSocket: /ws/shell ==============
 
 export type ShellClientMessage =
-  | { type: 'init'; cwd: string; shell?: string; cols: number; rows: number }
+  | { type: 'init'; cwd: string; shell?: string; cols: number; rows: number; token?: string }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'signal'; signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' };

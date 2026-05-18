@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 
 import type { Project, PermissionMode } from '@pawterm/shared';
 
@@ -21,6 +22,7 @@ export interface ServerSettings {
   logLevel: string;
   logFormat: LogFormat;
   logFile: string | null;
+  token: string;
 }
 
 function expandHome(p: string): string {
@@ -33,11 +35,13 @@ export const configPath = process.env.PAWTERM_CONFIG ?? process.env.CC_CONFIG ??
 
 function loadConfig(): ServerSettings {
   if (!existsSync(configPath)) {
+    const token = 'sk-' + randomBytes(16).toString('hex');
     const defaultConfig = {
       host: '0.0.0.0',
       port: 8765,
       permission_mode: 'bypassPermissions',
       projects: [] as Array<{ name: string; path: string }>,
+      token,
     };
     try {
       mkdirSync(DEFAULT_CONFIG_DIR, { recursive: true });
@@ -54,6 +58,7 @@ function loadConfig(): ServerSettings {
       logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? 'info',
       logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? defaultLogFormat) as LogFormat,
       logFile: (() => { const p = process.env.PAWTERM_LOG_FILE; return p ? expandHome(p) : null; })(),
+      token,
     };
   }
 
@@ -65,7 +70,15 @@ function loadConfig(): ServerSettings {
     log_level?: string;
     log_format?: LogFormat;
     log_file?: string;
+    token?: string;
   };
+
+  let token = raw.token as string | undefined;
+  if (!token) {
+    token = 'sk-' + randomBytes(16).toString('hex');
+    const updated: Record<string, unknown> = { ...raw, token };
+    writeFileSync(configPath, JSON.stringify(updated, null, 2));
+  }
 
   const defaultLogFormat: LogFormat = process.stdout.isTTY ? 'pretty' : 'json';
 
@@ -81,6 +94,7 @@ function loadConfig(): ServerSettings {
     logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? raw.log_level ?? 'info',
     logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? raw.log_format ?? defaultLogFormat) as LogFormat,
     logFile: (() => { const p = process.env.PAWTERM_LOG_FILE ?? raw.log_file; return p ? expandHome(p) : null; })(),
+    token,
   };
 }
 

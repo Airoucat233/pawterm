@@ -19,7 +19,7 @@ final projectsProvider = FutureProvider<List<Project>>((ref) async {
   final conn = ref.watch(activeConnectionProvider);
   if (conn == null) return [];
   final resp = await http
-      .get(Uri.parse('${conn.httpBase}/projects'))
+      .get(Uri.parse('${conn.httpBase}/projects'), headers: conn.authHeaders)
       .timeout(const Duration(seconds: 5));
   if (resp.statusCode != 200) {
     throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
@@ -34,7 +34,7 @@ final selectedProjectProvider = StateProvider<Project?>((ref) => null);
 final sessionsProvider = FutureProvider.family<List<SessionSummary>, String>((ref, cwd) async {
   final conn = ref.watch(activeConnectionProvider);
   if (conn == null) return [];
-  final api = SessionsApi(conn.httpBase);
+  final api = SessionsApi(conn.httpBase, token: conn.token);
   return api.list(cwd);
 });
 

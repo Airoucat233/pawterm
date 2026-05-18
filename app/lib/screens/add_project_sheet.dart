@@ -81,7 +81,7 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
     if (conn == null) return;
     setState(() => _loadingDirs = true);
     try {
-      final api = ProjectsApi(conn.httpBase);
+      final api = ProjectsApi(conn.httpBase, token: conn.token);
       final dirs = await api.browse(path);
       if (!mounted) return;
       setState(() {
@@ -127,7 +127,7 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
     final name = await _promptNewFolderName(context);
     if (name == null || name.trim().isEmpty) return;
     final conn = ref.read(activeConnectionProvider)!;
-    final api = ProjectsApi(conn.httpBase);
+    final api = ProjectsApi(conn.httpBase, token: conn.token);
     try {
       final created = await api.mkdir(parent: _currentPath, name: name.trim());
       await _browse(_currentPath);
@@ -161,7 +161,7 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
     });
     try {
       final conn = ref.read(activeConnectionProvider)!;
-      final api = ProjectsApi(conn.httpBase);
+      final api = ProjectsApi(conn.httpBase, token: conn.token);
       await api.addProject(name: name, path: path);
       widget.onAdded();
       if (mounted) Navigator.of(context).pop();

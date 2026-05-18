@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 允许安装 APK（通过 open_file_plus 打开 .apk 文件时需要） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- 相机权限：扫描二维码连接服务端 -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="PawTerm"
         android:name="${applicationName}"

@@ -76,6 +76,7 @@ class _ShellTabState extends ConsumerState<ShellTab> {
       'cwd': cwd,
       'cols': _terminal!.viewWidth,
       'rows': _terminal!.viewHeight,
+      if (config.token != null) 'token': config.token!,
     });
 
     setState(() {

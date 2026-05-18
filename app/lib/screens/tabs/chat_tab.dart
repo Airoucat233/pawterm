@@ -70,6 +70,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   ChatApi? _chatApi;
   SseClient? _sseClient;
   StreamSubscription<SseEvent>? _sseSub;
+  String? _serverToken;
   /// Claude session UUID. For new sessions: client-generated and persisted.
   /// For resumed sessions: equals currentSession.resumeId.
   String? _sessionId;
@@ -229,6 +230,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _attempting = false;
       return;
     }
+    _serverToken = config.token;
 
     unawaited(_connectToSession(config.httpBase, session));
   }
@@ -392,7 +394,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _sessionId = uuid;
     unawaited(_persistUuid(uuid));
 
-    final api = ChatApi(httpBase);
+    final api = ChatApi(httpBase, token: _serverToken);
     _chatApi = api;
 
     TurnStatus turnStatus;
@@ -432,8 +434,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _subscribeSse(String httpBase, String uuid) {
-    final sseUrl = ChatApi(httpBase).eventsUrl(uuid);
-    final sse = SseClient(url: sseUrl);
+    final sseUrl = ChatApi(httpBase, token: _serverToken).eventsUrl(uuid);
+    final sse = SseClient(
+      url: sseUrl,
+      headers: _serverToken != null ? {'Authorization': 'Bearer $_serverToken'} : const {},
+    );
     _sseClient = sse;
     _sseSub = sse.events.listen(_onSseEvent);
     unawaited(sse.connect());
@@ -561,7 +566,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (beforeUuid != null) 'before_uuid': beforeUuid,
       },
     );
-    final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+    final authHeaders = _serverToken != null ? {'Authorization': 'Bearer $_serverToken'} : const <String, String>{};
+    final resp = await http.get(uri, headers: authHeaders).timeout(const Duration(seconds: 10));
     if (resp.statusCode != 200) return null;
     final data = jsonDecode(resp.body) as Map<String, dynamic>;
     final raw = (data['messages'] as List?) ?? const [];
@@ -944,7 +950,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (session == null) return;
     final config = ref.read(activeConnectionProvider);
     if (config == null) return;
-    final api = UploadApi(config.httpBase);
+    final api = UploadApi(config.httpBase, token: config.token);
     for (final pickedFile in result.files) {
       final path = pickedFile.path;
       if (path == null) continue;
@@ -987,7 +993,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       a.status = _AttachmentStatus.uploading;
       a.errorMsg = null;
     });
-    await _uploadOne(UploadApi(config.httpBase), a, session.cwd);
+    await _uploadOne(UploadApi(config.httpBase, token: config.token), a, session.cwd);
   }
 
   bool get _attachmentsAllReady =>

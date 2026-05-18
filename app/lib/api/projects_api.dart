@@ -20,12 +20,16 @@ class DirectoryExistsException implements Exception {
 
 class ProjectsApi {
   final String baseUrl;
-  ProjectsApi(this.baseUrl);
+  final String? _token;
+  ProjectsApi(this.baseUrl, {String? token}) : _token = token;
+
+  Map<String, String> get _auth =>
+      _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
   Future<List<String>> browse(String path) async {
     final uri =
         Uri.parse('$baseUrl/browse').replace(queryParameters: {'path': path});
-    final resp = await http.get(uri).timeout(const Duration(seconds: 5));
+    final resp = await http.get(uri, headers: _auth).timeout(const Duration(seconds: 5));
     if (resp.statusCode != 200) return [];
     final body = jsonDecode(resp.body) as Map<String, dynamic>;
     return (body['dirs'] as List).cast<String>();
@@ -37,7 +41,7 @@ class ProjectsApi {
     final resp = await http
         .post(
           Uri.parse('$baseUrl/projects'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', ..._auth},
           body: jsonEncode({
             if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
             'path': path,
@@ -56,7 +60,7 @@ class ProjectsApi {
   Future<void> removeProject(String path) async {
     final uri =
         Uri.parse('$baseUrl/projects').replace(queryParameters: {'path': path});
-    final resp = await http.delete(uri).timeout(const Duration(seconds: 5));
+    final resp = await http.delete(uri, headers: _auth).timeout(const Duration(seconds: 5));
     if (resp.statusCode != 200) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
     }
@@ -68,7 +72,7 @@ class ProjectsApi {
     final resp = await http
         .post(
           Uri.parse('$baseUrl/browse/mkdir'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', ..._auth},
           body: jsonEncode({'parent': parent, 'name': name}),
         )
         .timeout(const Duration(seconds: 5));

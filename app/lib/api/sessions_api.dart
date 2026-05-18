@@ -43,7 +43,11 @@ class SessionSummary {
 
 class SessionsApi {
   final String baseUrl;
-  SessionsApi(this.baseUrl);
+  final String? _token;
+  SessionsApi(this.baseUrl, {String? token}) : _token = token;
+
+  Map<String, String> get _auth =>
+      _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
   Uri _u(String path, [Map<String, dynamic>? query]) {
     final q = query?.map((k, v) => MapEntry(k, v.toString()));
@@ -51,7 +55,7 @@ class SessionsApi {
   }
 
   Future<List<SessionSummary>> list(String cwd, {int limit = 50}) async {
-    final resp = await http.get(_u('/sessions', {'cwd': cwd, 'limit': limit}));
+    final resp = await http.get(_u('/sessions', {'cwd': cwd, 'limit': limit}), headers: _auth);
     if (resp.statusCode != 200) {
       throw Exception('list_sessions HTTP ${resp.statusCode}: ${resp.body}');
     }
@@ -60,26 +64,26 @@ class SessionsApi {
   }
 
   Future<void> rename(String sessionId, String cwd, String title) async {
-    final resp = await http.post(_u('/sessions/$sessionId/rename', {'cwd': cwd, 'title': title}));
+    final resp = await http.post(_u('/sessions/$sessionId/rename', {'cwd': cwd, 'title': title}), headers: _auth);
     if (resp.statusCode != 200) throw Exception(resp.body);
   }
 
   Future<void> tag(String sessionId, String cwd, String tag) async {
-    final resp = await http.post(_u('/sessions/$sessionId/tag', {'cwd': cwd, 'tag': tag}));
+    final resp = await http.post(_u('/sessions/$sessionId/tag', {'cwd': cwd, 'tag': tag}), headers: _auth);
     if (resp.statusCode != 200) throw Exception(resp.body);
   }
 
   Future<String?> fork(String sessionId, String cwd, {String? title}) async {
     final query = {'cwd': cwd};
     if (title != null) query['title'] = title;
-    final resp = await http.post(_u('/sessions/$sessionId/fork', query));
+    final resp = await http.post(_u('/sessions/$sessionId/fork', query), headers: _auth);
     if (resp.statusCode != 200) throw Exception(resp.body);
     final body = jsonDecode(resp.body) as Map<String, dynamic>;
     return body['session_id'] as String?;
   }
 
   Future<void> delete(String sessionId, String cwd) async {
-    final resp = await http.delete(_u('/sessions/$sessionId', {'cwd': cwd}));
+    final resp = await http.delete(_u('/sessions/$sessionId', {'cwd': cwd}), headers: _auth);
     if (resp.statusCode != 200) throw Exception(resp.body);
   }
 }
