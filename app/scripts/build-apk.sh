@@ -164,3 +164,47 @@ echo "  all builds: $VERSION_DIR"
 
 # Open Finder selecting arm64
 /usr/bin/open -R "$ARM64"
+
+# -------- 8. GitHub Release (optional) --------
+
+echo
+printf "  → push & create GitHub Release? [y/N]: "
+read -r DO_RELEASE
+if [[ "${DO_RELEASE:-N}" != "y" && "${DO_RELEASE:-N}" != "Y" ]]; then
+  echo "  skipped."
+  exit 0
+fi
+
+REPO_ROOT="$(dirname "$APP_DIR")"
+cd "$REPO_ROOT"
+
+# Commit pubspec changes if version was bumped
+if [[ "$VERSION" != "$CURRENT" ]]; then
+  git add app/pubspec.yaml app/pubspec.lock 2>/dev/null || true
+  git commit -m "chore: bump version to $VERSION" 2>/dev/null || true
+fi
+
+echo
+echo "▶ git push"
+git push
+
+TAG="v${VERSION%%+*}"
+ARMEABI="$VERSION_DIR/pawterm-${VERSION}-armeabi-v7a.apk"
+
+echo
+echo "▶ gh release create $TAG"
+if [[ -f "$ARMEABI" ]]; then
+  gh release create "$TAG" \
+    "$ARM64#pawterm-${VERSION}-arm64-v8a.apk (推荐)" \
+    "$ARMEABI#pawterm-${VERSION}-armeabi-v7a.apk (旧机型)" \
+    --title "$TAG" \
+    --generate-notes
+else
+  gh release create "$TAG" \
+    "$ARM64#pawterm-${VERSION}-arm64-v8a.apk" \
+    --title "$TAG" \
+    --generate-notes
+fi
+
+echo
+echo "\033[32m✓ released\033[0m  https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
