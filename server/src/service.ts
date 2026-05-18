@@ -180,7 +180,8 @@ export function runServiceCommand(cmd: string): void {
       console.log('Start the service first: pawterm-server install');
       return;
     }
-    spawnSync('tail', ['-f', LOG_PATH], { stdio: 'inherit' });
+    const lines = process.argv[3] ?? '50';
+    spawnSync('tail', ['-n', lines, '-f', LOG_PATH], { stdio: 'inherit' });
     return;
   }
 
