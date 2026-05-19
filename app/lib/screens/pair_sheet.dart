@@ -13,8 +13,8 @@ import '../state/server_config.dart';
 import '../theme.dart';
 import 'qr_scan_screen.dart';
 
-/// Shown when user taps an unpaired server in LAN scan results.
-/// Three pairing paths: Auto (default), PIN, QR-claim.
+/// Single-page sequential pairing flow.
+/// Returns a [PairedServer] when pairing succeeds, or null when cancelled.
 class PairSheet extends ConsumerStatefulWidget {
   final LanScanResult server;
 
@@ -24,25 +24,37 @@ class PairSheet extends ConsumerStatefulWidget {
   ConsumerState<PairSheet> createState() => _PairSheetState();
 }
 
-class _PairSheetState extends ConsumerState<PairSheet>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabCtrl;
-  final _pinCtrl = TextEditingController();
-  bool _loading = false;
-  String? _errorMsg; // PIN / QR error
-  String? _autoErrorMsg; // Auto-pair error
+enum _PairPhase {
+  autoWaiting, // spinner — waiting for auto-pair approval
+  autoDenied,  // denied — show "Use PIN instead" button
+  pinInput,    // 6-box OTP input
+  pinLoading,  // spinner while submitting PIN
+  qrLoading,   // spinner while submitting QR
+  success,     // green check + name edit + Done button
+}
 
-  // Auto-pair state
-  bool _autoPolling = false;
-  http.Client? _pollClient;
+class _PairSheetState extends ConsumerState<PairSheet> {
+  _PairPhase _phase = _PairPhase.autoWaiting;
+
+  // Auto-pair
   bool _cancelled = false;
+  http.Client? _pollClient;
+
+  // PIN OTP
+  final _pinFocusNode = FocusNode();
+  final _pinCtrl = TextEditingController();
+  String? _pinError;
+
+  // Success state
+  PairedServer? _savedServer;
+  late final TextEditingController _nameCtrl;
+  String _serverName = '';
 
   @override
   void initState() {
     super.initState();
-    // 3 tabs: 0=Auto, 1=PIN, 2=QR
-    _tabCtrl = TabController(length: 3, vsync: this);
-    // Kick off auto-pair as soon as sheet is shown.
+    _serverName = widget.server.name;
+    _nameCtrl = TextEditingController(text: _serverName);
     WidgetsBinding.instance.addPostFrameCallback((_) => _startAutoPair());
   }
 
@@ -50,19 +62,19 @@ class _PairSheetState extends ConsumerState<PairSheet>
   void dispose() {
     _cancelled = true;
     _pollClient?.close();
-    _tabCtrl.dispose();
     _pinCtrl.dispose();
+    _pinFocusNode.dispose();
+    _nameCtrl.dispose();
     super.dispose();
   }
 
-  // ─── Auto-pair ────────────────────────────────────────────────────────────
+  // ─── Auto-pair ─────────────────────────────────────────────────────────────
 
   Future<void> _startAutoPair() async {
     if (!mounted) return;
     setState(() {
-      _autoPolling = true;
+      _phase = _PairPhase.autoWaiting;
       _cancelled = false;
-      _autoErrorMsg = null;
     });
 
     try {
@@ -84,22 +96,14 @@ class _PairSheetState extends ConsumerState<PairSheet>
       if (!mounted || _cancelled) return;
 
       if (resp.statusCode == 404) {
-        // Old server — gracefully fall back to PIN tab.
-        final s = ref.read(stringsProvider);
-        setState(() {
-          _autoPolling = false;
-          _autoErrorMsg = s.pairSheetAutoOldServer;
-        });
-        _tabCtrl.animateTo(1); // Switch to PIN tab
+        // Old server — silently fall to PIN input
+        setState(() => _phase = _PairPhase.pinInput);
         return;
       }
 
       if (resp.statusCode != 200) {
-        final s = ref.read(stringsProvider);
-        setState(() {
-          _autoPolling = false;
-          _autoErrorMsg = s.pairSheetAutoNetError;
-        });
+        // Any other error — silently fall to PIN input
+        setState(() => _phase = _PairPhase.pinInput);
         return;
       }
 
@@ -109,12 +113,8 @@ class _PairSheetState extends ConsumerState<PairSheet>
       await _pollLoop(pollUrl);
     } catch (e) {
       if (!mounted || _cancelled) return;
-      final s = ref.read(stringsProvider);
-      // 404 comes as ClientException on some platforms; treat unknown as net err
-      setState(() {
-        _autoPolling = false;
-        _autoErrorMsg = s.pairSheetAutoNetError;
-      });
+      // Network error — fall to PIN input silently
+      setState(() => _phase = _PairPhase.pinInput);
     }
   }
 
@@ -131,11 +131,7 @@ class _PairSheetState extends ConsumerState<PairSheet>
         if (!mounted || _cancelled) return;
 
         if (streamedResp.statusCode != 200) {
-          final s = ref.read(stringsProvider);
-          setState(() {
-            _autoPolling = false;
-            _autoErrorMsg = s.pairSheetAutoNetError;
-          });
+          if (mounted) setState(() => _phase = _PairPhase.pinInput);
           return;
         }
 
@@ -145,48 +141,30 @@ class _PairSheetState extends ConsumerState<PairSheet>
 
         switch (status) {
           case 'pending':
-            // Continue polling immediately
-            break;
+            break; // continue polling
           case 'approved':
             final deviceToken = body['deviceToken'] as String;
             final serverId =
                 body['serverId'] as String? ?? widget.server.serverId;
-            setState(() => _autoPolling = false);
-            await _savePaired(serverId, deviceToken);
+            await _saveImmediately(serverId, deviceToken);
             return;
           case 'denied':
-            final s = ref.read(stringsProvider);
-            setState(() {
-              _autoPolling = false;
-              _autoErrorMsg = s.pairSheetAutoDenied;
-            });
+            if (mounted) setState(() => _phase = _PairPhase.autoDenied);
             return;
           case 'expired':
-            final s = ref.read(stringsProvider);
-            setState(() {
-              _autoPolling = false;
-              _autoErrorMsg = s.pairSheetAutoExpired;
-            });
+            // Fall to PIN input silently
+            if (mounted) setState(() => _phase = _PairPhase.pinInput);
             return;
           default:
-            // Unexpected status — treat as network issue
-            final s = ref.read(stringsProvider);
-            setState(() {
-              _autoPolling = false;
-              _autoErrorMsg = s.pairSheetAutoNetError;
-            });
+            if (mounted) setState(() => _phase = _PairPhase.pinInput);
             return;
         }
       } on TimeoutException {
-        // 35s timeout: server may have dropped the long-poll; just retry
+        // 35s timeout: long-poll dropped; retry
         if (!mounted || _cancelled) return;
       } catch (e) {
         if (!mounted || _cancelled) return;
-        final s = ref.read(stringsProvider);
-        setState(() {
-          _autoPolling = false;
-          _autoErrorMsg = s.pairSheetAutoNetError;
-        });
+        setState(() => _phase = _PairPhase.pinInput);
         return;
       } finally {
         _pollClient?.close();
@@ -199,22 +177,42 @@ class _PairSheetState extends ConsumerState<PairSheet>
     _cancelled = true;
     _pollClient?.close();
     _pollClient = null;
-    setState(() => _autoPolling = false);
-    Navigator.of(context).pop();
+    if (mounted) Navigator.of(context).pop();
   }
 
-  // ─── PIN pair ─────────────────────────────────────────────────────────────
+  // ─── Save on approval ──────────────────────────────────────────────────────
+
+  Future<void> _saveImmediately(String serverId, String deviceToken) async {
+    final server = PairedServer(
+      serverId: serverId,
+      deviceToken: deviceToken,
+      name: widget.server.name,
+      host: widget.server.host,
+      port: widget.server.port,
+      lastSeen: DateTime.now(),
+    );
+    await ref.read(pairedServersProvider.notifier).add(server);
+    if (!mounted) return;
+    setState(() {
+      _savedServer = server;
+      _serverName = widget.server.name;
+      _nameCtrl.text = _serverName;
+      _phase = _PairPhase.success;
+    });
+  }
+
+  // ─── PIN pair ──────────────────────────────────────────────────────────────
 
   Future<void> _pairWithPin() async {
     final pin = _pinCtrl.text.trim();
     if (pin.length != 6) {
       final s = ref.read(stringsProvider);
-      setState(() => _errorMsg = s.pairSheetBadPin);
+      setState(() => _pinError = s.pairSheetBadPin);
       return;
     }
     setState(() {
-      _loading = true;
-      _errorMsg = null;
+      _phase = _PairPhase.pinLoading;
+      _pinError = null;
     });
     try {
       final deviceId = await PairedServersNotifier.getOrCreateDeviceId();
@@ -239,20 +237,20 @@ class _PairSheetState extends ConsumerState<PairSheet>
         final deviceToken = body['deviceToken'] as String;
         final serverId =
             body['serverId'] as String? ?? widget.server.serverId;
-        await _savePaired(serverId, deviceToken);
+        await _saveImmediately(serverId, deviceToken);
       } else {
         final error = body['error'] as String? ?? 'unknown';
         setState(() {
-          _loading = false;
-          _errorMsg = _pinErrorMessage(error);
+          _phase = _PairPhase.pinInput;
+          _pinError = _pinErrorMessage(error);
         });
       }
     } catch (e) {
       if (!mounted) return;
       final s = ref.read(stringsProvider);
       setState(() {
-        _loading = false;
-        _errorMsg = s.pairSheetConnFailed;
+        _phase = _PairPhase.pinInput;
+        _pinError = s.pairSheetConnFailed;
       });
     }
   }
@@ -271,7 +269,7 @@ class _PairSheetState extends ConsumerState<PairSheet>
     }
   }
 
-  // ─── QR pair ──────────────────────────────────────────────────────────────
+  // ─── QR pair ───────────────────────────────────────────────────────────────
 
   Future<void> _pairWithQr() async {
     final result = await Navigator.of(context).push<PawTermQrResult>(
@@ -280,8 +278,8 @@ class _PairSheetState extends ConsumerState<PairSheet>
     if (result == null || !mounted) return;
 
     setState(() {
-      _loading = true;
-      _errorMsg = null;
+      _phase = _PairPhase.qrLoading;
+      _pinError = null;
     });
 
     try {
@@ -308,12 +306,12 @@ class _PairSheetState extends ConsumerState<PairSheet>
         final deviceToken = body['deviceToken'] as String;
         final serverId =
             body['serverId'] as String? ?? widget.server.serverId;
-        await _savePaired(serverId, deviceToken);
+        await _saveImmediately(serverId, deviceToken);
       } else {
         final s = ref.read(stringsProvider);
         setState(() {
-          _loading = false;
-          _errorMsg =
+          _phase = _PairPhase.pinInput;
+          _pinError =
               s.pairSheetFailed.replaceAll('{error}', '${resp.statusCode}');
         });
       }
@@ -321,29 +319,13 @@ class _PairSheetState extends ConsumerState<PairSheet>
       if (!mounted) return;
       final s = ref.read(stringsProvider);
       setState(() {
-        _loading = false;
-        _errorMsg = s.pairSheetConnFailed;
+        _phase = _PairPhase.pinInput;
+        _pinError = s.pairSheetConnFailed;
       });
     }
   }
 
-  // ─── Shared ───────────────────────────────────────────────────────────────
-
-  Future<void> _savePaired(String serverId, String deviceToken) async {
-    final server = PairedServer(
-      serverId: serverId,
-      deviceToken: deviceToken,
-      name: widget.server.name,
-      host: widget.server.host,
-      port: widget.server.port,
-      lastSeen: DateTime.now(),
-    );
-    await ref.read(pairedServersProvider.notifier).add(server);
-    if (!mounted) return;
-    Navigator.of(context).pop(server);
-  }
-
-  // ─── Build ────────────────────────────────────────────────────────────────
+  // ─── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -355,7 +337,7 @@ class _PairSheetState extends ConsumerState<PairSheet>
           EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         constraints:
-            BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+            BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.75),
         decoration: BoxDecoration(
           color: t.surface,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
@@ -364,7 +346,7 @@ class _PairSheetState extends ConsumerState<PairSheet>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Handle
+            // Handle bar
             Container(
               margin: const EdgeInsets.only(top: 12),
               width: 36,
@@ -372,6 +354,7 @@ class _PairSheetState extends ConsumerState<PairSheet>
               decoration: BoxDecoration(
                   color: t.border, borderRadius: BorderRadius.circular(2)),
             ),
+            // Header
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
               child: Column(
@@ -386,57 +369,20 @@ class _PairSheetState extends ConsumerState<PairSheet>
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${widget.server.host}:${widget.server.port}  ·  ${widget.server.serverId.substring(widget.server.serverId.length - 6)}',
+                    '${widget.server.host}:${widget.server.port}'
+                    '${widget.server.serverId.isNotEmpty ? '  ·  ${widget.server.serverId.length >= 6 ? widget.server.serverId.substring(widget.server.serverId.length - 6) : widget.server.serverId}' : ''}',
                     style: TextStyle(fontSize: 12, color: t.textMuted),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 12),
-            TabBar(
-              controller: _tabCtrl,
-              labelColor: t.accent,
-              unselectedLabelColor: t.textMuted,
-              indicatorColor: t.accent,
-              indicatorSize: TabBarIndicatorSize.label,
-              tabs: [
-                Tab(text: s.pairSheetAutoTab),
-                Tab(text: s.pairSheetPinTab),
-                Tab(text: s.pairSheetQrTab),
-              ],
-            ),
+            const SizedBox(height: 4),
             const Divider(height: 1),
+            // Body
             Flexible(
-              child: TabBarView(
-                controller: _tabCtrl,
-                children: [
-                  _AutoTab(
-                    polling: _autoPolling,
-                    errorMsg: _autoErrorMsg,
-                    onCancel: _cancelAutoPair,
-                    onRetry: () {
-                      setState(() => _autoErrorMsg = null);
-                      _startAutoPair();
-                    },
-                    t: t,
-                    s: s,
-                  ),
-                  _PinTab(
-                    pinCtrl: _pinCtrl,
-                    loading: _loading,
-                    errorMsg: _errorMsg,
-                    onSubmit: _pairWithPin,
-                    t: t,
-                    s: s,
-                  ),
-                  _QrTab(
-                    loading: _loading,
-                    errorMsg: _errorMsg,
-                    onTap: _pairWithQr,
-                    t: t,
-                    s: s,
-                  ),
-                ],
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
+                child: _buildPhaseBody(t, s),
               ),
             ),
           ],
@@ -444,233 +390,373 @@ class _PairSheetState extends ConsumerState<PairSheet>
       ),
     );
   }
-}
 
-// ─── Auto tab ─────────────────────────────────────────────────────────────────
+  Widget _buildPhaseBody(AppTokens t, Strings s) {
+    switch (_phase) {
+      case _PairPhase.autoWaiting:
+        return _buildAutoWaiting(t, s);
+      case _PairPhase.autoDenied:
+        return _buildAutoDenied(t, s);
+      case _PairPhase.pinInput:
+        return _buildPinInput(t, s);
+      case _PairPhase.pinLoading:
+        return _buildSpinner(t, s.pairSheetPairBtn);
+      case _PairPhase.qrLoading:
+        return _buildSpinner(t, s.pairSheetQrBtn);
+      case _PairPhase.success:
+        return _buildSuccess(t, s);
+    }
+  }
 
-class _AutoTab extends StatelessWidget {
-  final bool polling;
-  final String? errorMsg;
-  final VoidCallback onCancel;
-  final VoidCallback onRetry;
-  final AppTokens t;
-  final Strings s;
+  // ─── Auto waiting ──────────────────────────────────────────────────────────
 
-  const _AutoTab({
-    required this.polling,
-    required this.errorMsg,
-    required this.onCancel,
-    required this.onRetry,
-    required this.t,
-    required this.s,
-  });
+  Widget _buildAutoWaiting(AppTokens t, Strings s) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const SizedBox(height: 8),
+        SizedBox(
+          width: 48,
+          height: 48,
+          child: CircularProgressIndicator(strokeWidth: 3, color: t.accent),
+        ),
+        const SizedBox(height: 20),
+        Text(
+          s.pairSheetAutoWaiting,
+          style: TextStyle(
+              fontSize: 16, fontWeight: FontWeight.w600, color: t.text),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          s.pairSheetAutoHint,
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.5),
+        ),
+        const SizedBox(height: 32),
+        TextButton(
+          onPressed: _cancelAutoPair,
+          child: Text(
+            s.pairSheetAutoCancel,
+            style: TextStyle(fontSize: 15, color: t.textMuted),
+          ),
+        ),
+      ],
+    );
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 32, 20, 40),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          if (polling) ...[
-            SizedBox(
-              width: 48,
-              height: 48,
-              child: CircularProgressIndicator(
-                strokeWidth: 3,
-                color: t.accent,
-              ),
+  // ─── Auto denied ───────────────────────────────────────────────────────────
+
+  Widget _buildAutoDenied(AppTokens t, Strings s) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const SizedBox(height: 8),
+        Icon(Icons.block_rounded, size: 44, color: t.error),
+        const SizedBox(height: 16),
+        Text(
+          s.pairSheetAutoDenied,
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 15, color: t.text, height: 1.5),
+        ),
+        const SizedBox(height: 32),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: () {
+              _pinCtrl.clear();
+              setState(() {
+                _pinError = null;
+                _phase = _PairPhase.pinInput;
+              });
+            },
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
             ),
-            const SizedBox(height: 20),
-            Text(
-              s.pairSheetAutoWaiting,
+            child: Text(
+              s.pairSheetUsePinInstead,
+              style:
+                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextButton(
+          onPressed: _cancelAutoPair,
+          child: Text(
+            s.pairSheetAutoCancel,
+            style: TextStyle(fontSize: 14, color: t.textMuted),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ─── PIN input (6-box OTP) ─────────────────────────────────────────────────
+
+  Widget _buildPinInput(AppTokens t, Strings s) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          s.pairSheetPinHint,
+          style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.5),
+        ),
+        const SizedBox(height: 20),
+        // 6-box OTP widget
+        _OtpBoxes(
+          controller: _pinCtrl,
+          focusNode: _pinFocusNode,
+          t: t,
+          onCompleted: (_) => _pairWithPin(),
+        ),
+        if (_pinError != null) ...[
+          const SizedBox(height: 10),
+          Text(_pinError!, style: TextStyle(fontSize: 12, color: t.error)),
+        ],
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: _pairWithPin,
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            child: Text(
+              s.pairSheetPairBtn,
+              style:
+                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        // QR link at bottom
+        Center(
+          child: GestureDetector(
+            onTap: _pairWithQr,
+            child: Text(
+              s.pairSheetScanQr,
               style: TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.w600, color: t.text),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              s.pairSheetAutoHint,
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.5),
-            ),
-            const SizedBox(height: 28),
-            TextButton(
-              onPressed: onCancel,
-              child: Text(
-                s.pairSheetAutoCancel,
-                style: TextStyle(fontSize: 15, color: t.textMuted),
+                fontSize: 13,
+                color: t.accent,
+                decoration: TextDecoration.underline,
+                decorationColor: t.accent,
               ),
             ),
-          ] else ...[
-            if (errorMsg != null) ...[
-              Icon(Icons.error_outline_rounded, size: 40, color: t.error),
-              const SizedBox(height: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ─── Generic spinner ───────────────────────────────────────────────────────
+
+  Widget _buildSpinner(AppTokens t, String label) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const SizedBox(height: 16),
+        SizedBox(
+          width: 44,
+          height: 44,
+          child: CircularProgressIndicator(strokeWidth: 3, color: t.accent),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          label,
+          style: TextStyle(fontSize: 14, color: t.textMuted),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  // ─── Success ───────────────────────────────────────────────────────────────
+
+  Widget _buildSuccess(AppTokens t, Strings s) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Center(
+          child: Column(
+            children: [
+              const SizedBox(height: 8),
+              Icon(Icons.check_circle_rounded, size: 56, color: t.success),
+              const SizedBox(height: 14),
               Text(
-                errorMsg!,
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: t.error, height: 1.5),
+                s.pairSheetSuccess,
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: t.text),
               ),
-              const SizedBox(height: 24),
-              FilledButton(
-                onPressed: onRetry,
-                style: FilledButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                child: Text(
-                  s.genericRetry,
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600),
-                ),
+              const SizedBox(height: 4),
+              Text(
+                '${widget.server.host}:${widget.server.port}',
+                style: TextStyle(fontSize: 13, color: t.textMuted),
               ),
             ],
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-// ─── PIN tab ──────────────────────────────────────────────────────────────────
-
-class _PinTab extends StatelessWidget {
-  final TextEditingController pinCtrl;
-  final bool loading;
-  final String? errorMsg;
-  final VoidCallback onSubmit;
-  final AppTokens t;
-  final Strings s;
-
-  const _PinTab({
-    required this.pinCtrl,
-    required this.loading,
-    required this.errorMsg,
-    required this.onSubmit,
-    required this.t,
-    required this.s,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            s.pairSheetPinHint,
-            style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.5),
           ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: pinCtrl,
-            keyboardType: TextInputType.number,
-            maxLength: 6,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        ),
+        const SizedBox(height: 28),
+        // Name label + text field
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            s.pairSheetNameLabel,
             style: TextStyle(
-              fontSize: 28,
-              letterSpacing: 8,
-              fontWeight: FontWeight.w700,
-              color: t.text,
-            ),
-            textAlign: TextAlign.center,
-            decoration: InputDecoration(
-              hintText: '000000',
-              hintStyle:
-                  TextStyle(color: t.textDim, letterSpacing: 8, fontSize: 28),
-              counterText: '',
-            ),
-            onSubmitted: (_) => onSubmit(),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: t.textMuted),
           ),
-          if (errorMsg != null) ...[
-            const SizedBox(height: 12),
-            Text(errorMsg!, style: TextStyle(fontSize: 12, color: t.error)),
-          ],
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              onPressed: loading ? null : onSubmit,
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
-              child: loading
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: t.surface),
-                    )
-                  : Text(s.pairSheetPairBtn,
-                      style: const TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w600)),
+        ),
+        TextField(
+          controller: _nameCtrl,
+          style: TextStyle(fontSize: 14, color: t.text),
+          decoration: InputDecoration(hintText: widget.server.name),
+          onChanged: (v) => setState(() => _serverName = v),
+        ),
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: _onDone,
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            child: Text(
+              s.pairSheetDone,
+              style:
+                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
+  }
+
+  Future<void> _onDone() async {
+    final saved = _savedServer;
+    if (saved == null) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final newName = _nameCtrl.text.trim();
+    PairedServer result = saved;
+    if (newName.isNotEmpty && newName != saved.name) {
+      result = saved.copyWith(name: newName);
+      await ref.read(pairedServersProvider.notifier).update(result);
+    }
+    if (mounted) Navigator.of(context).pop(result);
   }
 }
 
-// ─── QR tab ───────────────────────────────────────────────────────────────────
+// ─── 6-box OTP widget ──────────────────────────────────────────────────────────
 
-class _QrTab extends StatelessWidget {
-  final bool loading;
-  final String? errorMsg;
-  final VoidCallback onTap;
+class _OtpBoxes extends StatefulWidget {
+  final TextEditingController controller;
+  final FocusNode focusNode;
   final AppTokens t;
-  final Strings s;
+  final ValueChanged<String> onCompleted;
 
-  const _QrTab({
-    required this.loading,
-    required this.errorMsg,
-    required this.onTap,
+  const _OtpBoxes({
+    required this.controller,
+    required this.focusNode,
     required this.t,
-    required this.s,
+    required this.onCompleted,
   });
 
   @override
+  State<_OtpBoxes> createState() => _OtpBoxesState();
+}
+
+class _OtpBoxesState extends State<_OtpBoxes> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    setState(() {});
+    if (widget.controller.text.length == 6) {
+      widget.onCompleted(widget.controller.text);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+    final t = widget.t;
+    final value = widget.controller.text;
+    const boxW = 44.0;
+    const boxH = 54.0;
+
+    return GestureDetector(
+      onTap: () => widget.focusNode.requestFocus(),
+      child: Stack(
         children: [
-          Text(
-            s.pairSheetPinHint,
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.5),
+          // Visible boxes
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: List.generate(6, (i) {
+              final hasChar = i < value.length;
+              final isCursor = i == value.length && value.length < 6;
+              return Container(
+                width: boxW,
+                height: boxH,
+                decoration: BoxDecoration(
+                  color: t.surfaceHi,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: isCursor
+                        ? t.accent
+                        : hasChar
+                            ? t.border
+                            : t.border,
+                    width: isCursor ? 1.8 : 1.0,
+                  ),
+                ),
+                alignment: Alignment.center,
+                child: hasChar
+                    ? Text(
+                        value[i],
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w700,
+                          color: t.text,
+                        ),
+                      )
+                    : null,
+              );
+            }),
           ),
-          const SizedBox(height: 24),
-          if (errorMsg != null) ...[
-            Text(errorMsg!, style: TextStyle(fontSize: 12, color: t.error)),
-            const SizedBox(height: 16),
-          ],
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: loading ? null : onTap,
-              icon: loading
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: t.surface),
-                    )
-                  : const Icon(Icons.qr_code_scanner_rounded, size: 20),
-              label: Text(s.pairSheetQrBtn,
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600)),
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
+          // Hidden full-width TextField capturing actual input
+          Opacity(
+            opacity: 0,
+            child: TextField(
+              controller: widget.controller,
+              focusNode: widget.focusNode,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(counterText: ''),
+              autofocus: true,
             ),
           ),
         ],

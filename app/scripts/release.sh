@@ -15,6 +15,15 @@ cd "$APP_DIR"
 
 PUBSPEC="$APP_DIR/pubspec.yaml"
 
+# -------- 0. Branch guard --------
+
+CURRENT_BRANCH=$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  echo "✗ stable release must be run from main (current: $CURRENT_BRANCH)" >&2
+  echo "  Switch to main before releasing." >&2
+  exit 1
+fi
+
 # -------- 1. Read version --------
 
 CURRENT=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")

@@ -20,8 +20,7 @@ PUBSPEC="$APP_DIR/pubspec.yaml"
 OUT_DIR="$APP_DIR/build/app/outputs/flutter-apk"
 RELEASES_DIR="$OUT_DIR/releases"
 
-# -------- 0. Debug shortcut --------
-# Pass --debug (or -d) to skip version bump and build a debug APK instantly.
+# -------- 0. Branch guard + debug flag --------
 
 DEBUG=0
 for arg in "$@"; do
@@ -29,6 +28,15 @@ for arg in "$@"; do
     --debug|-d) DEBUG=1 ;;
   esac
 done
+
+if [[ $DEBUG -eq 0 ]]; then
+  CURRENT_BRANCH=$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if [[ "$CURRENT_BRANCH" != "main" ]]; then
+    echo "✗ stable release must be built from main (current: $CURRENT_BRANCH)" >&2
+    echo "  Use build-dev.sh for dev builds, or switch to main first." >&2
+    exit 1
+  fi
+fi
 
 if [[ $DEBUG -eq 1 ]]; then
   echo

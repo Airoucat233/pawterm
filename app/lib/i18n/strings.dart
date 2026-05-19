@@ -141,6 +141,7 @@ class Strings {
   final String settingsAbout;
   final String settingsVersion;
   final String settingsAuthor;
+  final String settingsProjectPage;
   final String settingsAppearance;
   final String settingsTheme;
   final String settingsThemeSystem;
@@ -167,6 +168,8 @@ class Strings {
   final String timeWeeksAgoTpl;   // "{n} 周前"
 
   // Add-connection sheet
+  final String addConnectionPairConnect;
+  final String addConnectionPort;
   final String addConnectionEditTitle;
   final String addConnectionPortNote;
   final String addConnectionDetecting;
@@ -219,6 +222,12 @@ class Strings {
   final String pairSheetAutoNetError;
   final String pairSheetAutoOldServer;
   final String pairSheetAutoCancel;
+  // New single-flow pairing strings
+  final String pairSheetSuccess;
+  final String pairSheetUsePinInstead;
+  final String pairSheetDone;
+  final String pairSheetNameLabel;
+  final String pairSheetScanQr;
 
   // Add-project sheet
   final String addProjectEmptyDir;
@@ -253,6 +262,8 @@ class Strings {
 
   // Check for updates
   final String settingsCheckUpdate;
+  final String settingsDevChannel;
+  final String settingsDevChannelSub;
   final String updateChecking;
   final String updateUpToDate;
   final String updateAvailableTpl; // {version}
@@ -383,6 +394,7 @@ class Strings {
     required this.settingsAbout,
     required this.settingsVersion,
     required this.settingsAuthor,
+    required this.settingsProjectPage,
     required this.settingsAppearance,
     required this.settingsTheme,
     required this.settingsThemeSystem,
@@ -403,6 +415,8 @@ class Strings {
     required this.timeHoursAgoTpl,
     required this.timeDaysAgoTpl,
     required this.timeWeeksAgoTpl,
+    required this.addConnectionPairConnect,
+    required this.addConnectionPort,
     required this.addConnectionEditTitle,
     required this.addConnectionPortNote,
     required this.addConnectionDetecting,
@@ -448,6 +462,11 @@ class Strings {
     required this.pairSheetAutoNetError,
     required this.pairSheetAutoOldServer,
     required this.pairSheetAutoCancel,
+    required this.pairSheetSuccess,
+    required this.pairSheetUsePinInstead,
+    required this.pairSheetDone,
+    required this.pairSheetNameLabel,
+    required this.pairSheetScanQr,
     required this.addProjectEmptyDir,
     required this.addProjectGoParent,
     required this.addProjectNewFolder,
@@ -472,6 +491,8 @@ class Strings {
     required this.thinkingExpanded,
     required this.timeYesterday,
     required this.settingsCheckUpdate,
+    required this.settingsDevChannel,
+    required this.settingsDevChannelSub,
     required this.updateChecking,
     required this.updateUpToDate,
     required this.updateAvailableTpl,
@@ -602,6 +623,7 @@ const Strings stringsEn = Strings(
   settingsAbout: 'About',
   settingsVersion: 'Version',
   settingsAuthor: 'Author',
+  settingsProjectPage: 'Project Page',
   settingsAppearance: 'Appearance',
   settingsTheme: 'Theme',
   settingsThemeSystem: 'Follow system',
@@ -623,6 +645,8 @@ const Strings stringsEn = Strings(
   timeHoursAgoTpl: '{n}h ago',
   timeDaysAgoTpl: '{n}d ago',
   timeWeeksAgoTpl: '{n}w ago',
+  addConnectionPairConnect: 'Pair & Connect',
+  addConnectionPort: 'Port',
   addConnectionEditTitle: 'Edit connection',
   addConnectionPortNote: 'Default port 8765; use IP:port to override',
   addConnectionDetecting: 'Connecting and identifying server…',
@@ -668,6 +692,11 @@ const Strings stringsEn = Strings(
   pairSheetAutoNetError: 'Network error, please retry',
   pairSheetAutoOldServer: 'Server is too old, use PIN to pair',
   pairSheetAutoCancel: 'Cancel',
+  pairSheetSuccess: 'Connected!',
+  pairSheetUsePinInstead: 'Use PIN instead',
+  pairSheetDone: 'Done',
+  pairSheetNameLabel: 'Name',
+  pairSheetScanQr: 'Scan QR code',
   addProjectEmptyDir: 'Empty directory',
   addProjectGoParent: 'Up',
   addProjectNewFolder: 'New folder',
@@ -696,6 +725,8 @@ const Strings stringsEn = Strings(
   thinkingExpanded: 'Thinking trace',
   timeYesterday: 'Yesterday',
   settingsCheckUpdate: 'Check for updates',
+  settingsDevChannel: 'Dev channel',
+  settingsDevChannelSub: 'Receive pre-release builds',
   updateChecking: 'Checking…',
   updateUpToDate: 'Up to date',
   updateAvailableTpl: '{version} available',
@@ -825,6 +856,7 @@ const Strings stringsZh = Strings(
   settingsAbout: '关于',
   settingsVersion: '版本',
   settingsAuthor: '作者',
+  settingsProjectPage: '项目主页',
   settingsAppearance: '外观',
   settingsTheme: '主题',
   settingsThemeSystem: '跟随系统',
@@ -846,6 +878,8 @@ const Strings stringsZh = Strings(
   timeHoursAgoTpl: '{n}h 前',
   timeDaysAgoTpl: '{n} 天前',
   timeWeeksAgoTpl: '{n} 周前',
+  addConnectionPairConnect: '配对并连接',
+  addConnectionPort: '端口',
   addConnectionEditTitle: '编辑连接',
   addConnectionPortNote: '端口默认 8765，可写 IP:端口 指定其他端口',
   addConnectionDetecting: '正在连接并识别服务端…',
@@ -891,6 +925,11 @@ const Strings stringsZh = Strings(
   pairSheetAutoNetError: '网络异常，请重试',
   pairSheetAutoOldServer: '开发机版本太旧，使用 PIN 配对',
   pairSheetAutoCancel: '取消',
+  pairSheetSuccess: '连接成功！',
+  pairSheetUsePinInstead: '使用 PIN 配对',
+  pairSheetDone: '完成',
+  pairSheetNameLabel: '名称',
+  pairSheetScanQr: '扫描二维码',
   addProjectEmptyDir: '空目录',
   addProjectGoParent: '上级',
   addProjectNewFolder: '新建',
@@ -919,6 +958,8 @@ const Strings stringsZh = Strings(
   thinkingExpanded: '思考过程',
   timeYesterday: '昨天',
   settingsCheckUpdate: '检测更新',
+  settingsDevChannel: '开发频道',
+  settingsDevChannelSub: '接收预发布版本',
   updateChecking: '检测中…',
   updateUpToDate: '已是最新',
   updateAvailableTpl: '有新版本 {version}',

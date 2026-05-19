@@ -76,3 +76,25 @@ final permissionModeProvider =
     StateNotifierProvider<PermissionModeNotifier, CcPermissionMode>(
   (_) => PermissionModeNotifier(),
 );
+
+class DevChannelNotifier extends StateNotifier<bool> {
+  DevChannelNotifier() : super(false) {
+    _load();
+  }
+
+  static const _key = 'dev_channel';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? false;
+  }
+
+  Future<void> set(bool value) async {
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, value);
+  }
+}
+
+final devChannelProvider =
+    StateNotifierProvider<DevChannelNotifier, bool>((_) => DevChannelNotifier());

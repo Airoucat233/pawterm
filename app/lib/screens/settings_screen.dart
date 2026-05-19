@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_file/open_file.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -125,6 +126,18 @@ class SettingsBody extends ConsumerWidget {
             label: s.settingsAuthor,
             value: 'airoucat',
           ),
+          _Divider(),
+          _TappableRow(
+            icon: Icons.code_outlined,
+            label: s.settingsProjectPage,
+            trailing: const Icon(Icons.open_in_new, size: 14),
+            onTap: () => launchUrl(
+              Uri.parse('https://github.com/Airoucat233/pawterm'),
+              mode: LaunchMode.externalApplication,
+            ),
+          ),
+          _Divider(),
+          const _DevChannelTile(),
           _Divider(),
           const _CheckUpdateTile(),
         ]),
@@ -337,6 +350,73 @@ class _InfoRow extends StatelessWidget {
   }
 }
 
+class _TappableRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Widget? trailing;
+  final VoidCallback onTap;
+  const _TappableRow({required this.icon, required this.label, required this.onTap, this.trailing});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: t.textMuted),
+            const SizedBox(width: 10),
+            Text(label, style: TextStyle(fontSize: 14, color: t.text)),
+            const Spacer(),
+            if (trailing != null)
+              IconTheme(data: IconThemeData(color: t.textDim), child: trailing!),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Dev channel toggle ─────────────────────────────────────────────────────────
+
+class _DevChannelTile extends ConsumerWidget {
+  const _DevChannelTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = AppTokens.of(context);
+    final s = ref.watch(stringsProvider);
+    final enabled = ref.watch(devChannelProvider);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: [
+          Icon(Icons.science_outlined, size: 18, color: t.textMuted),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(s.settingsDevChannel, style: TextStyle(fontSize: 14, color: t.text)),
+                Text(s.settingsDevChannelSub,
+                    style: TextStyle(fontSize: 11, color: t.textMuted)),
+              ],
+            ),
+          ),
+          Switch(
+            value: enabled,
+            onChanged: (v) => ref.read(devChannelProvider.notifier).set(v),
+            activeColor: t.accent,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Check for updates ──────────────────────────────────────────────────────────
 
 enum _UpdateStatus { idle, checking, upToDate, hasUpdate, checkFailed }
@@ -362,7 +442,8 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
       current = pkgInfo.version;
     } catch (_) {}
 
-    final release = await fetchLatestRelease();
+    final devChannel = ref.read(devChannelProvider);
+    final release = await fetchLatestRelease(devChannel: devChannel);
 
     if (!mounted) return;
 
@@ -373,7 +454,9 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
       });
       return;
     }
-    if (isNewerVersion(release.tagName, current)) {
+    // Dev channel: always offer the dev release if it exists.
+    final hasUpdate = devChannel ? true : isNewerVersion(release.tagName, current);
+    if (hasUpdate) {
       setState(() {
         _status = _UpdateStatus.hasUpdate;
         _release = release;

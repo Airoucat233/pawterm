@@ -36,7 +36,8 @@ class GithubRelease {
   String get version => tagName.startsWith('v') ? tagName.substring(1) : tagName;
 }
 
-Future<GithubRelease?> fetchLatestRelease() async {
+Future<GithubRelease?> fetchLatestRelease({bool devChannel = false}) async {
+  if (devChannel) return _fetchDevRelease();
   try {
     final resp = await http
         .get(
@@ -46,6 +47,25 @@ Future<GithubRelease?> fetchLatestRelease() async {
         .timeout(const Duration(seconds: 10));
     if (resp.statusCode == 200) {
       return GithubRelease.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+    }
+  } catch (_) {}
+  return null;
+}
+
+Future<GithubRelease?> _fetchDevRelease() async {
+  try {
+    final resp = await http
+        .get(
+          Uri.parse('https://api.github.com/repos/$_repo/releases'),
+          headers: {'Accept': 'application/vnd.github+json'},
+        )
+        .timeout(const Duration(seconds: 10));
+    if (resp.statusCode == 200) {
+      final list = jsonDecode(resp.body) as List;
+      for (final item in list) {
+        final r = GithubRelease.fromJson(item as Map<String, dynamic>);
+        if (r.tagName == 'dev') return r;
+      }
     }
   } catch (_) {}
   return null;
