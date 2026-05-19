@@ -10,7 +10,7 @@ import 'package:http/http.dart' as http;
 import '../i18n/locale_provider.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
-import 'lan_scan_sheet.dart';
+import 'lan_scan_sheet.dart'; // also re-exports LanScanResult
 import 'qr_scan_screen.dart';
 
 const _emojis = ['🖥️', '💻', '☁️', '🌐', '🏢', '🚀', '⚡', '🔧'];
@@ -160,19 +160,55 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   }
 
   Future<void> _openLanScan() async {
-    final result = await showModalBottomSheet<LanScanResult>(
+    // LanScanSheet returns:
+    //   PairedServer — user just completed a new pairing
+    //   LanScanResult — user tapped an already-paired server
+    //   null — dismissed
+    final result = await showModalBottomSheet<Object>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => const LanScanSheet(),
     );
     if (result == null || !mounted) return;
-    _urlCtrl.text = result.url.replaceFirst(RegExp(r'^https?://'), '');
-    _tokenCtrl.text = result.token;
-    _detectedName = result.hostname;
-    _detectedVersion = result.version;
-    _nameCtrl.text = result.hostname;
-    setState(() => _phase = _SheetState.detected);
+
+    if (result is PairedServer) {
+      // New pairing completed — create a ServerEntry backed by deviceToken.
+      final notifier = ref.read(connectionsProvider.notifier);
+      await notifier.add(
+        name: result.name,
+        emoji: '🖥️',
+        url: result.httpBase,
+        token: result.deviceToken,
+      );
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+
+    if (result is LanScanResult) {
+      // Already paired — look up the PairedServer for token.
+      final paired = ref
+          .read(pairedServersProvider)
+          .where((s) => s.serverId == result.serverId)
+          .firstOrNull;
+      if (paired != null) {
+        final notifier = ref.read(connectionsProvider.notifier);
+        await notifier.add(
+          name: paired.name,
+          emoji: '🖥️',
+          url: paired.httpBase,
+          token: paired.deviceToken,
+        );
+        if (mounted) Navigator.of(context).pop();
+      } else {
+        // Paired server not in local store — fall back to manual token entry.
+        _urlCtrl.text = '${result.host}:${result.port}';
+        _detectedName = result.name;
+        _detectedVersion = result.version;
+        _nameCtrl.text = result.name;
+        setState(() => _phase = _SheetState.input);
+      }
+    }
   }
 
   Future<void> _importTokenFromConnection(List<ServerEntry> conns) async {

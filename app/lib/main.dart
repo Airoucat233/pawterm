@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'i18n/locale_provider.dart';
 import 'screens/connections_screen.dart';
 import 'state/prefs.dart';
+import 'state/reconnect_service.dart';
 import 'theme.dart';
 
 /// 全局 RouteObserver，让需要感知"我被 push 覆盖 / 我从被覆盖回到顶层"的 Screen
@@ -23,6 +24,8 @@ class CcApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Boot the reconnect service (scans LAN on startup + network changes).
+    ref.watch(reconnectProvider);
     final themeMode = ref.watch(prefsProvider);
     final locale = ref.watch(materialLocaleProvider);
     return MaterialApp(

@@ -5,14 +5,22 @@ import Fastify from 'fastify';
 import { createReadStream } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { hostname, homedir, networkInterfaces } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
 
-import type { HealthResponse, Project } from '@pawterm/shared';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+import type { HealthResponse, Project, PairedDevice } from '@pawterm/shared';
 
 import { registerChatRest } from './chat-rest.js';
-import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun } from './config.js';
+import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices } from './config.js';
+import { adminEventBus } from './event-bus.js';
 import { buildLoggerOptions } from './logger.js';
+import { startMdns } from './mdns.js';
+import { pairingManager } from './pair.js';
 import { registerSessionsApi } from './sessions-api.js';
 import { registerUpload } from './upload.js';
 import { handleShellSocket } from './ws-shell.js';
@@ -91,7 +99,7 @@ async function runPasswordCommand(): Promise<void> {
     } else {
       console.log('No password set. Auth uses the random token only.');
     }
-    console.log(`Token    : ${settings.token}`);
+    console.log(`Token    : ${settings.adminToken}`);
     process.exit(0);
   }
   if (action === 'clear') {
@@ -143,20 +151,48 @@ async function main(): Promise<void> {
   await app.register(websocketPlugin);
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
-  // Auth middleware — skip /health (LAN discovery) and /ws/shell (WS auth via init message)
+  // Auth middleware
+  // Skipped: /health (LAN discovery), /ws/shell (WS auth via init message), /pair/start (PIN is the credential)
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
-    if (url === '/health' || url === '/ws/shell') return;
+    if (url === '/health' || url === '/ws/shell' || url === '/pair/start' || url === '/pair/request' || url.startsWith('/pair/poll/')) return;
+
     const auth = req.headers['authorization'];
-    const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    const valid = bearer === settings.token || (!!settings.password && bearer === settings.password);
-    if (!valid) {
+    // Also accept ?token= query param for SSE connections (EventSource can't set headers)
+    const queryToken = (req.query as Record<string, string | undefined>)['token'];
+    const token = (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null) ?? queryToken ?? null;
+
+    const isAdmin = token === settings.adminToken || (!!settings.password && token === settings.password);
+    const matchedDevice = token
+      ? settings.pairedDevices.find((d) => d.deviceToken === token)
+      : undefined;
+
+    if (!isAdmin && !matchedDevice) {
       reply.code(401).send({ error: 'unauthorized' });
+      return;
+    }
+
+    // Admin-only routes
+    if (url.startsWith('/admin/') && !isAdmin) {
+      reply.code(403).send({ error: 'admin token required' });
+      return;
+    }
+
+    // Async update lastSeen for matched device (non-blocking)
+    if (matchedDevice) {
+      matchedDevice.lastSeen = Date.now();
+      persistPairedDevices().catch(() => { /* ignore */ });
     }
   });
 
-  // REST: health
-  app.get('/health', async (): Promise<HealthResponse> => ({ status: 'ok', version: VERSION, hostname: hostname() }));
+  // REST: health (no auth)
+  app.get('/health', async (): Promise<HealthResponse> => ({
+    status: 'ok',
+    version: VERSION,
+    hostname: hostname(),
+    serverId: settings.serverId,
+    pairingOpen: pairingManager.getState() === 'open',
+  }));
 
   // REST: projects list
   app.get('/projects', async (): Promise<Project[]> => settings.projects);
@@ -364,6 +400,246 @@ async function main(): Promise<void> {
     handleShellSocket(socket, req);
   });
 
+  // ============ Pairing endpoints ============
+
+  // POST /admin/pair-window — adminToken required (checked by middleware)
+  app.post('/admin/pair-window', async (_req, _reply) => {
+    const result = pairingManager.openWindow();
+    return result;
+  });
+
+  // POST /pair/start — no auth; PIN is the out-of-band credential
+  app.post<{ Body: { deviceId: string; deviceName: string; pin: string } }>(
+    '/pair/start',
+    async (req, reply) => {
+      const { deviceId, deviceName, pin } = req.body ?? {};
+      if (!deviceId || !deviceName || !pin) {
+        reply.code(400);
+        return { ok: false, error: 'missing fields' };
+      }
+      const clientIp = req.ip ?? '0.0.0.0';
+      const result = await pairingManager.tryRedeemPin(pin, deviceId, deviceName, clientIp);
+      if (!result.ok) {
+        reply.code(result.error === 'rate_limited' ? 429 : 403);
+      }
+      return result;
+    },
+  );
+
+  // POST /pair/qr-claim — adminToken required
+  app.post<{ Body: { deviceId: string; deviceName: string } }>(
+    '/pair/qr-claim',
+    async (req, reply) => {
+      const { deviceId, deviceName } = req.body ?? {};
+      if (!deviceId || !deviceName) {
+        reply.code(400);
+        return { error: 'missing fields' };
+      }
+      const result = await pairingManager.issueDeviceTokenAndNotify(deviceId, deviceName);
+      return result;
+    },
+  );
+
+  // GET /admin/devices — list paired devices (no deviceToken in response)
+  app.get('/admin/devices', async (): Promise<PairedDevice[]> => {
+    return settings.pairedDevices.map((d) => ({
+      deviceId: d.deviceId,
+      name: d.name,
+      pairedAt: d.pairedAt,
+      lastSeen: d.lastSeen,
+    }));
+  });
+
+  // DELETE /admin/devices/:id — revoke a device
+  app.delete<{ Params: { id: string } }>('/admin/devices/:id', async (req, reply) => {
+    const { id } = req.params;
+    const revoked = await pairingManager.revokeDevice(id);
+    if (!revoked) {
+      reply.code(404);
+      return { error: 'device not found' };
+    }
+    return { revoked: true };
+  });
+
+  // ==========================================
+  // ======== Slice 8: Web Admin APIs =========
+
+  // GET /admin/qr — adminToken required
+  app.get('/admin/qr', async (_req, _reply) => {
+    const lanIp = getLanIp();
+    const content = `pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`;
+    const svg = await QRCode.toString(content, { type: 'svg' });
+    return { content, svg };
+  });
+
+  // POST /pair/request — no auth
+  app.post<{ Body: { deviceId: string; deviceName: string } }>(
+    '/pair/request',
+    async (req, reply) => {
+      const { deviceId, deviceName } = req.body ?? {};
+      if (!deviceId || !deviceName) {
+        reply.code(400);
+        return { ok: false, error: 'missing fields' };
+      }
+      const clientIp = req.ip ?? '0.0.0.0';
+      const result = pairingManager.submitRequest(deviceId, deviceName, clientIp);
+      if (!result.ok) {
+        reply.code(result.error === 'rate_limited' ? 429 : 503);
+        return { ok: false, error: result.error };
+      }
+      const requestId = result.request.requestId;
+      return {
+        requestId,
+        pollUrl: `/pair/poll/${requestId}`,
+      };
+    },
+  );
+
+  // GET /pair/poll/:requestId — no auth, long-poll (up to 30s)
+  app.get<{ Params: { requestId: string } }>(
+    '/pair/poll/:requestId',
+    async (req, reply) => {
+      const { requestId } = req.params;
+      const req2 = pairingManager.getRequest(requestId);
+      if (!req2) {
+        reply.code(404);
+        return { error: 'not found' };
+      }
+      const updated = await pairingManager.waitForRequestUpdate(requestId, 30_000);
+      if (!updated) {
+        reply.code(404);
+        return { error: 'not found' };
+      }
+      if (updated.status === 'approved' && updated.deviceToken) {
+        return { status: 'approved', deviceToken: updated.deviceToken, serverId: settings.serverId };
+      }
+      return { status: updated.status };
+    },
+  );
+
+  // POST /admin/pair-approve — adminToken required
+  app.post<{ Body: { requestId: string } }>(
+    '/admin/pair-approve',
+    async (req, reply) => {
+      const { requestId } = req.body ?? {};
+      if (!requestId) {
+        reply.code(400);
+        return { error: 'requestId required' };
+      }
+      const result = await pairingManager.approve(requestId);
+      if (!result) {
+        reply.code(404);
+        return { error: 'request not found or not pending' };
+      }
+      const pairReq = pairingManager.getRequest(requestId)!;
+      return { ok: true, deviceId: pairReq.deviceId, name: pairReq.deviceName };
+    },
+  );
+
+  // POST /admin/pair-deny — adminToken required
+  app.post<{ Body: { requestId: string } }>(
+    '/admin/pair-deny',
+    async (req, reply) => {
+      const { requestId } = req.body ?? {};
+      if (!requestId) {
+        reply.code(400);
+        return { error: 'requestId required' };
+      }
+      const denied = pairingManager.deny(requestId);
+      if (!denied) {
+        reply.code(404);
+        return { error: 'request not found or not pending' };
+      }
+      return { ok: true };
+    },
+  );
+
+  // GET /admin/events — SSE stream; adminToken via Bearer header OR ?token= query
+  app.get('/admin/events', async (req, reply) => {
+    reply
+      .raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+    const sendEvent = (type: string, data: unknown): void => {
+      reply.raw.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // Initial snapshot
+    sendEvent('server_status', {
+      type: 'server_status',
+      pairedDevices: settings.pairedDevices.length,
+      activeDevices: 0,
+    });
+
+    // Subscribe to admin events
+    const unsubscribe = adminEventBus.subscribe((event) => {
+      sendEvent(event.type, event);
+    });
+
+    // Keep-alive ping every 20s
+    const keepAlive = setInterval(() => {
+      reply.raw.write(': keep-alive\n\n');
+    }, 20_000);
+
+    // Cleanup on client disconnect
+    req.raw.on('close', () => {
+      clearInterval(keepAlive);
+      unsubscribe();
+    });
+
+    // Never resolve — Fastify will manage the raw response
+    return reply;
+  });
+
+  // GET /admin — serve built web admin SPA; fallback placeholder when not built
+  const webDist = resolve(__dirname, '..', '..', 'web', 'dist');
+  const contentType = (p: string): string => {
+    if (p.endsWith('.js')) return 'application/javascript; charset=utf-8';
+    if (p.endsWith('.css')) return 'text/css; charset=utf-8';
+    if (p.endsWith('.html')) return 'text/html; charset=utf-8';
+    if (p.endsWith('.svg')) return 'image/svg+xml';
+    if (p.endsWith('.json')) return 'application/json';
+    if (p.endsWith('.woff2')) return 'font/woff2';
+    return 'application/octet-stream';
+  };
+  const serveStatic = async (relPath: string, reply: import('fastify').FastifyReply) => {
+    const { readFile } = await import('node:fs/promises');
+    const abs = resolve(webDist, relPath);
+    if (!abs.startsWith(webDist)) { reply.code(403).send({ error: 'forbidden' }); return; }
+    try {
+      const buf = await readFile(abs);
+      reply.header('Content-Type', contentType(abs)).send(buf);
+    } catch {
+      reply.code(404).send({ error: 'not found' });
+    }
+  };
+
+  app.get('/admin', async (_req, reply) => {
+    const { existsSync } = await import('node:fs');
+    if (existsSync(resolve(webDist, 'admin.html'))) {
+      await serveStatic('admin.html', reply);
+      return;
+    }
+    reply
+      .header('Content-Type', 'text/html; charset=utf-8')
+      .send(
+        '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PawTerm Web Admin</title></head>' +
+        '<body style="font-family:monospace;padding:2rem;background:#111;color:#eee">' +
+        '<h2>🐾 PawTerm Web Admin</h2>' +
+        '<p>Web admin not built yet — run <code>pnpm --filter @cc/web build</code>.</p>' +
+        '</body></html>',
+      );
+  });
+  // Admin SPA assets (Vite emits hashed filenames under /admin/ and /assets/)
+  app.get<{ Params: { '*': string } }>('/admin/*', (req, reply) => serveStatic(join('admin', req.params['*']), reply));
+  app.get<{ Params: { '*': string } }>('/assets/*', (req, reply) => serveStatic(join('assets', req.params['*']), reply));
+
+  // ==========================================
+
   await app.listen({ host: settings.host, port: settings.port });
 
   app.log.info(
@@ -373,6 +649,7 @@ async function main(): Promise<void> {
       `│  node     : ${process.version}`,
       `│  listen   : http://${settings.host}:${settings.port}`,
       `│  config   : ${configPath}`,
+      `│  serverId : ${settings.serverId}`,
       `│  perm mode: ${settings.permissionMode}`,
       `│  log      : ${settings.logFormat} / ${settings.logLevel}${settings.logFile ? ` → ${settings.logFile}` : ''}`,
       `│  projects :`,
@@ -383,7 +660,7 @@ async function main(): Promise<void> {
   );
 
   const lanIp = getLanIp();
-  const qrContent = `pawterm://${lanIp}:${settings.port}?token=${settings.token}`;
+  const qrContent = `pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`;
   app.log.info(`\nScan QR to connect from the app:\n  ${qrContent}\n`);
   await new Promise<void>((resolve) => {
     qrcode.generate(qrContent, { small: true }, (code) => {
@@ -391,6 +668,37 @@ async function main(): Promise<void> {
       resolve();
     });
   });
+
+  // Auto-open Web Admin in browser (macOS/Linux only, skip if PAWTERM_NO_OPEN=1)
+  if (process.env.PAWTERM_NO_OPEN !== '1') {
+    const adminUrl = `http://localhost:${settings.port}/admin?token=${settings.adminToken}`;
+    const cmd = process.platform === 'darwin' ? 'open' :
+                process.platform === 'linux' ? 'xdg-open' : null;
+    if (cmd) {
+      try {
+        spawn(cmd, [adminUrl], { detached: true, stdio: 'ignore' }).unref();
+      } catch {
+        // Best-effort: ignore if spawn fails
+      }
+    }
+  }
+
+  // Start mDNS advertisement
+  const stopMdns = startMdns({
+    port: settings.port,
+    serverId: settings.serverId,
+    hostname: hostname(),
+    version: VERSION,
+    getPairingState: () => pairingManager.getState(),
+  });
+
+  // Cleanup on shutdown
+  const shutdown = () => {
+    stopMdns();
+    process.exit(0);
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 const SERVICE_CMDS = new Set(['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'update', 'help']);
@@ -401,6 +709,9 @@ if (subcommand === '--version' || subcommand === '-v') {
   process.exit(0);
 } else if (subcommand === 'password') {
   await runPasswordCommand();
+} else if (subcommand === 'pair') {
+  const { runPairCli } = await import('./pair-cli.js');
+  await runPairCli();
 } else if (subcommand && SERVICE_CMDS.has(subcommand)) {
   const { runServiceCommand } = await import('./service.js');
   runServiceCommand(subcommand);

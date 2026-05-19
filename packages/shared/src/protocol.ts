@@ -7,6 +7,62 @@
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 
+// ============== Health ==============
+
+export interface HealthResponse {
+  status: string;
+  version: string;
+  hostname: string;
+  serverId?: string;
+  pairingOpen?: boolean;
+}
+
+// ============== Pairing ==============
+
+// POST /admin/pair-window — requires adminToken
+export interface PairWindowRequest {}
+export interface PairWindowResponse { pin: string; expiresAt: number }
+
+// POST /pair/start — no auth; PIN is the out-of-band credential
+export interface PairStartRequest { deviceId: string; deviceName: string; pin: string }
+export type PairStartResponse =
+  | { ok: true; deviceToken: string; serverId: string }
+  | { ok: false; error: 'bad_pin' | 'pairing_closed' | 'rate_limited' };
+
+// POST /pair/qr-claim — requires adminToken
+export interface PairQrClaimRequest { deviceId: string; deviceName: string }
+export interface PairQrClaimResponse { deviceToken: string; serverId: string }
+
+// GET /admin/devices — list; DELETE /admin/devices/:id — revoke; requires adminToken
+export interface PairedDevice {
+  deviceId: string;
+  name: string;
+  pairedAt: number;  // epoch ms
+  lastSeen: number | null;
+}
+
+// GET /admin/qr — requires adminToken
+export interface QrResponse { content: string; svg: string }
+
+// POST /pair/request — no auth
+export interface PairRequestRequest { deviceId: string; deviceName: string }
+export interface PairRequestResponse { requestId: string; pollUrl: string }
+
+// GET /pair/poll/:requestId — no auth, long-poll
+export type PairPollResponse =
+  | { status: 'pending' }
+  | { status: 'approved'; deviceToken: string; serverId: string }
+  | { status: 'denied' | 'expired' };
+
+// GET /admin/events — SSE stream, requires adminToken
+export type AdminEvent =
+  | { type: 'pair_request'; requestId: string; deviceId: string; deviceName: string; ip: string; createdAt: number }
+  | { type: 'device_paired'; deviceId: string; name: string }
+  | { type: 'device_revoked'; deviceId: string }
+  | { type: 'device_connected'; deviceId: string }
+  | { type: 'device_disconnected'; deviceId: string }
+  | { type: 'server_status'; pairedDevices: number; activeDevices: number };
+
 // ============== Chat WebSocket: /ws/session (web admin only) ==============
 // The Flutter app has migrated to REST + SSE. This union type is kept only for
 // the web admin's wsChat.ts until that client is also migrated.

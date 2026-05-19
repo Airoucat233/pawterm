@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -129,3 +130,166 @@ final connectionsProvider =
         (_) => ConnectionsNotifier());
 
 final activeConnectionProvider = StateProvider<ServerEntry?>((_) => null);
+
+// ─── PairedServer — device-token based persistent pairing ────────────────────
+
+class PairedServer {
+  final String serverId;
+  final String deviceToken;
+  final String name;
+  final String host;
+  final int port;
+  final List<String> recentHosts;
+  final DateTime lastSeen;
+
+  const PairedServer({
+    required this.serverId,
+    required this.deviceToken,
+    required this.name,
+    required this.host,
+    required this.port,
+    this.recentHosts = const [],
+    required this.lastSeen,
+  });
+
+  String get httpBase => 'http://$host:$port';
+
+  Map<String, String> get authHeaders =>
+      {'Authorization': 'Bearer $deviceToken'};
+
+  PairedServer copyWith({
+    String? name,
+    String? host,
+    int? port,
+    List<String>? recentHosts,
+    DateTime? lastSeen,
+  }) =>
+      PairedServer(
+        serverId: serverId,
+        deviceToken: deviceToken,
+        name: name ?? this.name,
+        host: host ?? this.host,
+        port: port ?? this.port,
+        recentHosts: recentHosts ?? this.recentHosts,
+        lastSeen: lastSeen ?? this.lastSeen,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'serverId': serverId,
+        'deviceToken': deviceToken,
+        'name': name,
+        'host': host,
+        'port': port,
+        'recentHosts': recentHosts,
+        'lastSeen': lastSeen.toIso8601String(),
+      };
+
+  factory PairedServer.fromJson(Map<String, dynamic> j) => PairedServer(
+        serverId: j['serverId'] as String,
+        deviceToken: j['deviceToken'] as String,
+        name: j['name'] as String,
+        host: j['host'] as String,
+        port: j['port'] as int,
+        recentHosts: ((j['recentHosts'] as List?) ?? []).cast<String>(),
+        lastSeen: j['lastSeen'] != null
+            ? DateTime.tryParse(j['lastSeen'] as String) ?? DateTime.now()
+            : DateTime.now(),
+      );
+}
+
+class PairedServersNotifier extends StateNotifier<List<PairedServer>> {
+  PairedServersNotifier() : super([]) {
+    _load();
+  }
+
+  static const _key = 'paired_servers';
+  static const _deviceIdKey = 'device_id';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_key);
+    if (raw == null) return;
+    try {
+      final list = (jsonDecode(raw) as List)
+          .cast<Map<String, dynamic>>()
+          .map(PairedServer.fromJson)
+          .toList();
+      state = list;
+    } catch (_) {}
+  }
+
+  Future<void> _save() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _key, jsonEncode(state.map((e) => e.toJson()).toList()));
+  }
+
+  /// Returns a stable per-install device ID.
+  static Future<String> getOrCreateDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString(_deviceIdKey);
+    if (id == null) {
+      id = const Uuid().v4();
+      await prefs.setString(_deviceIdKey, id);
+    }
+    return id;
+  }
+
+  /// Returns a human-readable device name without extra dependencies.
+  static String get deviceName {
+    try {
+      if (Platform.isAndroid) return 'Android device';
+      if (Platform.isIOS) return 'iPhone / iPad';
+      return '${Platform.operatingSystem} device';
+    } catch (_) {
+      return 'Mobile device';
+    }
+  }
+
+  Future<PairedServer> add(PairedServer server) async {
+    // Remove any existing entry for the same serverId, then append new.
+    state = [
+      ...state.where((e) => e.serverId != server.serverId),
+      server,
+    ];
+    await _save();
+    return server;
+  }
+
+  Future<void> update(PairedServer server) async {
+    state = [
+      for (final e in state) e.serverId == server.serverId ? server : e,
+    ];
+    await _save();
+  }
+
+  Future<void> remove(String serverId) async {
+    state = state.where((e) => e.serverId != serverId).toList();
+    await _save();
+  }
+
+  /// Updates host for a known server (e.g. after LAN rediscovery).
+  /// Moves the old host into recentHosts and updates lastSeen.
+  Future<void> updateHost(String serverId, String newHost) async {
+    state = [
+      for (final e in state)
+        if (e.serverId == serverId)
+          e.copyWith(
+            host: newHost,
+            recentHosts: newHost != e.host
+                ? [e.host, ...e.recentHosts.where((h) => h != newHost)]
+                    .take(5)
+                    .toList()
+                : e.recentHosts,
+            lastSeen: DateTime.now(),
+          )
+        else
+          e,
+    ];
+    await _save();
+  }
+}
+
+final pairedServersProvider =
+    StateNotifierProvider<PairedServersNotifier, List<PairedServer>>(
+        (_) => PairedServersNotifier());

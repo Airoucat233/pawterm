@@ -30,6 +30,8 @@ dependencies:
   pdfx: ^2.7.0
   package_info_plus: ^8.0.0
   mobile_scanner: ^6.0.2
+  nsd: ^5.0.0
+  connectivity_plus: ^6.1.4
 
 dev_dependencies:
   flutter_lints: ^4.0.0

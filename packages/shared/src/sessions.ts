@@ -18,11 +18,6 @@ export interface SessionSummary {
   holder?: SessionHolder | null;
 }
 
-export interface HealthResponse {
-  status: 'ok';
-  version: string;
-  hostname: string;
-}
 
 /** 一条 session 当前的持有者：某个活着的 claude CLI 进程。 */
 export interface SessionHolder {
