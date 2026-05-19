@@ -1,76 +1,99 @@
 #!/usr/bin/env zsh
-# Push a release tag to trigger CI build + GitHub Release.
+# Bump Flutter app version, commit, push to main, then push release tag.
+# CI picks up the tag and builds APK + GitHub Release.
 #
-# Prerequisites:
-#   1. Run build-apk.sh first to bump pubspec version and verify the build locally.
-#   2. All commits must be pushed to origin/main.
-#
-# What this script does:
-#   - Reads version from pubspec.yaml
-#   - Creates and pushes tag v{semver} → triggers release.yml CI
-#   - CI builds APK + Mac .app and creates the GitHub Release automatically
+# Usage: ./scripts/release.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$APP_DIR")"
-cd "$APP_DIR"
-
 PUBSPEC="$APP_DIR/pubspec.yaml"
 
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  echo "✗ stable release must be run from main (current: $CURRENT_BRANCH)" >&2
-  echo "  Switch to main before releasing." >&2
+  echo "✗ release must be run from main (current: $CURRENT_BRANCH)" >&2
   exit 1
 fi
 
-# -------- 1. Read version --------
+# -------- 1. Read current version --------
 
 CURRENT=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")
-if [[ -z "$CURRENT" ]]; then
-  echo "✗ Could not read version from $PUBSPEC" >&2
-  exit 1
-fi
+[[ -z "$CURRENT" ]] && { echo "✗ Could not read version from pubspec.yaml" >&2; exit 1; }
 
-TAG="release/app-v${CURRENT%%+*}"
-SERVER_VERSION=$(python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
+SEMVER="${CURRENT%%+*}"
+BUILD="${CURRENT#*+}"
+[[ "$BUILD" == "$CURRENT" ]] && BUILD="1"
+IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
 
 echo
-echo "  app version : \033[36m$CURRENT\033[0m  →  tag: \033[1m$TAG\033[0m"
-[[ -n "$SERVER_VERSION" ]] && echo "  server ver  : $SERVER_VERSION"
+echo "  current: \033[36m$CURRENT\033[0m"
 echo
 
-# -------- 2. Check tag doesn't already exist --------
+# -------- 2. Bump --------
 
-if git -C "$REPO_ROOT" tag -l | grep -qx "$TAG"; then
-  echo "✗ Tag $TAG already exists. Did you forget to bump the version?" >&2
-  exit 1
-fi
+cat <<MENU
+  Choose bump:
+    1)  same     $CURRENT  (re-release)
+    2)  build    ${SEMVER}+$((BUILD+1))
+    3)  patch    $MAJOR.$MINOR.$((PATCH+1))+1
+    4)  minor    $MAJOR.$((MINOR+1)).0+1
+    5)  major    $((MAJOR+1)).0.0+1
+    q)  quit
+MENU
 
-# -------- 3. Check all commits are pushed --------
+printf "  → [1-5/q, default=3]: "
+read -r CHOICE
+CHOICE="${CHOICE:-3}"
 
-LOCAL=$(git -C "$REPO_ROOT" rev-parse HEAD)
-REMOTE=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || echo "")
-if [[ "$LOCAL" != "$REMOTE" ]]; then
-  echo "✗ Local commits are ahead of origin/main. Push first:" >&2
-  echo "  git push origin main" >&2
-  exit 1
-fi
+case "$CHOICE" in
+  1|same)  NEW="$CURRENT" ;;
+  2|build) NEW="${SEMVER}+$((BUILD+1))" ;;
+  3|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))+1" ;;
+  4|minor) NEW="$MAJOR.$((MINOR+1)).0+1" ;;
+  5|major) NEW="$((MAJOR+1)).0.0+1" ;;
+  q|quit)  echo "  aborted."; exit 0 ;;
+  *)       echo "  invalid choice" >&2; exit 1 ;;
+esac
+
+TAG="release/app-v${NEW%%+*}"
+
+echo
+echo "  new version : \033[32m$NEW\033[0m"
+echo "  tag         : \033[1m$TAG\033[0m"
+echo
+
+# -------- 3. Check tag --------
+
+git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exists." >&2; exit 1; }
 
 # -------- 4. Confirm --------
 
-printf "  → push tag %s and trigger CI release? [y/N]: " "$TAG"
+printf "  → bump, commit, push, tag? [y/N]: "
 read -r CONFIRM
-if [[ "${CONFIRM:-N}" != "y" && "${CONFIRM:-N}" != "Y" ]]; then
-  echo "  aborted."
-  exit 0
+[[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
+
+# -------- 5. Update pubspec --------
+
+if [[ "$NEW" != "$CURRENT" ]]; then
+  /usr/bin/python3 - "$PUBSPEC" "$NEW" <<'PY'
+import sys, re, pathlib
+path, new = sys.argv[1], sys.argv[2]
+p = pathlib.Path(path)
+p.write_text(re.sub(r'^version: .*$', f'version: {new}', p.read_text(), flags=re.MULTILINE, count=1))
+PY
 fi
 
-# -------- 5. Tag + push --------
+# -------- 6. Commit + push main --------
+
+git -C "$REPO_ROOT" add app/pubspec.yaml
+git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore(app): bump version to $NEW"
+git -C "$REPO_ROOT" push origin main
+
+# -------- 7. Tag + push --------
 
 echo
 echo "▶ git tag $TAG && git push origin $TAG"
@@ -78,6 +101,6 @@ git -C "$REPO_ROOT" tag "$TAG"
 git -C "$REPO_ROOT" push origin "$TAG"
 
 echo
-echo "\033[32m✓ tag pushed\033[0m — CI is building APK + Mac app"
-echo "  Watch: https://github.com/Airoucat233/pawterm/actions"
-echo "  Release will appear at: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+echo "\033[32m✓ tag pushed\033[0m — CI is building APK"
+echo "  Watch:   https://github.com/Airoucat233/pawterm/actions"
+echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"

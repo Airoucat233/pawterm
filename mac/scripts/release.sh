@@ -1,9 +1,8 @@
 #!/usr/bin/env zsh
-# Push release tag release/mac-v{version} → CI builds .app + GitHub Release.
+# Bump Mac app version, commit, push to main, then push release tag.
+# CI picks up the tag and builds .app + GitHub Release.
 #
-# Prerequisites:
-#   1. Run build.sh first to bump version and verify the build locally.
-#   2. All commits must be pushed to origin/main.
+# Usage: ./scripts/release.sh
 
 set -euo pipefail
 
@@ -16,53 +15,85 @@ PLIST="$MAC_DIR/Info.plist"
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  echo "✗ stable release must be run from main (current: $CURRENT_BRANCH)" >&2
-  echo "  Switch to main before releasing." >&2
+  echo "✗ release must be run from main (current: $CURRENT_BRANCH)" >&2
   exit 1
 fi
 
-# -------- 1. Read version --------
+# -------- 1. Read current version --------
 
 CURRENT=$(/usr/bin/python3 -c "
-import plistlib, pathlib
-with open('$PLIST', 'rb') as f:
-    pl = plistlib.load(f)
+import plistlib
+with open('$PLIST', 'rb') as f: pl = plistlib.load(f)
 print(pl.get('CFBundleShortVersionString', '0.0.0'))
 ")
 
-TAG="release/mac-v$CURRENT"
+IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT"
 
 echo
-echo "  mac version : \033[36m$CURRENT\033[0m  →  tag: \033[1m$TAG\033[0m"
+echo "  current: \033[36m$CURRENT\033[0m"
 echo
 
-# -------- 2. Check tag doesn't already exist --------
+# -------- 2. Bump --------
 
-if git -C "$REPO_ROOT" tag -l | grep -qx "$TAG"; then
-  echo "✗ Tag $TAG already exists. Did you forget to bump the version?" >&2
-  exit 1
-fi
+cat <<MENU
+  Choose bump:
+    1)  same     $CURRENT  (re-release)
+    2)  patch    $MAJOR.$MINOR.$((PATCH+1))
+    3)  minor    $MAJOR.$((MINOR+1)).0
+    4)  major    $((MAJOR+1)).0.0
+    q)  quit
+MENU
 
-# -------- 3. Check all commits are pushed --------
+printf "  → [1-4/q, default=2]: "
+read -r CHOICE
+CHOICE="${CHOICE:-2}"
 
-LOCAL=$(git -C "$REPO_ROOT" rev-parse HEAD)
-REMOTE=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || echo "")
-if [[ "$LOCAL" != "$REMOTE" ]]; then
-  echo "✗ Local commits are ahead of origin/main. Push first:" >&2
-  echo "  git push origin main" >&2
-  exit 1
-fi
+case "$CHOICE" in
+  1|same)  NEW="$CURRENT" ;;
+  2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
+  3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
+  4|major) NEW="$((MAJOR+1)).0.0" ;;
+  q|quit)  echo "  aborted."; exit 0 ;;
+  *)       echo "  invalid choice" >&2; exit 1 ;;
+esac
+
+TAG="release/mac-v$NEW"
+
+echo
+echo "  new version : \033[32m$NEW\033[0m"
+echo "  tag         : \033[1m$TAG\033[0m"
+echo
+
+# -------- 3. Check tag --------
+
+git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exists." >&2; exit 1; }
 
 # -------- 4. Confirm --------
 
-printf "  → push tag %s and trigger CI release? [y/N]: " "$TAG"
+printf "  → bump, commit, push, tag? [y/N]: "
 read -r CONFIRM
-if [[ "${CONFIRM:-N}" != "y" && "${CONFIRM:-N}" != "Y" ]]; then
-  echo "  aborted."
-  exit 0
+[[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
+
+# -------- 5. Update Info.plist --------
+
+if [[ "$NEW" != "$CURRENT" ]]; then
+  /usr/bin/python3 - "$PLIST" "$NEW" <<'PY'
+import plistlib, pathlib, sys
+path, ver = sys.argv[1], sys.argv[2]
+p = pathlib.Path(path)
+with open(p, 'rb') as f: pl = plistlib.load(f)
+pl['CFBundleShortVersionString'] = ver
+with open(p, 'wb') as f: plistlib.dump(pl, f)
+PY
 fi
 
-# -------- 5. Tag + push --------
+# -------- 6. Commit + push main --------
+
+git -C "$REPO_ROOT" add mac/Info.plist
+git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore(mac): bump version to $NEW"
+git -C "$REPO_ROOT" push origin main
+
+# -------- 7. Tag + push --------
 
 echo
 echo "▶ git tag $TAG && git push origin $TAG"
@@ -71,5 +102,5 @@ git -C "$REPO_ROOT" push origin "$TAG"
 
 echo
 echo "\033[32m✓ tag pushed\033[0m — CI is building Mac .app"
-echo "  Watch: https://github.com/Airoucat233/pawterm/actions"
+echo "  Watch:   https://github.com/Airoucat233/pawterm/actions"
 echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
