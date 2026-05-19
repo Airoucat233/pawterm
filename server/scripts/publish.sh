@@ -7,7 +7,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$SERVER_DIR")"
 PKG="$SERVER_DIR/package.json"
+
+# -------- 0. Branch guard --------
+
+CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  echo "✗ stable release must be run from main (current: $CURRENT_BRANCH)" >&2
+  echo "  Switch to main before releasing." >&2
+  exit 1
+fi
 
 # -------- 1. Read current version --------
 
@@ -73,7 +83,6 @@ pnpm build
 # -------- 5. Commit version bump --------
 
 if [[ "$VERSION" != "$CURRENT" ]]; then
-  REPO_ROOT="$(dirname "$SERVER_DIR")"
   git -C "$REPO_ROOT" add server/package.json
   git -C "$REPO_ROOT" commit -m "chore(server): bump version to $VERSION"
   echo
