@@ -1,4 +1,5 @@
 import {
+  Bot,
   Code,
   Edit3,
   FileCode,
@@ -10,10 +11,11 @@ import {
   Search,
   Sparkles,
   Terminal as TerminalIcon,
+  Wand2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
-export type ToolColorKey = 'edit' | 'bash' | 'read' | 'grep' | 'todo' | 'web' | 'task' | 'ask' | 'generic';
+export type ToolColorKey = 'edit' | 'bash' | 'read' | 'grep' | 'todo' | 'web' | 'task' | 'ask' | 'skill' | 'generic';
 
 export const toolColor: Record<ToolColorKey, string> = {
   edit: '#10B981',
@@ -24,6 +26,7 @@ export const toolColor: Record<ToolColorKey, string> = {
   web: '#EAB308',
   task: '#F472B6',
   ask: '#F97316',
+  skill: '#818CF8',
   generic: '#6B746F',
 };
 
@@ -45,7 +48,11 @@ export const toolConfigs: Record<string, ToolConfig> = {
   TodoWrite: { icon: ListChecks, color: 'todo', showBody: 'todo' },
   WebFetch: { icon: Globe, color: 'web', inputSummaryKey: 'url', showBody: 'kv' },
   WebSearch: { icon: Globe, color: 'web', inputSummaryKey: 'query', showBody: 'kv' },
-  Task: { icon: Sparkles, color: 'task', inputSummaryKey: 'description', showBody: 'kv' },
+  // Agent (new name) and Task (legacy) — both spawn subagents
+  Agent: { icon: Bot, color: 'task', inputSummaryKey: 'description', showBody: 'kv' },
+  Task: { icon: Bot, color: 'task', inputSummaryKey: 'description', showBody: 'kv' },
+  // Skill tool — inputSummaryKey not used; display name is overridden in ToolCard
+  Skill: { icon: Wand2, color: 'skill', showBody: 'none' },
   // AskUserQuestion: two names, same config (MCP path has prefix, native path doesn't)
   AskUserQuestion: { icon: HelpCircle, color: 'ask', showBody: 'ask' },
   'mcp__ask-user-question__AskUserQuestion': { icon: HelpCircle, color: 'ask', showBody: 'ask' },

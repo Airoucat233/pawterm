@@ -11,14 +11,29 @@ interface Props {
   block: Extract<ContentBlock, { type: 'tool_use' }>;
 }
 
+/** Compute the display name shown in the tool card header. */
+function displayName(name: string, input: Record<string, unknown>): string {
+  if (name === 'Agent' || name === 'Task') {
+    const sub = String(input.subagent_type ?? '').trim();
+    return sub ? `${name} · ${sub}` : name;
+  }
+  if (name === 'Skill') {
+    const skill = String(input.skill ?? '').trim();
+    return skill ? `加载 skill: ${skill}` : name;
+  }
+  return name;
+}
+
 export function ToolCard({ block }: Props) {
   const cfg = getToolConfig(block.name);
   const Icon = cfg.icon;
   const color = toolColor[cfg.color];
   const input = block.input;
 
-  const summary = cfg.inputSummaryKey ? String(input[cfg.inputSummaryKey] ?? '') : '';
-  const shortSummary = summary.length > 80 ? `…${summary.slice(-80)}` : summary;
+  const title = displayName(block.name, input);
+  // For Skill tool the name is already descriptive — skip summary
+  const summaryRaw = block.name === 'Skill' ? '' : (cfg.inputSummaryKey ? String(input[cfg.inputSummaryKey] ?? '') : '');
+  const shortSummary = summaryRaw.length > 80 ? `…${summaryRaw.slice(-80)}` : summaryRaw;
 
   return (
     // data-tool-use-id lets ChatTab find this element imperatively to trigger the shake animation
@@ -29,7 +44,7 @@ export function ToolCard({ block }: Props) {
     >
       <div className="flex items-center gap-2 px-3 py-2">
         <Icon size={14} style={{ color }} />
-        <span className="text-[12px] font-semibold text-text">{block.name}</span>
+        <span className="text-[12px] font-semibold text-text">{title}</span>
         {shortSummary && (
           <span className="ml-1 font-mono text-[11px] text-muted truncate flex-1">{shortSummary}</span>
         )}

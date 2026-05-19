@@ -78,7 +78,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     Icon(icon, size: 14, color: color),
                     const SizedBox(width: 8),
                     Text(
-                      toolUse.name,
+                      _displayName(toolUse.name, toolUse.input),
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -282,8 +282,28 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'WebFetch':
       case 'WebSearch':
         return t.toolWebFetch;
+      case 'Agent':
+      case 'Task':
+        return t.accent;
+      case 'Skill':
+        return t.accent.withValues(alpha: 0.8);
       default:
         return t.textMuted;
+    }
+  }
+
+  /// 标题行工具名。Agent 工具附加 subagent_type；Skill 工具显示 "加载 skill: xxx"。
+  String _displayName(String name, Map<String, dynamic> input) {
+    switch (name) {
+      case 'Agent':
+      case 'Task':
+        final type = (input['subagent_type'] ?? '').toString().trim();
+        return type.isNotEmpty ? '$name · $type' : name;
+      case 'Skill':
+        final skill = (input['skill'] ?? '').toString().trim();
+        return skill.isNotEmpty ? '加载 skill: $skill' : name;
+      default:
+        return name;
     }
   }
 
@@ -307,8 +327,11 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'WebFetch':
       case 'WebSearch':
         return Icons.public;
+      case 'Agent':
       case 'Task':
-        return Icons.smart_toy_outlined;
+        return Icons.support_agent;
+      case 'Skill':
+        return Icons.auto_awesome_outlined;
       default:
         return Icons.build_outlined;
     }
@@ -351,9 +374,13 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'Grep':
       case 'Glob':
         text = (input['pattern'] ?? '').toString();
+      case 'Agent':
       case 'Task':
         final raw = (input['description'] ?? input['prompt'] ?? '').toString().trim();
         text = raw.length > 60 ? '${raw.substring(0, 60)}…' : raw;
+      case 'Skill':
+        // skill 名已在 _displayName 里，摘要留空
+        return const SizedBox.shrink();
       default:
         return const SizedBox.shrink();
     }
