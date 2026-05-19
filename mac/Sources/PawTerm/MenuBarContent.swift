@@ -174,12 +174,24 @@ struct MenuBarContent: View {
                 }
             }
 
-            Button("About PawTerm…") {
-                NSWorkspace.shared.open(URL(string: "https://github.com/Airoucat233/pawterm")!)
+            Menu("About PawTerm") {
+                Text(appVersionString).disabled(true)
+                Divider()
+                Button("GitHub…") {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/Airoucat233/pawterm")!)
+                }
             }
 
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
+    }
+
+    // MARK: - About helpers
+
+    private var appVersionString: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let isDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
+        return isDev ? "v\(version) (dev)" : "v\(version)"
     }
 
     // MARK: - Status helpers
