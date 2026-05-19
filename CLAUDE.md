@@ -8,6 +8,8 @@
 
 **`git push` 也必须等用户明确说"push"/"推送"后才能执行，不得在提交后自行 push。**
 
+**`git merge` / `git rebase` 也必须等用户明确说"merge"/"合并"后才能执行，不得自行决定触发。**
+
 ### App 打包（Android APK）
 
 ```bash
