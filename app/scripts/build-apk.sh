@@ -1,11 +1,11 @@
 #!/usr/bin/env zsh
 # Build release APKs from current pubspec.yaml version.
-# Used by CI (release-app.yml) and for local verification.
-# No version bump, no git operations.
+# Used by CI and for local verification. No version bump, no git operations.
 #
 # Output:
-#   dist/pawterm-{version}-arm64-v8a.apk
-#   dist/pawterm-{version}-armeabi-v7a.apk
+#   build/app/outputs/flutter-apk/releases/{version}/  ← local reference
+#   build/app/outputs/flutter-apk/latest.apk            ← latest arm64
+#   dist/pawterm-{version}-*.apk                        ← CI / --local release
 #
 # Usage:
 #   ./scripts/build-apk.sh           # release build (split-per-abi)
@@ -20,6 +20,7 @@ cd "$APP_DIR"
 
 PUBSPEC="$APP_DIR/pubspec.yaml"
 OUT_DIR="$APP_DIR/build/app/outputs/flutter-apk"
+RELEASES_DIR="$OUT_DIR/releases"
 DIST_DIR="$REPO_ROOT/dist"
 
 DEBUG=0
@@ -56,26 +57,43 @@ echo
 echo "▶ flutter build apk --release --split-per-abi"
 flutter build apk --release --split-per-abi
 
-# -------- Collect + rename --------
+# -------- Organize into versioned dir --------
 
-mkdir -p "$DIST_DIR"
+VERSION_DIR="$RELEASES_DIR/$VERSION"
+mkdir -p "$VERSION_DIR"
 
 ARM64=""
 for f in "$OUT_DIR"/*arm64*-release.apk; do
-  DEST="$DIST_DIR/pawterm-${VERSION}-arm64-v8a.apk"
-  /bin/cp "$f" "$DEST"
-  ARM64="$DEST"
+  TARGET="$VERSION_DIR/pawterm-${VERSION}-arm64-v8a.apk"
+  /bin/cp "$f" "$TARGET"
+  ARM64="$TARGET"
 done
 for f in "$OUT_DIR"/*armeabi*-release.apk; do
-  /bin/cp "$f" "$DIST_DIR/pawterm-${VERSION}-armeabi-v7a.apk"
+  /bin/cp "$f" "$VERSION_DIR/pawterm-${VERSION}-armeabi-v7a.apk"
+done
+for f in "$OUT_DIR"/*x86_64*-release.apk; do
+  /bin/cp "$f" "$VERSION_DIR/pawterm-${VERSION}-x86_64.apk"
 done
 
 /bin/rm -f "$OUT_DIR"/*release.apk 2>/dev/null || true
 
 [[ -z "$ARM64" ]] && { echo "✗ arm64 APK not produced" >&2; exit 1; }
 
+LATEST="$OUT_DIR/latest.apk"
+/bin/cp "$ARM64" "$LATEST"
+
+# -------- Also copy to dist/ for CI + --local release --------
+
+mkdir -p "$DIST_DIR"
+for f in "$VERSION_DIR"/pawterm-"${VERSION}"-*.apk; do
+  /bin/cp "$f" "$DIST_DIR/"
+done
+
+# -------- Report --------
+
 echo
 echo "\033[32m✓ build done\033[0m"
-echo "  version: $VERSION"
-echo "  output:  $DIST_DIR"
-/bin/ls -1 "$DIST_DIR"/pawterm-"${VERSION}"-*.apk | /usr/bin/sed 's/^/    /'
+echo "  version : $VERSION"
+echo "  releases: $VERSION_DIR"
+/bin/ls -1 "$VERSION_DIR" | /usr/bin/sed 's/^/    /'
+echo "  latest  : $LATEST"
