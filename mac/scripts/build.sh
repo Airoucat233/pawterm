@@ -1,11 +1,10 @@
 #!/usr/bin/env zsh
 # Build Mac app locally for verification.
-# Used by CI (release-mac.yml) and for local testing.
-# No version bump, no git operations.
+# Used by CI and for local testing. No version bump, no git operations.
 #
 # Usage:
-#   ./scripts/build.sh           # build + install PawTermDev.app
-#   ./scripts/build.sh --release # build PawTerm.app (stable, no install)
+#   ./scripts/build.sh         # build PawTerm.app (release, universal)
+#   ./scripts/build.sh --dev   # build + install PawTermDev.app
 
 set -euo pipefail
 
@@ -13,9 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MAC_DIR="$(dirname "$SCRIPT_DIR")"
 PLIST="$MAC_DIR/Info.plist"
 
-RELEASE=0
+DEV=0
 for arg in "$@"; do
-  case "$arg" in --release) RELEASE=1 ;; esac
+  case "$arg" in --dev) DEV=1 ;; esac
 done
 
 # -------- Read version --------
@@ -34,12 +33,12 @@ echo
 
 cd "$MAC_DIR"
 
-if [[ $RELEASE -eq 1 ]]; then
-  echo "▶ bash build.sh --universal --version=$VERSION"
-  bash build.sh --universal --version="$VERSION"
-else
+if [[ $DEV -eq 1 ]]; then
   echo "▶ bash build.sh --dev --install --version=$VERSION"
   bash build.sh --dev --install --version="$VERSION"
+else
+  echo "▶ bash build.sh --universal --version=$VERSION"
+  bash build.sh --universal --version="$VERSION"
 fi
 
 echo
