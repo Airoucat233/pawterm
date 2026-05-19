@@ -137,8 +137,15 @@ class ServerManager: ObservableObject {
         if findExecutable("node") == nil {
             status = .nodeNotInstalled; return
         }
-        if config.startCommand == nil && findExecutable("pawterm-server") == nil {
-            status = .notInstalled; return
+        if config.startCommand == nil {
+            if findExecutable("pawterm-server") == nil {
+                status = .notInstalled; return
+            }
+            // Binary exists but launchd service not registered → still needs install
+            let plist = "\(NSHomeDirectory())/Library/LaunchAgents/com.airoucat.pawterm-server.plist"
+            if !FileManager.default.fileExists(atPath: plist) {
+                status = .notInstalled; return
+            }
         }
         if case .notInstalled = status { status = .stopped }
         if case .nodeNotInstalled = status { status = .stopped }
@@ -149,11 +156,9 @@ class ServerManager: ObservableObject {
     func start() async {
         guard case .stopped = status else { return }
         await detectPrerequisites()
-        // Not installed: install first, installServer() calls start() on success
-        if case .notInstalled = status { await installServer(); return }
         guard case .stopped = status else { return }
         status = .starting
-        let cmd = config.startCommand ?? ["pawterm-server", "service", "start"]
+        let cmd = config.startCommand ?? ["pawterm-server", "start"]
         if !(await runDetached(cmd)) {
             status = .error("Failed to run: \(cmd.joined(separator: " "))")
         }
@@ -168,7 +173,7 @@ class ServerManager: ObservableObject {
         pairedDevices = []
         currentServerVersion = nil
         stopSSE()
-        let cmd = config.stopCommand ?? ["pawterm-server", "service", "stop"]
+        let cmd = config.stopCommand ?? ["pawterm-server", "stop"]
         await runDetached(cmd)
     }
 

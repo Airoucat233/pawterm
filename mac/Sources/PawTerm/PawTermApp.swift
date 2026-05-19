@@ -34,8 +34,11 @@ struct MenuBarIcon: View {
         Image(systemName: "pawprint.fill")
             .foregroundStyle(iconColor)
             .task {
-                // Runs once when icon appears (app launch)
                 await serverManager.detectPrerequisites()
+                // Auto-install on first launch if not installed; user starts manually
+                if case .notInstalled = serverManager.status {
+                    await serverManager.installServer()
+                }
                 await serverManager.checkForUpdates()
             }
     }
