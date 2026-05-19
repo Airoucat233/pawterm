@@ -1,9 +1,8 @@
 #!/usr/bin/env zsh
-# Build Mac app locally for verification.
-# Used by CI and for local testing. No version bump, no git operations.
+# Build Mac app. Prompts for version bump unless --dev or CI=true.
 #
 # Usage:
-#   ./scripts/build.sh         # build PawTerm.app (release, universal)
+#   ./scripts/build.sh         # build PawTerm.app (arm64 release)
 #   ./scripts/build.sh --dev   # build + install PawTermDev.app
 
 set -euo pipefail
@@ -28,7 +27,49 @@ print(pl.get('CFBundleShortVersionString', '0.0.0'))
 ")
 
 echo
-echo "  version: \033[36m$VERSION\033[0m"
+echo "  current: \033[36m$VERSION\033[0m"
+
+# -------- Bump (release only, skip in CI) --------
+
+if [[ $DEV -eq 0 && "${CI:-}" != "true" ]]; then
+  IFS='.' read -r MAJOR MINOR PATCH <<<"$VERSION"
+
+  echo
+  cat <<MENU
+  Choose bump:
+    1)  same     $VERSION
+    2)  patch    $MAJOR.$MINOR.$((PATCH+1))
+    3)  minor    $MAJOR.$((MINOR+1)).0
+    4)  major    $((MAJOR+1)).0.0
+    q)  quit
+MENU
+
+  printf "  → [1-4/q, default=1]: "
+  read -r CHOICE
+  CHOICE="${CHOICE:-1}"
+
+  case "$CHOICE" in
+    1|same)  NEW="$VERSION" ;;
+    2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
+    3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
+    4|major) NEW="$((MAJOR+1)).0.0" ;;
+    q|quit)  echo "  aborted."; exit 0 ;;
+    *)       echo "  invalid choice" >&2; exit 1 ;;
+  esac
+
+  if [[ "$NEW" != "$VERSION" ]]; then
+    /usr/bin/python3 - <<PY
+import plistlib, pathlib
+p = pathlib.Path("$PLIST")
+with open(p, "rb") as f: pl = plistlib.load(f)
+pl["CFBundleShortVersionString"] = "$NEW"
+with open(p, "wb") as f: plistlib.dump(pl, f)
+PY
+    echo "  bumped  → \033[32m$NEW\033[0m"
+  fi
+  VERSION="$NEW"
+fi
+
 echo
 
 # -------- Build --------
@@ -36,15 +77,15 @@ echo
 cd "$MAC_DIR"
 
 if [[ $DEV -eq 0 ]]; then
-  /bin/rm -f "$DIST_DIR"/PawTerm-*-mac.zip 2>/dev/null || true
+  find "$DIST_DIR" -maxdepth 1 -name "PawTerm-*-mac.zip" -delete 2>/dev/null || true
 fi
 
 if [[ $DEV -eq 1 ]]; then
   echo "▶ bash build.sh --dev --install --version=$VERSION"
   bash build.sh --dev --install --version="$VERSION"
 else
-  echo "▶ bash build.sh --universal --version=$VERSION"
-  bash build.sh --universal --version="$VERSION"
+  echo "▶ bash build.sh --version=$VERSION"
+  bash build.sh --version="$VERSION"
 fi
 
 if [[ $DEV -eq 0 ]]; then

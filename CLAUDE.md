@@ -62,14 +62,44 @@ flutter run               # 调试，需连真机/模拟器
 
 **`git merge` / `git rebase` 也必须等用户明确说"merge"/"合并"后才能执行，不得自行决定触发。**
 
-| 操作 | 脚本 | 说明 |
-|---|---|---|
-| App 打包（Android APK） | `bash app/scripts/build-apk.sh` | 交互式 bump（same/build/patch/minor/major），更新 `pubspec.yaml`，产物落到 `app/build/app/outputs/flutter-apk/releases/<version>/` |
-| App 打包（iOS IPA） | `bash app/scripts/build-ipa.sh` | |
-| GitHub Release（App） | `bash app/scripts/release.sh` | 读 pubspec 版本，收集 APK/IPA，调 `gh release create`。**必须先跑打包脚本** |
-| Server npm 发布 | `bash server/scripts/publish.sh` | 交互式 bump（same/patch/minor/major），更新 `package.json` → build dist → commit → `npm publish` |
+### 发布方式 A：本地构建 → 上传
 
-`server/dist/` 在 `.gitignore` 中，不入 git；发布 npm 前 publish 脚本会自动 `npm run build`（tsup）。
+适合想在本地验证产物再发出去的场景。
+
+```bash
+bash app/scripts/build-apk.sh        # 交互式 bump → 构建 APK → dist/
+bash mac/scripts/build.sh            # 交互式 bump（可选 same）→ 构建 .app → dist/
+bash app/scripts/release.sh --local  # 检查 dist/ 产物 → gh release create → push tag
+                                     # （tag 会触发 CI，但 CI 检测到 release 已存在会跳过构建）
+```
+
+### 发布方式 B：CI 构建
+
+适合直接让 CI 打包的场景，本地只负责 bump + 推 tag。
+
+```bash
+bash app/scripts/release.sh          # 交互式 bump → commit → push main → push tag → CI 构建
+```
+
+### Server 发布（独立）
+
+```bash
+bash server/scripts/publish.sh       # 交互式 bump → commit → push → npm publish
+```
+
+### 脚本一览
+
+| 脚本 | 说明 |
+|---|---|
+| `app/scripts/build-apk.sh` | bump + 构建 APK，产物到 `dist/`；`CI=true` 时跳过 bump |
+| `mac/scripts/build.sh` | bump + 构建 PawTerm.app zip，产物到 `dist/`；`CI=true` / `--dev` 时跳过 bump |
+| `app/scripts/release.sh --local` | 验证 `dist/` 产物精确匹配当前版本 → gh release create → push tag |
+| `app/scripts/release.sh` | 交互式 bump → commit pubspec → push main → push tag → CI 构建 |
+| `server/scripts/publish.sh` | 交互式 bump → commit package.json → push → npm publish |
+
+`dist/` 文件命名：`pawterm-{app-version}-arm64-v8a.apk`、`pawterm-{app-version}-armeabi-v7a.apk`、`PawTerm-{mac-version}-mac.zip`。app 版本来自 `pubspec.yaml`，mac 版本独立来自 `mac/Info.plist`。
+
+`server/dist/` 在 `.gitignore` 中，不入 git；publish.sh 发布前会自动 `pnpm build`（tsup）。
 
 ---
 

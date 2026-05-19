@@ -15,11 +15,28 @@ A bridge server runs on your dev machine (where `claude` CLI is installed). The 
 
 ### 🖥️ Install the Server
 
-**🍎 macOS — Mac App (recommended)**
+**One-liner (macOS / Linux)**
 
-Download `PawTerm.app` from [**Releases**](../../releases/latest) and open it. It automatically installs and starts `pawterm-server` in the background. The menu bar icon shows server status and version at a glance.
+```bash
+curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh | bash
+```
 
-**⌨️ Without Mac App**
+Or download [`install.sh`](install.sh), inspect it, then `bash install.sh`.
+
+The script behaves differently per platform:
+
+| Platform | What it does |
+|----------|-------------|
+| **macOS** | Downloads `PawTerm.app` from the latest release, installs it to `/Applications`, and opens it. The Mac App manages `pawterm-server` automatically — no Node or npm setup needed. |
+| **Linux** | Checks for Node 20+ and the `claude` CLI, installs `pawterm-server` via npm, registers it as a **systemd** service (auto-starts at login), and waits for it to be ready. |
+
+**🪟 Windows (experimental)**
+
+Download [`install.bat`](install.bat) and double-click. **Not tested** — the shell tab feature requires `node-pty` which needs `windows-build-tools`.
+
+**Manual install (Linux / headless)**
+
+Requires Node 20+ and `claude` CLI logged in.
 
 Quick test (no install needed):
 ```bash

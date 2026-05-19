@@ -79,9 +79,14 @@ print(pl.get('CFBundleShortVersionString', ''))
   git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exists." >&2; exit 1; }
 
   # ---- Confirm ----
-  printf "  → create GH Release and push tag? [y/N]: "
+  printf "  → commit version bumps, create GH Release, push tag? [y/N]: "
   read -r CONFIRM
   [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
+
+  # ---- Commit version bumps (pubspec.yaml + mac/Info.plist) ----
+  git -C "$REPO_ROOT" add app/pubspec.yaml mac/Info.plist
+  git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore: bump version to $SEMVER"
+  git -C "$REPO_ROOT" push origin main
 
   # ---- Release ----
   SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
@@ -106,7 +111,7 @@ print(pl.get('CFBundleShortVersionString', ''))
 fi
 
 # ══════════════════════════════════════════════════════════════
-# Default: bump version → commit → push → tag → CI builds
+# Default: bump → commit → push main → push tag → CI builds
 # ══════════════════════════════════════════════════════════════
 
 BUILD="${CURRENT#*+}"

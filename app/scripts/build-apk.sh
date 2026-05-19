@@ -1,11 +1,10 @@
 #!/usr/bin/env zsh
-# Build release APKs from current pubspec.yaml version.
-# Used by CI and for local verification. No version bump, no git operations.
+# Build release APKs. Prompts for version bump unless CI=true.
 #
 # Output:
 #   build/app/outputs/flutter-apk/releases/{version}/  ← local reference
 #   build/app/outputs/flutter-apk/latest.apk            ← latest arm64
-#   dist/pawterm-{version}-*.apk                        ← CI / --local release
+#   dist/pawterm-{version}-*.apk                        ← release artifacts
 #
 # Usage:
 #   ./scripts/build-apk.sh           # release build (split-per-abi)
@@ -34,9 +33,9 @@ VERSION=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")
 [[ -z "$VERSION" ]] && { echo "✗ Could not read version from pubspec.yaml" >&2; exit 1; }
 
 echo
-echo "  version: \033[36m$VERSION\033[0m"
+echo "  current: \033[36m$VERSION\033[0m"
 
-# -------- Build --------
+# -------- Debug build (no bump) --------
 
 if [[ $DEBUG -eq 1 ]]; then
   echo
@@ -47,10 +46,58 @@ if [[ $DEBUG -eq 1 ]]; then
   exit 0
 fi
 
-/bin/rm -f "$OUT_DIR"/*.apk 2>/dev/null || true
-/bin/rm -f "$DIST_DIR"/pawterm-*.apk 2>/dev/null || true
+# -------- Bump (skip in CI) --------
+
+if [[ "${CI:-}" != "true" ]]; then
+  SEMVER="${VERSION%%+*}"
+  BUILD="${VERSION#*+}"
+  [[ "$BUILD" == "$VERSION" ]] && BUILD="1"
+  IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
+
+  echo
+  cat <<MENU
+  Choose bump:
+    1)  same     $VERSION
+    2)  build    ${SEMVER}+$((BUILD+1))
+    3)  patch    $MAJOR.$MINOR.$((PATCH+1))+1
+    4)  minor    $MAJOR.$((MINOR+1)).0+1
+    5)  major    $((MAJOR+1)).0.0+1
+    q)  quit
+MENU
+
+  printf "  → [1-5/q, default=3]: "
+  read -r CHOICE
+  CHOICE="${CHOICE:-3}"
+
+  case "$CHOICE" in
+    1|same)  NEW="$VERSION" ;;
+    2|build) NEW="${SEMVER}+$((BUILD+1))" ;;
+    3|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))+1" ;;
+    4|minor) NEW="$MAJOR.$((MINOR+1)).0+1" ;;
+    5|major) NEW="$((MAJOR+1)).0.0+1" ;;
+    q|quit)  echo "  aborted."; exit 0 ;;
+    *)       echo "  invalid choice" >&2; exit 1 ;;
+  esac
+
+  if [[ "$NEW" != "$VERSION" ]]; then
+    /usr/bin/python3 - "$PUBSPEC" "$NEW" <<'PY'
+import sys, re, pathlib
+path, new = sys.argv[1], sys.argv[2]
+p = pathlib.Path(path)
+p.write_text(re.sub(r'^version: .*$', f'version: {new}', p.read_text(), flags=re.MULTILINE, count=1))
+PY
+    echo "  bumped  → \033[32m$NEW\033[0m"
+  fi
+  VERSION="$NEW"
+fi
 
 echo
+
+# -------- Build --------
+
+find "$OUT_DIR" -maxdepth 1 -name "*.apk" -delete 2>/dev/null || true
+find "$DIST_DIR" -maxdepth 1 -name "pawterm-*.apk" -delete 2>/dev/null || true
+
 echo "▶ flutter pub get"
 flutter pub get
 
@@ -76,14 +123,14 @@ for f in "$OUT_DIR"/*x86_64*-release.apk; do
   /bin/cp "$f" "$VERSION_DIR/pawterm-${VERSION}-x86_64.apk"
 done
 
-/bin/rm -f "$OUT_DIR"/*release.apk 2>/dev/null || true
+find "$OUT_DIR" -maxdepth 1 -name "*release.apk" -delete 2>/dev/null || true
 
 [[ -z "$ARM64" ]] && { echo "✗ arm64 APK not produced" >&2; exit 1; }
 
 LATEST="$OUT_DIR/latest.apk"
 /bin/cp "$ARM64" "$LATEST"
 
-# -------- Also copy to dist/ for CI + --local release --------
+# -------- Copy to dist/ --------
 
 mkdir -p "$DIST_DIR"
 for f in "$VERSION_DIR"/pawterm-"${VERSION}"-*.apk; do
