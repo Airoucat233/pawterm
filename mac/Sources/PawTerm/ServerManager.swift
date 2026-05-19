@@ -1,59 +1,187 @@
 import Foundation
-import Combine
 import AppKit
 
+// MARK: - Status
+
 enum ServerStatus: Equatable {
-    case notInstalled          // pawterm-server not in PATH
-    case nodeNotInstalled      // node also not found
+    case notInstalled
+    case nodeNotInstalled
     case stopped
     case starting
+    case stopping
     case running
-    case installing(String)    // installing/updating server; payload is status message
+    case installing(String)
     case error(String)
 }
+
+// MARK: - Config
+
+struct PawTermConfig {
+    let port: Int
+    let token: String?
+    let startCommand: [String]?
+    let stopCommand: [String]?
+    let filePath: String
+
+    static func load(from path: String) -> PawTermConfig {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return PawTermConfig(port: 8765, token: nil, startCommand: nil, stopCommand: nil, filePath: path)
+        }
+        return PawTermConfig(
+            port: json["port"] as? Int ?? 8765,
+            token: json["token"] as? String,
+            startCommand: json["start_command"] as? [String],
+            stopCommand: json["stop_command"] as? [String],
+            filePath: path
+        )
+    }
+}
+
+// MARK: - PairedDeviceInfo
+
+struct PairedDeviceInfo: Identifiable {
+    let deviceId: String
+    let name: String
+    var id: String { deviceId }
+}
+
+// MARK: - ServerManager
 
 @MainActor
 class ServerManager: ObservableObject {
     @Published var status: ServerStatus = .stopped
     @Published var deviceCount: Int = 0
-    @Published var currentServerVersion: String? = nil
-    @Published var latestServerVersion: String? = nil
-    @Published var updateAvailable: Bool = false
+    @Published var pairedDevices: [PairedDeviceInfo] = []
+    @Published var configPath: String
     @Published var installLog: [String] = []
 
-    let port: Int
+    // Server update
+    @Published var currentServerVersion: String? = nil
+    @Published var latestServerVersion: String? = nil
+    @Published var serverUpdateAvailable: Bool = false
 
-    private var process: Process?
+    // App update
+    @Published var appUpdateAvailable: Bool = false
+    @Published var latestAppVersion: String? = nil
+    @Published var availableConfigs: [String] = []
+
+    var port: Int { config.port }
+    var isRunning: Bool { if case .running = status { return true }; return false }
+    var isStopping: Bool { if case .stopping = status { return true }; return false }
+
+    private var config: PawTermConfig
     private var pollTimer: Timer?
     private var updateCheckTimer: Timer?
-    private let config: PawTermConfig
+    private var sseTask: Task<Void, Never>?
+    private var stoppingStartedAt: Date?
+    private static let configPathKey = "pawterm_config_path"
+    private static let blockedKey = "pawterm_blocked_devices"
+    private var blockedDeviceIds: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: Self.blockedKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: Self.blockedKey) }
+    }
 
     init() {
-        self.config = PawTermConfig.load()
-        self.port = config.port
+        let saved = UserDefaults.standard.string(forKey: Self.configPathKey)
+            ?? BuildConfig.defaultConfigPath
+        self.configPath = saved
+        self.config = PawTermConfig.load(from: saved)
+        refreshAvailableConfigs()
         startPolling()
     }
 
-    var isRunning: Bool {
-        if case .running = status { return true }
-        return false
+    // MARK: - Config Management
+
+    func refreshAvailableConfigs() {
+        let dir = URL(fileURLWithPath: "\(NSHomeDirectory())/.config/pawterm")
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        availableConfigs = files
+            .filter { $0.pathExtension == "json" }
+            .map { $0.path }
+            .sorted()
     }
 
-    // MARK: - Prerequisites Detection
+    func reloadConfig(from path: String) {
+        Task { await reloadConfigAsync(from: path) }
+    }
+
+    private func reloadConfigAsync(from path: String) async {
+        // Stop running server before switching config
+        if case .running = status { await stop() }
+        // Wait for stop to take effect (up to 5s)
+        for _ in 0..<10 {
+            if case .stopped = status { break }
+            if case .stopping = status {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            break
+        }
+        UserDefaults.standard.set(path, forKey: Self.configPathKey)
+        configPath = path
+        config = PawTermConfig.load(from: path)
+        status = .stopped
+        deviceCount = 0
+        pairedDevices = []
+        currentServerVersion = nil
+        stopSSE()
+        pollTimer?.invalidate()
+        startPolling()
+        refreshAvailableConfigs()
+    }
+
+    // MARK: - Prerequisites
 
     func detectPrerequisites() async {
         if findExecutable("node") == nil {
-            status = .nodeNotInstalled
-            return
+            status = .nodeNotInstalled; return
         }
-        if findExecutable("pawterm-server") == nil {
-            status = .notInstalled
-            return
+        if config.startCommand == nil && findExecutable("pawterm-server") == nil {
+            status = .notInstalled; return
         }
-        // Both exist — let polling determine stopped/running naturally
-        // Only reset to stopped if we're in a "missing" state
         if case .notInstalled = status { status = .stopped }
         if case .nodeNotInstalled = status { status = .stopped }
+    }
+
+    // MARK: - Control
+
+    func start() async {
+        guard case .stopped = status else { return }
+        await detectPrerequisites()
+        // Not installed: install first, installServer() calls start() on success
+        if case .notInstalled = status { await installServer(); return }
+        guard case .stopped = status else { return }
+        status = .starting
+        let cmd = config.startCommand ?? ["pawterm-server", "service", "start"]
+        if !(await runDetached(cmd)) {
+            status = .error("Failed to run: \(cmd.joined(separator: " "))")
+        }
+        // Poll will transition to .running when server responds
+    }
+
+    func stop() async {
+        guard case .running = status else { return }
+        status = .stopping
+        stoppingStartedAt = Date()
+        deviceCount = 0
+        pairedDevices = []
+        currentServerVersion = nil
+        stopSSE()
+        let cmd = config.stopCommand ?? ["pawterm-server", "service", "stop"]
+        await runDetached(cmd)
+    }
+
+    func restart() async {
+        await stop()
+        // Wait for poll() to confirm the server is down (stopping → stopped)
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if case .stopped = status { break }
+            if case .stopping = status { continue }
+            break
+        }
+        await start()
     }
 
     // MARK: - Install / Update
@@ -63,8 +191,7 @@ class ServerManager: ObservableObject {
         status = .installing("Installing pawterm-server via npm…")
 
         guard let npmURL = findExecutable("npm") else {
-            status = .error("npm not found. Please install Node.js first.")
-            return
+            status = .error("npm not found — install Node.js first"); return
         }
 
         let proc = Process()
@@ -72,260 +199,152 @@ class ServerManager: ObservableObject {
         proc.arguments = ["install", "-g", "pawterm-server@latest"]
         proc.environment = enrichedEnvironment()
 
-        let outPipe = Pipe()
-        let errPipe = Pipe()
+        let outPipe = Pipe(), errPipe = Pipe()
         proc.standardOutput = outPipe
         proc.standardError = errPipe
 
-        do {
-            try proc.run()
-        } catch {
-            status = .error("Failed to launch npm: \(error.localizedDescription)")
-            return
+        do { try proc.run() } catch {
+            status = .error("Failed to launch npm: \(error.localizedDescription)"); return
         }
 
-        // Stream stdout
-        Task.detached { [weak self] in
-            let handle = outPipe.fileHandleForReading
-            for try await line in handle.bytes.lines {
-                await MainActor.run {
-                    self?.installLog.append(line)
-                    self?.status = .installing(line)
-                }
+        Task { [weak self] in
+            for try await line in outPipe.fileHandleForReading.bytes.lines {
+                self?.installLog.append(line)
+                self?.status = .installing(line)
             }
         }
-
-        // Collect stderr
         var stderrLines: [String] = []
         Task.detached {
-            let handle = errPipe.fileHandleForReading
-            for try await line in handle.bytes.lines {
-                stderrLines.append(line)
-            }
+            for try await line in errPipe.fileHandleForReading.bytes.lines { stderrLines.append(line) }
         }
 
         proc.waitUntilExit()
-        let exitCode = proc.terminationStatus
-
-        if exitCode == 0 {
-            installLog.append("Installation complete.")
+        if proc.terminationStatus == 0 {
+            installLog.append("Registering service…")
+            status = .installing("Registering service…")
+            await runDetached(["pawterm-server", "install"])
+            installLog.append("Done. Ready to start.")
             status = .stopped
-            await start()
         } else {
             let stderr = stderrLines.joined(separator: "\n")
             if stderr.contains("EACCES") || stderr.contains("permission") {
-                status = .error("需要 sudo 权限：在终端运行 sudo npm install -g pawterm-server")
-            } else if stderr.contains("ENOTFOUND") || stderr.contains("network") || stderr.contains("timeout") {
+                status = .error("需要权限：终端运行 sudo npm install -g pawterm-server")
+            } else if stderr.contains("ENOTFOUND") || stderr.contains("timeout") {
                 status = .error("网络错误，请检查网络后重试")
             } else {
-                let msg = stderrLines.last ?? "Unknown error (exit \(exitCode))"
-                status = .error("Install failed: \(msg)")
+                status = .error("Install failed: \(stderrLines.last ?? "exit \(proc.terminationStatus)")")
             }
         }
     }
 
-    func updateServer() async {
-        await installServer()
-    }
+    func updateServer() async { await installServer() }
 
-    // MARK: - Check for Updates
+    // MARK: - Update Check
 
     func checkForUpdates() async {
-        // Get current version
-        if let serverURL = findExecutable("pawterm-server") {
+        async let _ = checkServerUpdate()
+        async let _ = checkAppUpdate()
+    }
+
+    private func checkServerUpdate() async {
+        // When running, version is already set by poll() from /health.
+        // Only fall back to binary when stopped (and no custom start_command).
+        if (currentServerVersion == nil || currentServerVersion!.isEmpty),
+           config.startCommand == nil,
+           let serverURL = findExecutable("pawterm-server") {
             let proc = Process()
             proc.executableURL = serverURL
             proc.arguments = ["--version"]
             proc.environment = enrichedEnvironment()
-
             let pipe = Pipe()
             proc.standardOutput = pipe
             proc.standardError = Pipe()
-
-            if let _ = try? proc.run() {
+            if (try? proc.run()) != nil {
                 proc.waitUntilExit()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let raw = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) {
-                    // Strip "pawterm-server " prefix if present
-                    let ver = raw.hasPrefix("pawterm-server ")
-                        ? String(raw.dropFirst("pawterm-server ".count))
-                        : raw
-                    currentServerVersion = ver
-                }
+                let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                currentServerVersion = raw.hasPrefix("pawterm-server ")
+                    ? String(raw.dropFirst("pawterm-server ".count)) : raw
             }
         }
-
-        // Fetch latest from npm registry
         guard let url = URL(string: "https://registry.npmjs.org/pawterm-server/latest") else { return }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let latest = json["version"] as? String {
-                latestServerVersion = latest
-                if let current = currentServerVersion, !current.isEmpty {
-                    updateAvailable = current != latest
-                }
+        if let (data, _) = try? await URLSession.shared.data(from: url),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let latest = json["version"] as? String {
+            latestServerVersion = latest
+            if let current = currentServerVersion, !current.isEmpty {
+                serverUpdateAvailable = current != latest
             }
-        } catch {
-            // Silently ignore network errors during background check
         }
+    }
+
+    private func checkAppUpdate() async {
+        guard let url = URL(string: "https://api.github.com/repos/Airoucat233/pawterm/releases/latest") else { return }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tagName = json["tag_name"] as? String else { return }
+        let latest = tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        latestAppVersion = latest
+        appUpdateAvailable = latest != current
     }
 
     // MARK: - Pairing PIN
 
-    /// Open a fresh PIN pairing window on the running server and return the 6-digit PIN.
-    /// Returns nil if the server is unreachable, config has no token, or the server
-    /// is too old to support /admin/pair-window (pre-slice-3).
     func requestPairWindow() async -> (pin: String, expiresAt: Int)? {
-        guard let cfg = AdminURL.loadConfig(),
-              let url = URL(string: "http://localhost:\(cfg.port)/admin/pair-window") else {
-            return nil
-        }
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://localhost:\(config.port)/admin/pair-window") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.setValue("Bearer \(cfg.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = "{}".data(using: .utf8)
-        do {
-            let (data, _) = try await URLSession.shared.data(for: req)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let pin = json["pin"] as? String,
-                  let expiresAt = json["expiresAt"] as? Int else { return nil }
-            return (pin, expiresAt)
-        } catch {
-            return nil
-        }
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pin = json["pin"] as? String,
+              let expiresAt = json["expiresAt"] as? Int else { return nil }
+        return (pin, expiresAt)
     }
 
     // MARK: - Node Installation
 
     func installNodeViaHomebrew() async {
         if findExecutable("brew") == nil {
-            await MainActor.run {
-                NSWorkspace.shared.open(URL(string: "https://nodejs.org/")!)
-            }
+            NSWorkspace.shared.open(URL(string: "https://nodejs.org/")!)
             return
         }
-
-        let confirmed = await MainActor.run {
-            Alerts.confirm(
-                "Install Node.js via Homebrew",
-                "This will run 'brew install node@20'. It may take a few minutes.",
-                confirmText: "Install"
-            )
-        }
+        let confirmed = Alerts.confirm(
+            "Install Node.js via Homebrew",
+            "This will run 'brew install node@20'. It may take a few minutes.",
+            confirmText: "Install"
+        )
         guard confirmed else { return }
 
         status = .installing("Installing Node.js via Homebrew…")
         installLog = []
-
-        guard let brewURL = findExecutable("brew") else {
-            status = .error("brew not found")
-            return
-        }
+        guard let brewURL = findExecutable("brew") else { status = .error("brew not found"); return }
 
         let proc = Process()
         proc.executableURL = brewURL
         proc.arguments = ["install", "node@20"]
         proc.environment = enrichedEnvironment()
-
-        let outPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = outPipe
-
-        do {
-            try proc.run()
-        } catch {
-            status = .error("Failed to launch brew: \(error.localizedDescription)")
-            return
-        }
-
-        Task.detached { [weak self] in
-            let handle = outPipe.fileHandleForReading
-            for try await line in handle.bytes.lines {
-                await MainActor.run {
-                    self?.installLog.append(line)
-                    self?.status = .installing(line)
-                }
-            }
-        }
-
-        proc.waitUntilExit()
-        await detectPrerequisites()
-    }
-
-    // MARK: - Control
-
-    func start() async {
-        guard case .stopped = status else { return }
-        status = .starting
-
-        guard let execURL = findExecutable("pawterm-server") else {
-            status = .error("pawterm-server not found — run install.sh first")
-            return
-        }
-
-        let proc = Process()
-        proc.executableURL = execURL
-        proc.arguments = []
-        proc.environment = enrichedEnvironment()
-
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
 
-        do {
-            try proc.run()
-        } catch {
-            status = .error("Failed to start: \(error.localizedDescription)")
-            return
+        do { try proc.run() } catch {
+            status = .error("Failed to launch brew: \(error.localizedDescription)"); return
         }
-
-        self.process = proc
-
-        // Monitor stdout for "ready" signal
-        Task.detached { [weak self] in
-            let handle = pipe.fileHandleForReading
-            for try await line in handle.bytes.lines {
-                if line.lowercased().contains("ready") || line.lowercased().contains("listening") {
-                    await MainActor.run { self?.status = .running }
-                    return
-                }
+        Task { [weak self] in
+            for try await line in pipe.fileHandleForReading.bytes.lines {
+                self?.installLog.append(line)
+                self?.status = .installing(line)
             }
         }
-
-        // Fallback: assume running after 3s if process still alive
-        try? await Task.sleep(nanoseconds: 3_000_000_000)
-        if case .starting = status, proc.isRunning {
-            status = .running
-        }
-    }
-
-    func stop() async {
-        guard let proc = process, proc.isRunning else {
-            status = .stopped
-            process = nil
-            return
-        }
-        proc.interrupt() // SIGINT
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        if proc.isRunning {
-            proc.terminate() // SIGTERM
-        }
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        if proc.isRunning {
-            kill(proc.processIdentifier, SIGKILL)
-        }
-        process = nil
-        status = .stopped
-        deviceCount = 0
-    }
-
-    func restart() async {
-        await stop()
-        await start()
+        proc.waitUntilExit()
+        await detectPrerequisites()
     }
 
     // MARK: - Polling
@@ -334,120 +353,263 @@ class ServerManager: ObservableObject {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { await self?.poll() }
         }
-        // Poll immediately
         Task { await poll() }
 
-        // Check for updates every 30 minutes
         updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
             Task { await self?.checkForUpdates() }
         }
     }
 
     private func poll() async {
-        // Skip polling during install/detect phases
         switch status {
-        case .installing, .nodeNotInstalled, .notInstalled:
-            return
-        default:
-            break
+        case .installing, .nodeNotInstalled, .notInstalled: return
+        default: break
         }
 
-        let baseURL = "http://127.0.0.1:\(port)"
-        let token = config.token
+        guard let healthURL = URL(string: "http://127.0.0.1:\(config.port)/health") else { return }
 
-        // Health check
-        guard let healthURL = URL(string: "\(baseURL)/health"),
-              let _ = try? await URLSession.shared.data(from: healthURL) else {
-            // Only update to stopped if we didn't spawn it ourselves as starting
+        guard let (healthData, _) = try? await URLSession.shared.data(from: healthURL) else {
             if case .starting = status { return }
-            if process == nil {
-                if case .running = status { status = .stopped }
-                if case .error = status { } // keep error
+            if case .running = status {
+                status = .stopped
+                deviceCount = 0
+                pairedDevices = []
+                currentServerVersion = nil
+                stopSSE()
+            }
+            if case .stopping = status {
+                status = .stopped
+                stoppingStartedAt = nil
             }
             return
         }
 
-        // If we reach here, server is responding
-        if case .stopped = status { status = .running }
-        if case .error = status { status = .running }
+        // Parse version from /health response
+        if let json = try? JSONSerialization.jsonObject(with: healthData) as? [String: Any],
+           let ver = json["version"] as? String, !ver.isEmpty {
+            currentServerVersion = ver
+        }
 
-        // Device count
-        guard let token, !token.isEmpty,
-              let devURL = URL(string: "\(baseURL)/admin/devices") else { return }
+        // Server is up
+        switch status {
+        case .stopped, .error, .starting:
+            status = .running
+            Task { await fetchPairedDevices() }
+            startSSE()
+        case .stopping:
+            // Force stop after 15s if the server refuses to go down
+            if let since = stoppingStartedAt, Date().timeIntervalSince(since) > 15 {
+                status = .stopped
+                stoppingStartedAt = nil
+            }
+        default: break
+        }
+    }
 
-        var req = URLRequest(url: devURL)
+    // MARK: - SSE
+
+    private func startSSE() {
+        guard let token = config.token, !token.isEmpty else { return }
+        stopSSE()
+        sseTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runSSE()
+                if Task.isCancelled { break }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+
+    private func stopSSE() {
+        sseTask?.cancel()
+        sseTask = nil
+    }
+
+    private func runSSE() async {
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/events?token=\(token)") else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 86400
+        guard let (bytes, _) = try? await URLSession.shared.bytes(for: request) else { return }
+
+        var eventType = ""
+        var dataLines: [String] = []
+
+        do {
+            for try await line in bytes.lines {
+                if case .running = status {} else { break }
+                if line.isEmpty {
+                    if !dataLines.isEmpty {
+                        let data = dataLines.joined(separator: "\n")
+                        handleSSEData(type: eventType, data: data)
+                        eventType = ""
+                        dataLines = []
+                    }
+                } else if line.hasPrefix("event: ") {
+                    eventType = String(line.dropFirst(7))
+                } else if line.hasPrefix("data: ") {
+                    dataLines.append(String(line.dropFirst(6)))
+                }
+            }
+        } catch {}
+    }
+
+    private func handleSSEData(type: String, data: String) {
+        guard let jsonData = data.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { return }
+        switch type {
+        case "pair_request":
+            guard let requestId = json["requestId"] as? String,
+                  let deviceName = json["deviceName"] as? String,
+                  let ip = json["ip"] as? String else { return }
+            let deviceId = json["deviceId"] as? String ?? ""
+            showPairApproval(requestId: requestId, deviceId: deviceId, deviceName: deviceName, ip: ip)
+        case "device_paired":
+            guard let deviceId = json["deviceId"] as? String,
+                  let name = json["name"] as? String else { return }
+            if !pairedDevices.contains(where: { $0.deviceId == deviceId }) {
+                pairedDevices.append(PairedDeviceInfo(deviceId: deviceId, name: name))
+            }
+            deviceCount = pairedDevices.count
+        case "device_revoked":
+            guard let deviceId = json["deviceId"] as? String else { return }
+            pairedDevices.removeAll { $0.deviceId == deviceId }
+            deviceCount = pairedDevices.count
+        default: break
+        }
+    }
+
+    // MARK: - Pair Approval
+
+    private func showPairApproval(requestId: String, deviceId: String, deviceName: String, ip: String) {
+        // Auto-deny blocked devices
+        if blockedDeviceIds.contains(deviceId) {
+            Task { await denyPairRequest(requestId: requestId) }
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "配对请求"
+        alert.informativeText = "\(deviceName)\n\(ip)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Approve")
+        alert.addButton(withTitle: "Deny")
+        alert.addButton(withTitle: "Block")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { await approvePairRequest(requestId: requestId) }
+        case .alertSecondButtonReturn:
+            Task { await denyPairRequest(requestId: requestId) }
+        default:
+            var blocked = blockedDeviceIds
+            blocked.insert(deviceId)
+            blockedDeviceIds = blocked
+            Task { await denyPairRequest(requestId: requestId) }
+        }
+    }
+
+    // MARK: - Pairing HTTP
+
+    func approvePairRequest(requestId: String) async {
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://localhost:\(config.port)/admin/pair-approve") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["requestId": requestId])
+        _ = try? await URLSession.shared.data(for: req)
+    }
 
+    func denyPairRequest(requestId: String) async {
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://localhost:\(config.port)/admin/pair-deny") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["requestId": requestId])
+        _ = try? await URLSession.shared.data(for: req)
+    }
+
+    func revokeDevice(_ deviceId: String) async {
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://localhost:\(config.port)/admin/devices/\(deviceId)") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        _ = try? await URLSession.shared.data(for: req)
+        // SSE device_revoked will update pairedDevices list
+    }
+
+    // MARK: - Fetch Paired Devices
+
+    private func fetchPairedDevices() async {
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/devices") else { return }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
               let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
-        deviceCount = json.count
+        pairedDevices = json.compactMap { d in
+            guard let id = d["deviceId"] as? String, let name = d["name"] as? String else { return nil }
+            return PairedDeviceInfo(deviceId: id, name: name)
+        }
+        deviceCount = pairedDevices.count
     }
 
     // MARK: - Helpers
 
+    @discardableResult
+    private func runDetached(_ cmd: [String]) async -> Bool {
+        guard !cmd.isEmpty, let execURL = resolveExecutable(cmd[0]) else { return false }
+        let proc = Process()
+        proc.executableURL = execURL
+        proc.arguments = Array(cmd.dropFirst())
+        proc.environment = enrichedEnvironment()
+        // /dev/null: child can write freely, no pipe buffers to fill, no SIGPIPE on dealloc
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        return (try? proc.run()) != nil
+    }
+
+    private func resolveExecutable(_ nameOrPath: String) -> URL? {
+        if nameOrPath.hasPrefix("/") || nameOrPath.hasPrefix("./") {
+            let url = URL(fileURLWithPath: nameOrPath)
+            return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+        }
+        return findExecutable(nameOrPath)
+    }
+
     func findExecutable(_ name: String) -> URL? {
-        let searchPaths = [
-            "/usr/local/bin",
-            "/opt/homebrew/bin",
-            "/opt/homebrew/sbin",
+        let paths = [
+            "/usr/local/bin", "/opt/homebrew/bin", "/opt/homebrew/sbin",
             "\(NSHomeDirectory())/.npm-global/bin",
             "\(NSHomeDirectory())/.nvm/versions/node/\(nvmCurrentVersion())/bin",
-            "/usr/bin",
-            "/bin"
+            "/usr/bin", "/bin"
         ]
-        for dir in searchPaths {
+        for dir in paths {
             let url = URL(fileURLWithPath: "\(dir)/\(name)")
-            if FileManager.default.isExecutableFile(atPath: url.path) {
-                return url
-            }
+            if FileManager.default.isExecutableFile(atPath: url.path) { return url }
         }
-        // Also try PATH from environment
         if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
             for dir in pathEnv.split(separator: ":").map(String.init) {
                 let url = URL(fileURLWithPath: "\(dir)/\(name)")
-                if FileManager.default.isExecutableFile(atPath: url.path) {
-                    return url
-                }
+                if FileManager.default.isExecutableFile(atPath: url.path) { return url }
             }
         }
         return nil
     }
 
     private func nvmCurrentVersion() -> String {
-        let nvmDir = "\(NSHomeDirectory())/.nvm/versions/node"
-        let versions = (try? FileManager.default.contentsOfDirectory(atPath: nvmDir)) ?? []
-        return versions.sorted().last ?? "current"
+        let dir = "\(NSHomeDirectory())/.nvm/versions/node"
+        return ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).sorted().last ?? "current"
     }
 
     private func enrichedEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
-        // Prepend common bin paths so npm/node/pawterm-server are findable
-        let extraPaths = [
-            "/usr/local/bin",
-            "/opt/homebrew/bin",
-            "/opt/homebrew/sbin",
-            "\(NSHomeDirectory())/.npm-global/bin"
-        ]
-        let existingPath = env["PATH"] ?? "/usr/bin:/bin"
-        env["PATH"] = extraPaths.joined(separator: ":") + ":" + existingPath
+        let extra = ["/usr/local/bin", "/opt/homebrew/bin", "/opt/homebrew/sbin",
+                     "\(NSHomeDirectory())/.npm-global/bin"]
+        env["PATH"] = extra.joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin")
         return env
-    }
-}
-
-// MARK: - Config
-
-struct PawTermConfig {
-    let port: Int
-    let token: String?
-
-    static func load() -> PawTermConfig {
-        let configPath = "\(NSHomeDirectory())/.config/pawterm/config.json"
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return PawTermConfig(port: 8765, token: nil)
-        }
-        let port = json["port"] as? Int ?? 8765
-        let token = json["token"] as? String
-        return PawTermConfig(port: port, token: token)
     }
 }

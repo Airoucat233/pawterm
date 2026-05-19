@@ -48,6 +48,8 @@ struct MenuBarIcon: View {
             return .yellow
         case .installing:
             return .yellow
+        case .stopping:
+            return .yellow
         case .stopped, .error, .notInstalled, .nodeNotInstalled:
             return .secondary
         }
