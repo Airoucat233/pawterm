@@ -1,0 +1,78 @@
+name: Release Mac
+
+on:
+  push:
+    tags:
+      - 'mac/v*'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # macOS .app — SwiftUI MenuBarExtra, universal binary, unsigned
+  # ─────────────────────────────────────────────────────────────
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal .app bundle
+        run: |
+          TAG="${{ github.ref_name }}"   # mac/v0.1.1
+          VER="${TAG#mac/v}"             # 0.1.1
+          bash build.sh --universal --version="${VER}"
+        working-directory: mac
+
+      - name: Zip .app
+        run: |
+          TAG="${{ github.ref_name }}"
+          VER="${TAG#mac/v}"
+          mkdir -p dist-mac
+          ditto -c -k --keepParent mac/PawTerm.app "dist-mac/PawTerm-${VER}-mac.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: dist-mac/*.zip
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────
+  # GitHub Release
+  # ─────────────────────────────────────────────────────────────
+  release:
+    needs: build-mac
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Read server version
+        id: server_ver
+        run: echo "ver=$(python3 -c "import json; print(json.load(open('server/package.json'))['version'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ github.ref_name }}  ·  server v${{ steps.server_ver.outputs.ver }}"
+          generate_release_notes: true
+          files: artifacts/mac-app/*.zip
+          body: |
+            ## macOS Download
+
+            - `PawTerm-*-mac.zip` — Universal binary (arm64 + x86_64), unsigned
+
+            After download:
+            ```
+            unzip PawTerm-*-mac.zip
+            xattr -d com.apple.quarantine PawTerm.app
+            mv PawTerm.app /Applications/
+            ```
+
+            First launch: status bar 🐾 icon appears.
+            Click → Install Server (if needed) → Start → Open Admin / Show QR / Show PIN.
+
+            See [README](https://github.com/Airoucat233/pawterm#readme) for server setup.
