@@ -11,11 +11,26 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   build-mac:
     runs-on: macos-latest
+    outputs:
+      release_exists: ${{ steps.check.outputs.exists }}
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check if release already exists
+        id: check
+        run: |
+          if gh release view "${{ github.ref_name }}" --repo Airoucat233/pawterm &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release already exists — skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Build universal .app bundle
+        if: steps.check.outputs.exists == 'false'
         run: |
           TAG="${{ github.ref_name }}"   # release/mac-v0.1.1
           VER="${TAG#release/mac-v}"     # 0.1.1
@@ -23,6 +38,7 @@ jobs:
         working-directory: mac
 
       - name: Zip .app
+        if: steps.check.outputs.exists == 'false'
         run: |
           TAG="${{ github.ref_name }}"
           VER="${TAG#release/mac-v}"
@@ -30,6 +46,7 @@ jobs:
           ditto -c -k --keepParent mac/PawTerm.app "dist-mac/PawTerm-${VER}-mac.zip"
 
       - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.exists == 'false'
         with:
           name: mac-app
           path: dist-mac/*.zip
@@ -41,6 +58,7 @@ jobs:
   release:
     needs: build-mac
     runs-on: ubuntu-latest
+    if: needs.build-mac.outputs.release_exists == 'false'
 
     steps:
       - uses: actions/checkout@v4

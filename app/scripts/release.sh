@@ -1,8 +1,12 @@
 #!/usr/bin/env zsh
 # Bump Flutter app version, commit, push to main, then push release tag.
-# CI picks up the tag and builds APK + GitHub Release.
 #
-# Usage: ./scripts/release.sh
+# Default: push tag → CI builds APK + GitHub Release
+# --local:  upload local dist/*.apk directly, CI skips build
+#
+# Usage:
+#   ./scripts/release.sh           # CI build
+#   ./scripts/release.sh --local   # upload local artifacts
 
 set -euo pipefail
 
@@ -10,6 +14,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$APP_DIR")"
 PUBSPEC="$APP_DIR/pubspec.yaml"
+
+LOCAL=0
+for arg in "$@"; do
+  case "$arg" in --local) LOCAL=1 ;; esac
+done
 
 # -------- 0. Branch guard --------
 
@@ -72,7 +81,19 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exi
 
 # -------- 4. Confirm --------
 
-printf "  → bump, commit, push, tag? [y/N]: "
+if [[ $LOCAL -eq 1 ]]; then
+  ARTIFACTS=("$REPO_ROOT"/dist/pawterm-*.apk)
+  if [[ ${#ARTIFACTS[@]} -eq 0 || ! -f "${ARTIFACTS[1]}" ]]; then
+    echo "✗ No artifacts found in dist/. Run build-apk.sh first." >&2
+    exit 1
+  fi
+  echo "  local artifacts:"
+  for f in "${ARTIFACTS[@]}"; do echo "    + $(basename "$f")"; done
+  echo
+  printf "  → bump, commit, push, upload artifacts, tag? [y/N]: "
+else
+  printf "  → bump, commit, push, tag (CI builds)? [y/N]: "
+fi
 read -r CONFIRM
 [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
 
@@ -93,14 +114,35 @@ git -C "$REPO_ROOT" add app/pubspec.yaml
 git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore(app): bump version to $NEW"
 git -C "$REPO_ROOT" push origin main
 
-# -------- 7. Tag + push --------
+# -------- 7. Tag + push (+ optional local release) --------
 
 echo
-echo "▶ git tag $TAG && git push origin $TAG"
-git -C "$REPO_ROOT" tag "$TAG"
-git -C "$REPO_ROOT" push origin "$TAG"
+if [[ $LOCAL -eq 1 ]]; then
+  SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
+  TITLE="$TAG"
+  [[ -n "$SERVER_VERSION" ]] && TITLE="$TAG  ·  server v$SERVER_VERSION"
 
-echo
-echo "\033[32m✓ tag pushed\033[0m — CI is building APK"
-echo "  Watch:   https://github.com/Airoucat233/pawterm/actions"
-echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+  echo "▶ gh release create $TAG (local artifacts)"
+  gh release create "$TAG" \
+    "${ARTIFACTS[@]}" \
+    --title "$TITLE" \
+    --generate-notes \
+    --repo Airoucat233/pawterm
+
+  echo "▶ git tag $TAG && git push origin $TAG"
+  git -C "$REPO_ROOT" tag "$TAG"
+  git -C "$REPO_ROOT" push origin "$TAG"
+
+  echo
+  echo "\033[32m✓ released with local artifacts\033[0m"
+  echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+else
+  echo "▶ git tag $TAG && git push origin $TAG"
+  git -C "$REPO_ROOT" tag "$TAG"
+  git -C "$REPO_ROOT" push origin "$TAG"
+
+  echo
+  echo "\033[32m✓ tag pushed\033[0m — CI is building APK"
+  echo "  Watch:   https://github.com/Airoucat233/pawterm/actions"
+  echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+fi

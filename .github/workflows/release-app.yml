@@ -11,25 +11,43 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   build-apk:
     runs-on: ubuntu-latest
+    outputs:
+      release_exists: ${{ steps.check.outputs.exists }}
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check if release already exists
+        id: check
+        run: |
+          if gh release view "${{ github.ref_name }}" --repo Airoucat233/pawterm &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release already exists — skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - uses: actions/setup-java@v4
+        if: steps.check.outputs.exists == 'false'
         with:
           distribution: temurin
           java-version: '17'
 
       - uses: subosito/flutter-action@v2
+        if: steps.check.outputs.exists == 'false'
         with:
           flutter-version: '3.32.0'
           channel: stable
           cache: true
 
       - name: Build APKs
+        if: steps.check.outputs.exists == 'false'
         run: bash app/scripts/build-apk.sh
 
       - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.exists == 'false'
         with:
           name: android-apks
           path: dist/*.apk
@@ -41,6 +59,7 @@ jobs:
   release:
     needs: build-apk
     runs-on: ubuntu-latest
+    if: needs.build-apk.outputs.release_exists == 'false'
 
     steps:
       - uses: actions/checkout@v4
