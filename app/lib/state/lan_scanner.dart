@@ -42,25 +42,26 @@ class LanScanner {
 
     final controller = StreamController<List<LanScanResult>>();
 
-    // mDNS discovery
+    // mDNS discovery (nsd 5.x: ipLookupType replaces explicit resolve())
     Future<void> runMdns() async {
       nsd.Discovery? discovery;
       try {
-        discovery = await nsd.startDiscovery(_serviceType);
+        discovery = await nsd.startDiscovery(
+          _serviceType,
+          ipLookupType: nsd.IpLookupType.any,
+        );
         discovery.addServiceListener((service, status) async {
           if (status != nsd.ServiceStatus.found) return;
-          // Resolve address
-          nsd.Service? resolved;
-          try {
-            resolved = await nsd.resolve(service);
-          } catch (_) {
-            return;
+          final port = service.port ?? 8765;
+          // Prefer IPv4 from the resolved address list; fall back to first.
+          final addresses = service.addresses;
+          if (addresses == null || addresses.isEmpty) return;
+          InternetAddress? picked;
+          for (final a in addresses) {
+            if (a.type == InternetAddressType.IPv4) { picked = a; break; }
           }
-          final port = resolved.port ?? 8765;
-          // nsd v2.x: Service.host is InternetAddress?
-          final inetAddr = resolved.host;
-          if (inetAddr == null) return;
-          final host = inetAddr.address;
+          picked ??= addresses.first;
+          final host = picked.address;
           if (host.isEmpty) return;
           final info = await _probeHealth(host, port);
           if (info != null && !controller.isClosed) {
