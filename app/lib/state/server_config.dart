@@ -204,7 +204,6 @@ class PairedServersNotifier extends StateNotifier<List<PairedServer>> {
 
   static const _key = 'paired_servers';
   static const _deviceIdKey = 'device_id';
-  static const _uuid = Uuid();
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
