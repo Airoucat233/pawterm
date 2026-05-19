@@ -10,7 +10,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MAC_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$MAC_DIR")"
 PLIST="$MAC_DIR/Info.plist"
+DIST_DIR="$REPO_ROOT/dist"
 
 DEV=0
 for arg in "$@"; do
@@ -41,5 +43,12 @@ else
   bash build.sh --universal --version="$VERSION"
 fi
 
-echo
-echo "\033[32m✓ build done\033[0m  v$VERSION"
+if [[ $DEV -eq 0 ]]; then
+  mkdir -p "$DIST_DIR"
+  ditto -c -k --keepParent "$MAC_DIR/PawTerm.app" "$DIST_DIR/PawTerm-${VERSION}-mac.zip"
+  echo
+  echo "\033[32m✓ build done\033[0m  v$VERSION  →  dist/PawTerm-${VERSION}-mac.zip"
+else
+  echo
+  echo "\033[32m✓ build done\033[0m  v$VERSION"
+fi

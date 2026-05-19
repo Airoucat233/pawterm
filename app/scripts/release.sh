@@ -82,23 +82,10 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exi
 # -------- 4. Confirm --------
 
 if [[ $LOCAL -eq 1 ]]; then
-  # Auto-zip PawTerm.app if present but not yet zipped
-  MAC_APP="$REPO_ROOT/mac/PawTerm.app"
-  if [[ -d "$MAC_APP" ]]; then
-    MAC_VER=$(/usr/bin/python3 -c "
-import plistlib
-with open('$REPO_ROOT/mac/Info.plist', 'rb') as f: pl = plistlib.load(f)
-print(pl.get('CFBundleShortVersionString', '0.0.0'))
-")
-    MAC_ZIP="$REPO_ROOT/dist-mac/PawTerm-${MAC_VER}-mac.zip"
-    mkdir -p "$REPO_ROOT/dist-mac"
-    ditto -c -k --keepParent "$MAC_APP" "$MAC_ZIP"
-  fi
-
-  ARTIFACTS=("$REPO_ROOT"/dist/pawterm-*.apk "$REPO_ROOT"/dist-mac/PawTerm-*.zip)
+  ARTIFACTS=("$REPO_ROOT"/dist/pawterm-*.apk "$REPO_ROOT"/dist/PawTerm-*-mac.zip)
   ARTIFACTS=(${^ARTIFACTS}(N))  # filter non-existent
   if [[ ${#ARTIFACTS[@]} -eq 0 ]]; then
-    echo "✗ No artifacts found. Run build-apk.sh (and optionally mac/scripts/build.sh --release) first." >&2
+    echo "✗ No artifacts in dist/. Run build-apk.sh and mac/scripts/build.sh first." >&2
     exit 1
   fi
   echo "  local artifacts:"
