@@ -27,9 +27,13 @@ class LanScanResult {
 
 class LanScanner {
   static const String _serviceType = '_pawterm._tcp';
-  static const Duration _timeout = Duration(seconds: 4);
-  static const Duration _probeTimeout = Duration(milliseconds: 1500);
-  static const int _maxConcurrent = 30;
+  // Tuning rationale: 254 IPs / 64 concurrent ≈ 4 waves; each wave bounded
+  // by 1s probe → ~4s worst-case subnet sweep. mDNS runs in parallel.
+  // _timeout = 12s gives headroom for slow Android Wi-Fi stacks and lets
+  // high-numbered IPs (e.g. servers at .242) still get probed.
+  static const Duration _timeout = Duration(seconds: 12);
+  static const Duration _probeTimeout = Duration(milliseconds: 1000);
+  static const int _maxConcurrent = 64;
 
   /// Scan via mDNS + subnet sweep. Returns a snapshot after [_timeout].
   /// Emits incremental updates via the stream.
