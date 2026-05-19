@@ -4,6 +4,8 @@
 
 **必须使用已写好的脚本，禁止手动执行 flutter build / gh release / npm publish。**
 
+**所有发布操作（publish.sh / release.sh / build-apk.sh / build-ipa.sh）必须等用户明确说"发布"/"打包"/"release"后才能执行，不得自行决定触发。**
+
 ### App 打包（Android APK）
 
 ```bash
