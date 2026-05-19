@@ -59,18 +59,18 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build .app bundle
-        run: bash build.sh
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER#v}"
+          bash build.sh --universal --version="${VER}"
         working-directory: mac
 
       - name: Zip .app (preserves resource forks via ditto)
         run: |
-          VERSION="${{ github.ref_name }}"
-          VER="${VERSION#v}"
-          cd mac
-          ditto -c -k --keepParent PawTerm.app "../dist-mac/PawTerm-${VER}-mac.zip" || {
-            mkdir -p ../dist-mac
-            ditto -c -k --keepParent PawTerm.app "../dist-mac/PawTerm-${VER}-mac.zip"
-          }
+          VER="${{ github.ref_name }}"
+          VER="${VER#v}"
+          mkdir -p dist-mac
+          ditto -c -k --keepParent mac/PawTerm.app "dist-mac/PawTerm-${VER}-mac.zip"
 
       - uses: actions/upload-artifact@v4
         with:

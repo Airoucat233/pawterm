@@ -5,11 +5,13 @@ cd "$(dirname "$0")"
 DEV=0
 UNIVERSAL=0
 INSTALL=0
+APP_VERSION=""
 for arg in "$@"; do
   case "$arg" in
-    --dev)       DEV=1 ;;
-    --universal) UNIVERSAL=1 ;;
-    --install)   INSTALL=1 ;;
+    --dev)           DEV=1 ;;
+    --universal)     UNIVERSAL=1 ;;
+    --install)       INSTALL=1 ;;
+    --version=*)     APP_VERSION="${arg#--version=}" ;;
     *) echo "Unknown argument: $arg"; exit 1 ;;
   esac
 done
@@ -59,6 +61,8 @@ with open(src, "rb") as f:
 pl["CFBundleIdentifier"] = "$BUNDLE_ID"
 pl["CFBundleName"] = "$DISPLAY_NAME"
 pl["CFBundleDisplayName"] = "$DISPLAY_NAME"
+if "$APP_VERSION":
+    pl["CFBundleShortVersionString"] = "$APP_VERSION"
 
 with open("$APP/Contents/Info.plist", "wb") as f:
     plistlib.dump(pl, f)

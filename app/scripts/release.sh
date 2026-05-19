@@ -1,10 +1,14 @@
 #!/usr/bin/env zsh
-# Create a GitHub Release for the current version.
+# Push a release tag to trigger CI build + GitHub Release.
 #
-# Collects artifacts built by build-apk.sh and build-ipa.sh, then runs:
-#   gh release create <tag> <files...>
+# Prerequisites:
+#   1. Run build-apk.sh first to bump pubspec version and verify the build locally.
+#   2. All commits must be pushed to origin/main.
 #
-# Run AFTER both build scripts have produced artifacts for the same version.
+# What this script does:
+#   - Reads version from pubspec.yaml
+#   - Creates and pushes tag v{semver} → triggers release.yml CI
+#   - CI builds APK + Mac .app and creates the GitHub Release automatically
 
 set -euo pipefail
 
@@ -17,7 +21,7 @@ PUBSPEC="$APP_DIR/pubspec.yaml"
 
 # -------- 0. Branch guard --------
 
-CURRENT_BRANCH=$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
   echo "✗ stable release must be run from main (current: $CURRENT_BRANCH)" >&2
   echo "  Switch to main before releasing." >&2
@@ -33,65 +37,47 @@ if [[ -z "$CURRENT" ]]; then
 fi
 
 TAG="v${CURRENT%%+*}"
+SERVER_VERSION=$(python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
 
 echo
-echo "  version: \033[36m$CURRENT\033[0m  →  tag: \033[1m$TAG\033[0m"
+echo "  app version : \033[36m$CURRENT\033[0m  →  tag: \033[1m$TAG\033[0m"
+[[ -n "$SERVER_VERSION" ]] && echo "  server ver  : $SERVER_VERSION"
 echo
 
-# -------- 2. Collect artifacts --------
+# -------- 2. Check tag doesn't already exist --------
 
-APK_DIR="$APP_DIR/build/app/outputs/flutter-apk/releases/$CURRENT"
-IPA_DIR="$APP_DIR/build/ios/ipa/releases/$CURRENT"
-
-RELEASE_FILES=()
-
-# Android
-for abi in arm64-v8a armeabi-v7a x86_64; do
-  f="$APK_DIR/pawterm-${CURRENT}-${abi}.apk"
-  if [[ -f "$f" ]]; then
-    RELEASE_FILES+=("$f")
-    echo "  + $(basename "$f")"
-  fi
-done
-
-# iOS
-IPA="$IPA_DIR/pawterm-${CURRENT}.ipa"
-if [[ -f "$IPA" ]]; then
-  RELEASE_FILES+=("$IPA")
-  echo "  + $(basename "$IPA")"
-fi
-
-if [[ ${#RELEASE_FILES[@]} -eq 0 ]]; then
-  echo "✗ No artifacts found for version $CURRENT." >&2
-  echo "  Run build-apk.sh and/or build-ipa.sh first." >&2
+if git -C "$REPO_ROOT" tag -l | grep -qx "$TAG"; then
+  echo "✗ Tag $TAG already exists. Did you forget to bump the version?" >&2
   exit 1
 fi
 
-echo
+# -------- 3. Check all commits are pushed --------
 
-# -------- 3. Confirm --------
+LOCAL=$(git -C "$REPO_ROOT" rev-parse HEAD)
+REMOTE=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || echo "")
+if [[ "$LOCAL" != "$REMOTE" ]]; then
+  echo "✗ Local commits are ahead of origin/main. Push first:" >&2
+  echo "  git push origin main" >&2
+  exit 1
+fi
 
-printf "  → create GitHub Release $TAG with ${#RELEASE_FILES[@]} file(s)? [y/N]: "
+# -------- 4. Confirm --------
+
+printf "  → push tag %s and trigger CI release? [y/N]: " "$TAG"
 read -r CONFIRM
 if [[ "${CONFIRM:-N}" != "y" && "${CONFIRM:-N}" != "Y" ]]; then
   echo "  aborted."
   exit 0
 fi
 
-# -------- 4. Release title --------
-
-SERVER_VERSION=$(python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
-RELEASE_TITLE="$TAG"
-[[ -n "$SERVER_VERSION" ]] && RELEASE_TITLE="$TAG  ·  server v$SERVER_VERSION"
-
-# -------- 5. gh release create --------
+# -------- 5. Tag + push --------
 
 echo
-echo "▶ gh release create $TAG  (title: $RELEASE_TITLE)"
-gh release create "$TAG" \
-  "${RELEASE_FILES[@]}" \
-  --title "$RELEASE_TITLE" \
-  --generate-notes
+echo "▶ git tag $TAG && git push origin $TAG"
+git -C "$REPO_ROOT" tag "$TAG"
+git -C "$REPO_ROOT" push origin "$TAG"
 
 echo
-echo "\033[32m✓ released\033[0m  https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+echo "\033[32m✓ tag pushed\033[0m — CI is building APK + Mac app"
+echo "  Watch: https://github.com/Airoucat233/pawterm/actions"
+echo "  Release will appear at: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"

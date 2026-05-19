@@ -86,6 +86,14 @@ echo
 echo "▶ npm publish --registry https://registry.npmjs.org"
 npm publish --registry https://registry.npmjs.org
 
+# -------- 7. Tag --------
+
+REPO_ROOT="$(dirname "$SERVER_DIR")"
+TAG="server/v$VERSION"
+git -C "$REPO_ROOT" tag "$TAG"
+git -C "$REPO_ROOT" push origin "$TAG"
+
 echo
 echo "\033[32m✓ published pawterm-server@$VERSION\033[0m"
-echo "  https://www.npmjs.com/package/pawterm-server"
+echo "  npm:  https://www.npmjs.com/package/pawterm-server"
+echo "  tag:  $TAG"
