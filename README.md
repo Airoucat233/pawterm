@@ -4,56 +4,62 @@
 > Drive Claude Code (and more) while your dev machine does the actual work.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-![Flutter](https://img.shields.io/badge/Flutter-Android-02569B?logo=flutter&logoColor=white)
+![Flutter](https://img.shields.io/badge/Flutter-Android%20%7C%20iOS-02569B?logo=flutter&logoColor=white)
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)
 
-A small bridge server runs on your dev machine (where `claude` CLI is installed). The Android app connects over LAN or Tailscale and gives you a full mobile interface: chat, real terminal, session history, file browser.
+A bridge server runs on your dev machine (where `claude` CLI is installed). The phone app connects over LAN or Tailscale and gives you a full mobile interface: chat, real terminal, session history, file browser.
 
-## Install
+---
 
-### 🍎 macOS / 🐧 Linux — One-liner
+## Quick Start
 
+### 🖥️ Install the Server
+
+**🍎 macOS — Mac App (recommended)**
+
+Download `PawTerm.app` from [**Releases**](../../releases/latest) and open it. It automatically installs and starts `pawterm-server` in the background. The menu bar icon shows server status and version at a glance.
+
+**⌨️ Without Mac App**
+
+Quick test (no install needed):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh | bash
+npx pawterm-server
 ```
 
-Or download `install.sh`, inspect it, then `bash install.sh`.
-
-The script checks for Node 20+ and the `claude` CLI, installs `pawterm-server`, registers it as a system service (launchd on macOS, systemd on Linux), waits for it to be ready, and opens the admin panel in your browser automatically.
-
-### 🪟 Windows (experimental)
-
-Download [`install.bat`](install.bat) and double-click. **Not tested** — the shell tab feature requires `node-pty` which needs `windows-build-tools`.
-
-### 🛡️ Manual (advanced)
-
-Requires Node 20+ and `claude` CLI logged in.
-
+Background service that auto-starts at login:
 ```bash
 npm install -g pawterm-server
-pawterm-server install    # register as a system service (auto-starts at login)
+pawterm-server install   # register as system service (launchd / systemd)
 pawterm-server start
 ```
 
+> Run `pawterm-server help` for all service commands: `start` / `stop` / `restart` / `update` / `logs` / `status`
+
 First run creates `~/.config/pawterm/config.json` — edit it to add your project paths, then restart.
 
-> Other service commands: `start` / `stop` / `restart` / `update` / `logs` / `status` — run `pawterm-server help` for the full list.
+---
 
-### 📱 Phone app
+### 📱 Get the Phone App
 
-Grab the latest `pawterm-*-arm64-v8a.apk` from [**Releases**](../../releases/latest) and install it on your Android phone.
+Grab the latest APK from [**Releases**](../../releases/latest) and install it on your Android phone.
 
 > Enable **"Install unknown apps"** in Android settings if prompted.
 
-Open the app → tap **Scan LAN** → select your computer → tap **Pair** → approve in the browser window that pops up on your computer.
+iOS support is planned.
 
-Or add the connection manually:
+---
 
-| Network | Address |
-|---------|---------|
-| Same LAN | `http://192.168.x.x:8765` |
+### 🔗 Connect
+
+Open the app → tap **Scan LAN** → select your computer → tap **Pair** → done.
+
+| Network | How to connect |
+|---------|----------------|
+| Same LAN | Auto-discovered via **Scan LAN** |
 | Tailscale | `http://100.x.x.x:8765` |
 | Android emulator | `http://10.0.2.2:8765` |
+
+---
 
 ## Features
 
@@ -64,9 +70,11 @@ Or add the connection manually:
 - **Model switch** — swap between Opus / Sonnet / Haiku at runtime
 - **Todo tracking** — live task progress chip with fireworks on completion 🎉
 
-## Server config
+---
 
-`~/.config/pawterm/config.json` whitelists which directories the app can access:
+## Server Config
+
+`~/.config/pawterm/config.json`:
 
 ```json
 {
@@ -79,7 +87,9 @@ Or add the connection manually:
 }
 ```
 
-## Build from source
+---
+
+## Build from Source
 
 ```bash
 # Server
@@ -88,12 +98,16 @@ cd pawterm && pnpm install
 cp server/config.example.json server/config.json
 pnpm dev:server
 
-# Android app
-cd app
-flutter pub get
+# Phone app
+cd app && flutter pub get
 flutter run                  # debug on connected device
-./scripts/build-apk.sh       # versioned release APK
+bash scripts/build-apk.sh   # versioned release APK
+
+# Mac app
+cd mac && bash build.sh --install
 ```
+
+---
 
 ## License
 
