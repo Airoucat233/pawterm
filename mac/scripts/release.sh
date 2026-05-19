@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# Bump Mac app version, commit, push tag mac/v{version} → CI builds + GitHub Release.
+# Bump Mac app version, commit, push tag release/mac-v{version} → CI builds + GitHub Release.
 #
 # Usage: ./scripts/release.sh
 #
@@ -7,7 +7,7 @@
 #   1. Reads current version from Info.plist
 #   2. Prompts for bump strategy
 #   3. Writes new version to Info.plist and commits
-#   4. Pushes tag mac/v{version} → triggers release-mac.yml CI
+#   4. Pushes tag release/mac-v{version} → triggers release-mac.yml CI
 
 set -euo pipefail
 
@@ -66,7 +66,7 @@ case "$CHOICE" in
   *)       echo "  invalid choice: $CHOICE" >&2; exit 1 ;;
 esac
 
-TAG="mac/v$NEW_VERSION"
+TAG="release/mac-v$NEW_VERSION"
 
 echo
 echo "  new version: \033[32m$NEW_VERSION\033[0m  →  tag: \033[1m$TAG\033[0m"

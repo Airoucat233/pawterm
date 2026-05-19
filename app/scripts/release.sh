@@ -36,7 +36,7 @@ if [[ -z "$CURRENT" ]]; then
   exit 1
 fi
 
-TAG="app/v${CURRENT%%+*}"
+TAG="release/app-v${CURRENT%%+*}"
 SERVER_VERSION=$(python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
 
 echo

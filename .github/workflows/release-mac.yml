@@ -3,7 +3,7 @@ name: Release Mac
 on:
   push:
     tags:
-      - 'mac/v*'
+      - 'release/mac-v*'
 
 jobs:
   # ─────────────────────────────────────────────────────────────
@@ -17,15 +17,15 @@ jobs:
 
       - name: Build universal .app bundle
         run: |
-          TAG="${{ github.ref_name }}"   # mac/v0.1.1
-          VER="${TAG#mac/v}"             # 0.1.1
+          TAG="${{ github.ref_name }}"   # release/mac-v0.1.1
+          VER="${TAG#release/mac-v}"     # 0.1.1
           bash build.sh --universal --version="${VER}"
         working-directory: mac
 
       - name: Zip .app
         run: |
           TAG="${{ github.ref_name }}"
-          VER="${TAG#mac/v}"
+          VER="${TAG#release/mac-v}"
           mkdir -p dist-mac
           ditto -c -k --keepParent mac/PawTerm.app "dist-mac/PawTerm-${VER}-mac.zip"
 

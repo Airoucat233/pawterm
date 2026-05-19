@@ -89,7 +89,7 @@ npm publish --registry https://registry.npmjs.org
 # -------- 7. Tag --------
 
 REPO_ROOT="$(dirname "$SERVER_DIR")"
-TAG="server/v$VERSION"
+TAG="release/server-v$VERSION"
 git -C "$REPO_ROOT" tag "$TAG"
 git -C "$REPO_ROOT" push origin "$TAG"
 

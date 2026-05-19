@@ -3,7 +3,7 @@ name: Release App
 on:
   push:
     tags:
-      - 'app/v*'
+      - 'release/app-v*'
 
 jobs:
   # ─────────────────────────────────────────────────────────────
@@ -36,8 +36,8 @@ jobs:
 
       - name: Rename APKs
         run: |
-          TAG="${{ github.ref_name }}"   # app/v0.7.5
-          VER="${TAG#app/v}"             # 0.7.5
+          TAG="${{ github.ref_name }}"   # release/app-v0.7.5
+          VER="${TAG#release/app-v}"     # 0.7.5
           OUT="app/build/app/outputs/flutter-apk"
           mkdir -p dist
           cp "$OUT/app-arm64-v8a-release.apk"   "dist/pawterm-${VER}-arm64-v8a.apk"
