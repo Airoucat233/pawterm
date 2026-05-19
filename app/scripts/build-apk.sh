@@ -48,6 +48,7 @@ if [[ $DEBUG -eq 1 ]]; then
 fi
 
 /bin/rm -f "$OUT_DIR"/*.apk 2>/dev/null || true
+/bin/rm -f "$DIST_DIR"/pawterm-*.apk 2>/dev/null || true
 
 echo
 echo "▶ flutter pub get"

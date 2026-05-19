@@ -35,6 +35,10 @@ echo
 
 cd "$MAC_DIR"
 
+if [[ $DEV -eq 0 ]]; then
+  /bin/rm -f "$DIST_DIR"/PawTerm-*-mac.zip 2>/dev/null || true
+fi
+
 if [[ $DEV -eq 1 ]]; then
   echo "▶ bash build.sh --dev --install --version=$VERSION"
   bash build.sh --dev --install --version="$VERSION"

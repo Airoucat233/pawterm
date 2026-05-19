@@ -1,12 +1,12 @@
 #!/usr/bin/env zsh
 # Bump Flutter app version, commit, push to main, then push release tag.
 #
-# Default: push tag → CI builds APK + GitHub Release
-# --local:  upload local dist/*.apk directly, CI skips build
+# Default: bump version → push tag → CI builds APK + Mac + GitHub Release
+# --local:  verify exact artifacts in dist/, create GH Release, push tag (no bump)
 #
 # Usage:
 #   ./scripts/release.sh           # CI build
-#   ./scripts/release.sh --local   # upload local artifacts
+#   ./scripts/release.sh --local   # upload local artifacts (build first)
 
 set -euo pipefail
 
@@ -28,12 +28,87 @@ if [[ "$CURRENT_BRANCH" != "main" ]]; then
   exit 1
 fi
 
-# -------- 1. Read current version --------
+# -------- Read current version --------
 
 CURRENT=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")
 [[ -z "$CURRENT" ]] && { echo "✗ Could not read version from pubspec.yaml" >&2; exit 1; }
-
 SEMVER="${CURRENT%%+*}"
+
+# ══════════════════════════════════════════════════════════════
+# --local: verify artifacts exist for current version, then release
+# ══════════════════════════════════════════════════════════════
+
+if [[ $LOCAL -eq 1 ]]; then
+  TAG="release/v$SEMVER"
+  echo
+  echo "  version : \033[36m$CURRENT\033[0m  →  tag: \033[1m$TAG\033[0m"
+  echo
+
+  # ---- Check artifacts (exact filenames) ----
+  ARM64="$REPO_ROOT/dist/pawterm-${CURRENT}-arm64-v8a.apk"
+  ARMEABI="$REPO_ROOT/dist/pawterm-${CURRENT}-armeabi-v7a.apk"
+  MAC_VER=$(/usr/bin/python3 -c "
+import plistlib
+with open('$REPO_ROOT/mac/Info.plist', 'rb') as f: pl = plistlib.load(f)
+print(pl.get('CFBundleShortVersionString', ''))
+" 2>/dev/null || echo "")
+  MAC_ZIP="$REPO_ROOT/dist/PawTerm-${MAC_VER}-mac.zip"
+
+  ARTIFACTS=()
+  MISSING=()
+
+  [[ -f "$ARM64"   ]] && ARTIFACTS+=("$ARM64")   || MISSING+=("$(basename "$ARM64")")
+  [[ -f "$ARMEABI" ]] && ARTIFACTS+=("$ARMEABI") || true   # optional
+  [[ -n "$MAC_VER" && -f "$MAC_ZIP" ]] && ARTIFACTS+=("$MAC_ZIP") || true  # optional
+
+  if [[ ${#ARTIFACTS[@]} -eq 0 ]]; then
+    echo "✗ No artifacts found. Run build-apk.sh first." >&2
+    exit 1
+  fi
+  if [[ ${#MISSING[@]} -gt 0 ]]; then
+    echo "✗ Required artifact missing:" >&2
+    for f in "${MISSING[@]}"; do echo "    $f" >&2; done
+    exit 1
+  fi
+
+  echo "  artifacts:"
+  for f in "${ARTIFACTS[@]}"; do echo "    + $(basename "$f")"; done
+  echo
+
+  # ---- Check tag ----
+  git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exists." >&2; exit 1; }
+
+  # ---- Confirm ----
+  printf "  → create GH Release and push tag? [y/N]: "
+  read -r CONFIRM
+  [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
+
+  # ---- Release ----
+  SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
+  TITLE="v$SEMVER"
+  [[ -n "$SERVER_VERSION" ]] && TITLE="v$SEMVER  ·  server v$SERVER_VERSION"
+
+  echo
+  echo "▶ gh release create $TAG"
+  gh release create "$TAG" \
+    "${ARTIFACTS[@]}" \
+    --title "$TITLE" \
+    --generate-notes \
+    --repo Airoucat233/pawterm
+
+  echo "▶ git tag $TAG && git push origin $TAG"
+  git -C "$REPO_ROOT" tag "$TAG"
+  git -C "$REPO_ROOT" push origin "$TAG"
+
+  echo
+  echo "\033[32m✓ released\033[0m  https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+  exit 0
+fi
+
+# ══════════════════════════════════════════════════════════════
+# Default: bump version → commit → push → tag → CI builds
+# ══════════════════════════════════════════════════════════════
+
 BUILD="${CURRENT#*+}"
 [[ "$BUILD" == "$CURRENT" ]] && BUILD="1"
 IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
@@ -41,8 +116,6 @@ IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
 echo
 echo "  current: \033[36m$CURRENT\033[0m"
 echo
-
-# -------- 2. Bump --------
 
 cat <<MENU
   Choose bump:
@@ -75,30 +148,11 @@ echo "  new version : \033[32m$NEW\033[0m"
 echo "  tag         : \033[1m$TAG\033[0m"
 echo
 
-# -------- 3. Check tag --------
-
 git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exists." >&2; exit 1; }
 
-# -------- 4. Confirm --------
-
-if [[ $LOCAL -eq 1 ]]; then
-  ARTIFACTS=("$REPO_ROOT"/dist/pawterm-*.apk "$REPO_ROOT"/dist/PawTerm-*-mac.zip)
-  ARTIFACTS=(${^ARTIFACTS}(N))  # filter non-existent
-  if [[ ${#ARTIFACTS[@]} -eq 0 ]]; then
-    echo "✗ No artifacts in dist/. Run build-apk.sh and mac/scripts/build.sh first." >&2
-    exit 1
-  fi
-  echo "  local artifacts:"
-  for f in "${ARTIFACTS[@]}"; do echo "    + $(basename "$f")"; done
-  echo
-  printf "  → bump, commit, push, upload artifacts, tag? [y/N]: "
-else
-  printf "  → bump, commit, push, tag (CI builds)? [y/N]: "
-fi
+printf "  → bump, commit, push, tag (CI builds)? [y/N]: "
 read -r CONFIRM
 [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
-
-# -------- 5. Update pubspec --------
 
 if [[ "$NEW" != "$CURRENT" ]]; then
   /usr/bin/python3 - "$PUBSPEC" "$NEW" <<'PY'
@@ -109,42 +163,16 @@ p.write_text(re.sub(r'^version: .*$', f'version: {new}', p.read_text(), flags=re
 PY
 fi
 
-# -------- 6. Commit + push main --------
-
 git -C "$REPO_ROOT" add app/pubspec.yaml
 git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore(app): bump version to $NEW"
 git -C "$REPO_ROOT" push origin main
 
-# -------- 7. Tag + push (+ optional local release) --------
+echo
+echo "▶ git tag $TAG && git push origin $TAG"
+git -C "$REPO_ROOT" tag "$TAG"
+git -C "$REPO_ROOT" push origin "$TAG"
 
 echo
-if [[ $LOCAL -eq 1 ]]; then
-  SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
-  APP_VER="${NEW%%+*}"
-  TITLE="v$APP_VER"
-  [[ -n "$SERVER_VERSION" ]] && TITLE="v$APP_VER  ·  server v$SERVER_VERSION"
-
-  echo "▶ gh release create $TAG (local artifacts)"
-  gh release create "$TAG" \
-    "${ARTIFACTS[@]}" \
-    --title "$TITLE" \
-    --generate-notes \
-    --repo Airoucat233/pawterm
-
-  echo "▶ git tag $TAG && git push origin $TAG"
-  git -C "$REPO_ROOT" tag "$TAG"
-  git -C "$REPO_ROOT" push origin "$TAG"
-
-  echo
-  echo "\033[32m✓ released with local artifacts\033[0m"
-  echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
-else
-  echo "▶ git tag $TAG && git push origin $TAG"
-  git -C "$REPO_ROOT" tag "$TAG"
-  git -C "$REPO_ROOT" push origin "$TAG"
-
-  echo
-  echo "\033[32m✓ tag pushed\033[0m — CI is building APK"
-  echo "  Watch:   https://github.com/Airoucat233/pawterm/actions"
-  echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
-fi
+echo "\033[32m✓ tag pushed\033[0m — CI is building"
+echo "  Watch:   https://github.com/Airoucat233/pawterm/actions"
+echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
