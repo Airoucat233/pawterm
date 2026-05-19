@@ -36,7 +36,7 @@ type Rejecter = (err: Error) => void;
 // The subtle mode marker: each pending entry knows which resolver shape to use.
 type PendingEntry =
   | { mode: 'mcp';    resolve: (r: CallToolResult)   => void; reject: Rejecter; timer: ReturnType<typeof setTimeout> }
-  | { mode: 'native'; resolve: (r: PermissionResult) => void; reject: Rejecter; timer: ReturnType<typeof setTimeout> };
+  | { mode: 'native'; resolve: (r: PermissionResult) => void; reject: Rejecter; timer: ReturnType<typeof setTimeout>; originalInput: Record<string, unknown> };
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -58,8 +58,8 @@ export class AskUserQuestionRegistry {
   /** MCP path: resolves with a text CallToolResult. */
   register(mode: 'mcp', toolUseId: string): Promise<CallToolResult>;
   /** Native canUseTool path: resolves with a PermissionResult. */
-  register(mode: 'native', toolUseId: string): Promise<PermissionResult>;
-  register(mode: 'mcp' | 'native', toolUseId: string): Promise<CallToolResult | PermissionResult> {
+  register(mode: 'native', toolUseId: string, originalInput?: Record<string, unknown>): Promise<PermissionResult>;
+  register(mode: 'mcp' | 'native', toolUseId: string, originalInput?: Record<string, unknown>): Promise<CallToolResult | PermissionResult> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.has(toolUseId)) {
@@ -68,7 +68,7 @@ export class AskUserQuestionRegistry {
         }
       }, this.timeoutMs);
       // Cast is safe: the overloads guarantee resolve type matches mode.
-      this.pending.set(toolUseId, { mode, resolve, reject, timer } as PendingEntry);
+      this.pending.set(toolUseId, { mode, resolve, reject, timer, ...(mode === 'native' && { originalInput: originalInput ?? {} }) } as PendingEntry);
     });
   }
 
@@ -89,8 +89,8 @@ export class AskUserQuestionRegistry {
     if (entry.mode === 'mcp') {
       entry.resolve({ content: [{ type: 'text', text: formatAnswers(answers, annotations) }] });
     } else {
-      // native: return structured updatedInput so the SDK passes it into call()
-      entry.resolve({ behavior: 'allow', updatedInput: { answers, ...(annotations && { annotations }) } });
+      // native: merge original questions back into updatedInput so CC's call() can access them
+      entry.resolve({ behavior: 'allow', updatedInput: { ...entry.originalInput, answers, ...(annotations && { annotations }) } });
     }
     return true;
   }

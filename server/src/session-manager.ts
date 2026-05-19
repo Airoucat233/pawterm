@@ -94,9 +94,9 @@ export class ChatSession {
       // Native built-in AskUserQuestion path: checkPermissions returns behavior:'ask',
       // which triggers canUseTool. We suspend here (register 'native') and wait for
       // /chat/answer — same client flow as the MCP path, different internal resolver shape.
-      canUseTool: async (toolName, _input, opts) => {
+      canUseTool: async (toolName, input, opts) => {
         if (toolName === 'AskUserQuestion') {
-          return this.askRegistry.register('native', opts.toolUseID);
+          return this.askRegistry.register('native', opts.toolUseID, input as Record<string, unknown>);
         }
         return { behavior: 'allow' as const };
       },
