@@ -11,34 +11,41 @@ A small bridge server runs on your dev machine (where `claude` CLI is installed)
 
 ## Install
 
-### 1. Download the APK
+### 🍎 macOS / 🐧 Linux — One-liner
 
-Grab the latest `pawterm-*-arm64-v8a.apk` from [**Releases**](../../releases/latest) and install it on your Android phone.
+```bash
+curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh | bash
+```
 
-> Enable **"Install unknown apps"** in Android settings if prompted.
+Or download `install.sh`, inspect it, then `bash install.sh`.
 
-### 2. Start the server
+The script checks for Node 20+ and the `claude` CLI, installs `pawterm-server`, registers it as a system service (launchd on macOS, systemd on Linux), waits for it to be ready, and opens the admin panel in your browser automatically.
+
+### 🪟 Windows (experimental)
+
+Download [`install.bat`](install.bat) and double-click. **Not tested** — the shell tab feature requires `node-pty` which needs `windows-build-tools`.
+
+### 🛡️ Manual (advanced)
 
 Requires Node 20+ and `claude` CLI logged in.
 
-**One-off / try it out** (Ctrl+C to stop):
-```bash
-npx pawterm-server
-```
-
-**Persistent background service (macOS / Linux):**
 ```bash
 npm install -g pawterm-server
-pawterm-server install    # auto-starts at login
+pawterm-server install    # register as a system service (auto-starts at login)
+pawterm-server start
 ```
 
 First run creates `~/.config/pawterm/config.json` — edit it to add your project paths, then restart.
 
 > Other service commands: `start` / `stop` / `restart` / `update` / `logs` / `status` — run `pawterm-server help` for the full list.
 
-### 3. Connect from the app
+### 📱 Phone app
 
-On startup the server prints a **QR code** — scan it in PawTerm to connect in one tap.
+Grab the latest `pawterm-*-arm64-v8a.apk` from [**Releases**](../../releases/latest) and install it on your Android phone.
+
+> Enable **"Install unknown apps"** in Android settings if prompted.
+
+Open the app → tap **Scan LAN** → select your computer → tap **Pair** → approve in the browser window that pops up on your computer.
 
 Or add the connection manually:
 
@@ -47,8 +54,6 @@ Or add the connection manually:
 | Same LAN | `http://192.168.x.x:8765` |
 | Tailscale | `http://100.x.x.x:8765` |
 | Android emulator | `http://10.0.2.2:8765` |
-
-> Running as a background service? Use `pawterm-server logs` to find the QR code.
 
 ## Features
 
