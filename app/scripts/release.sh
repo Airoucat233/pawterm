@@ -82,6 +82,19 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exi
 # -------- 4. Confirm --------
 
 if [[ $LOCAL -eq 1 ]]; then
+  # Auto-zip PawTerm.app if present but not yet zipped
+  MAC_APP="$REPO_ROOT/mac/PawTerm.app"
+  if [[ -d "$MAC_APP" ]]; then
+    MAC_VER=$(/usr/bin/python3 -c "
+import plistlib
+with open('$REPO_ROOT/mac/Info.plist', 'rb') as f: pl = plistlib.load(f)
+print(pl.get('CFBundleShortVersionString', '0.0.0'))
+")
+    MAC_ZIP="$REPO_ROOT/dist-mac/PawTerm-${MAC_VER}-mac.zip"
+    mkdir -p "$REPO_ROOT/dist-mac"
+    ditto -c -k --keepParent "$MAC_APP" "$MAC_ZIP"
+  fi
+
   ARTIFACTS=("$REPO_ROOT"/dist/pawterm-*.apk "$REPO_ROOT"/dist-mac/PawTerm-*.zip)
   ARTIFACTS=(${^ARTIFACTS}(N))  # filter non-existent
   if [[ ${#ARTIFACTS[@]} -eq 0 ]]; then
@@ -120,8 +133,9 @@ git -C "$REPO_ROOT" push origin main
 echo
 if [[ $LOCAL -eq 1 ]]; then
   SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
-  TITLE="$TAG"
-  [[ -n "$SERVER_VERSION" ]] && TITLE="$TAG  ·  server v$SERVER_VERSION"
+  APP_VER="${NEW%%+*}"
+  TITLE="v$APP_VER"
+  [[ -n "$SERVER_VERSION" ]] && TITLE="v$APP_VER  ·  server v$SERVER_VERSION"
 
   echo "▶ gh release create $TAG (local artifacts)"
   gh release create "$TAG" \
