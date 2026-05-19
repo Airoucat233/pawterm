@@ -85,8 +85,9 @@ pnpm build
 if [[ "$VERSION" != "$CURRENT" ]]; then
   git -C "$REPO_ROOT" add server/package.json
   git -C "$REPO_ROOT" commit -m "chore(server): bump version to $VERSION"
+  git -C "$REPO_ROOT" push origin main
   echo
-  echo "  committed version bump"
+  echo "  committed and pushed version bump"
 fi
 
 # -------- 6. Publish --------

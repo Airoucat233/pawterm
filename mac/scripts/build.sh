@@ -80,8 +80,9 @@ bash build.sh --dev --install --version="$NEW_VERSION"
 if [[ "$NEW_VERSION" != "$CURRENT" ]]; then
   git -C "$REPO_ROOT" add mac/Info.plist
   git -C "$REPO_ROOT" commit -m "chore(mac): bump version to $NEW_VERSION"
+  git -C "$REPO_ROOT" push origin main
   echo
-  echo "  committed version bump"
+  echo "  committed and pushed version bump"
 fi
 
 echo

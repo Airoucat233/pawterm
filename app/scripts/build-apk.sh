@@ -14,6 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$APP_DIR")"
 cd "$APP_DIR"
 
 PUBSPEC="$APP_DIR/pubspec.yaml"
@@ -169,6 +170,16 @@ echo "  latest →   $LATEST"
 echo
 echo "  all builds: $VERSION_DIR"
 /bin/ls -1 "$VERSION_DIR" | /usr/bin/sed 's/^/    /'
+
+# -------- 8. Commit + push version bump --------
+
+if [[ "$NEW_VERSION" != "$CURRENT" ]]; then
+  echo
+  git -C "$REPO_ROOT" add app/pubspec.yaml
+  git -C "$REPO_ROOT" commit -m "chore(app): bump version to $VERSION"
+  git -C "$REPO_ROOT" push origin main
+  echo "  committed and pushed version bump"
+fi
 
 # Open Finder selecting arm64
 /usr/bin/open -R "$ARM64"
