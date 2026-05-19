@@ -23,6 +23,7 @@ export interface ServerSettings {
   logFormat: LogFormat;
   logFile: string | null;
   token: string;
+  password?: string;
 }
 
 function expandHome(p: string): string {
@@ -32,6 +33,8 @@ function expandHome(p: string): string {
 }
 
 export const configPath = process.env.PAWTERM_CONFIG ?? process.env.CC_CONFIG ?? DEFAULT_CONFIG_PATH;
+
+export let isFirstRun = false;
 
 function loadConfig(): ServerSettings {
   if (!existsSync(configPath)) {
@@ -44,6 +47,7 @@ function loadConfig(): ServerSettings {
       token,
     };
     try {
+      isFirstRun = true;
       mkdirSync(DEFAULT_CONFIG_DIR, { recursive: true });
       writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
       console.info(`[config] Created default config at ${configPath}`);
@@ -71,6 +75,7 @@ function loadConfig(): ServerSettings {
     log_format?: LogFormat;
     log_file?: string;
     token?: string;
+    password?: string;
   };
 
   let token = raw.token as string | undefined;
@@ -95,6 +100,7 @@ function loadConfig(): ServerSettings {
     logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? raw.log_format ?? defaultLogFormat) as LogFormat,
     logFile: (() => { const p = process.env.PAWTERM_LOG_FILE ?? raw.log_file; return p ? expandHome(p) : null; })(),
     token,
+    password: raw.password as string | undefined,
   };
 }
 
@@ -135,6 +141,24 @@ async function persistProjects(): Promise<void> {
     : { host: settings.host, port: settings.port };
   current['projects'] = settings.projects.map((p) => ({ name: p.name, path: p.path }));
   await writeFile(configPath, JSON.stringify(current, null, 2));
+}
+
+export async function setPassword(password: string): Promise<void> {
+  const current: Record<string, unknown> = existsSync(configPath)
+    ? (JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>)
+    : {};
+  current['password'] = password;
+  await writeFile(configPath, JSON.stringify(current, null, 2));
+  (settings as any).password = password;
+}
+
+export async function clearPassword(): Promise<void> {
+  const current: Record<string, unknown> = existsSync(configPath)
+    ? (JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>)
+    : {};
+  delete current['password'];
+  await writeFile(configPath, JSON.stringify(current, null, 2));
+  (settings as any).password = undefined;
 }
 
 /** Returns true if `target` is inside any whitelisted project root. */

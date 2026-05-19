@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
@@ -29,6 +30,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   late final TextEditingController _nameCtrl;
   late final TextEditingController _tokenCtrl;
   late String _emoji;
+  bool _obscureToken = true;
 
   _SheetState _phase = _SheetState.input;
   String? _detectedName;
@@ -173,6 +175,52 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     setState(() => _phase = _SheetState.detected);
   }
 
+  Future<void> _importTokenFromConnection(List<ServerEntry> conns) async {
+    final t = AppTokens.of(context);
+    final s = ref.read(stringsProvider);
+    final picked = await showModalBottomSheet<ServerEntry>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        margin: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: t.border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(width: 36, height: 4, decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(s.addConnectionImportToken,
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: t.text)),
+            ),
+            ...conns.map((e) => ListTile(
+              leading: Text(e.emoji, style: const TextStyle(fontSize: 20)),
+              title: Text(e.name, style: TextStyle(fontSize: 14, color: t.text)),
+              subtitle: Text(
+                e.url.replaceFirst(RegExp(r'^https?://'), ''),
+                style: TextStyle(fontSize: 11, color: t.textMuted),
+              ),
+              onTap: () => Navigator.of(ctx).pop(e),
+            )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _tokenCtrl.text = picked.token!;
+        if (_phase == _SheetState.error) _phase = _SheetState.input;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
@@ -273,15 +321,58 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                 enabled: _phase == _SheetState.input ||
                     _phase == _SheetState.error ||
                     isEditing,
-                obscureText: true,
+                obscureText: _obscureToken,
                 style: TextStyle(fontFamily: 'monospace', fontSize: 13, color: t.text),
                 decoration: InputDecoration(
                   hintText: s.addConnectionTokenHint,
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_tokenCtrl.text.isNotEmpty)
+                        IconButton(
+                          icon: Icon(Icons.copy_outlined, size: 17, color: t.textDim),
+                          visualDensity: VisualDensity.compact,
+                          tooltip: 'Copy',
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: _tokenCtrl.text.trim()));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(s.connectionsTokenCopied), duration: const Duration(seconds: 1)),
+                            );
+                          },
+                        ),
+                      IconButton(
+                        icon: Icon(
+                          _obscureToken ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                          size: 17, color: t.textDim,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => setState(() => _obscureToken = !_obscureToken),
+                      ),
+                    ],
+                  ),
                 ),
                 onChanged: (_) {
                   if (_phase == _SheetState.error) setState(() => _phase = _SheetState.input);
+                  setState(() {}); // refresh copy button visibility
                 },
               ),
+              // Import token from existing connection
+              Consumer(builder: (ctx, ref2, _) {
+                final conns = ref2.watch(connectionsProvider)
+                    .where((e) => e.token != null && e.token!.isNotEmpty)
+                    .toList();
+                if (conns.isEmpty || isEditing) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 4),
+                  child: GestureDetector(
+                    onTap: () => _importTokenFromConnection(conns),
+                    child: Text(
+                      s.addConnectionImportToken,
+                      style: TextStyle(fontSize: 12, color: t.accent, decoration: TextDecoration.underline),
+                    ),
+                  ),
+                );
+              }),
               const SizedBox(height: 16),
 
               // Detecting indicator

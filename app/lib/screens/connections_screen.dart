@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../i18n/locale_provider.dart' show stringsProvider;
@@ -379,6 +380,20 @@ class _ConnCard extends ConsumerWidget {
                 );
               },
             ),
+            if (entry.token != null && entry.token!.isNotEmpty) ...[
+              Divider(color: t.borderSubt, height: 1),
+              ListTile(
+                leading: Icon(Icons.copy_outlined, color: t.textMuted),
+                title: Text(s.connectionsCopyToken, style: TextStyle(color: t.text, fontSize: 15)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Clipboard.setData(ClipboardData(text: entry.token!));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(s.connectionsTokenCopied), duration: const Duration(seconds: 1)),
+                  );
+                },
+              ),
+            ],
             Divider(color: t.borderSubt, height: 1),
             ListTile(
               leading: Icon(Icons.delete_outline, color: t.error),

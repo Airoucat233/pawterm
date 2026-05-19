@@ -102,6 +102,9 @@ class Strings {
   final String connectionsEmptyHint;
   final String connectionsRemove;
   final String connectionsEdit;
+  final String connectionsCopyToken;
+  final String connectionsTokenCopied;
+  final String addConnectionImportToken;
   final String connectionsConnect;
   final String connectionsLastConnected;
   final String connectionsNever;
@@ -324,6 +327,9 @@ class Strings {
     required this.connectionsEmptyHint,
     required this.connectionsRemove,
     required this.connectionsEdit,
+    required this.connectionsCopyToken,
+    required this.connectionsTokenCopied,
+    required this.addConnectionImportToken,
     required this.connectionsConnect,
     required this.connectionsLastConnected,
     required this.connectionsNever,
@@ -520,6 +526,9 @@ const Strings stringsEn = Strings(
   connectionsEmptyHint: 'Tap + to add your first server',
   connectionsRemove: 'Remove',
   connectionsEdit: 'Edit',
+  connectionsCopyToken: 'Copy Token',
+  connectionsTokenCopied: 'Token copied',
+  addConnectionImportToken: 'Import from saved connection',
   connectionsConnect: 'Connect',
   connectionsLastConnected: 'Last used',
   connectionsNever: 'never',
@@ -720,6 +729,9 @@ const Strings stringsZh = Strings(
   connectionsEmptyHint: '点 + 添加你的第一台服务器',
   connectionsRemove: '删除',
   connectionsEdit: '编辑',
+  connectionsCopyToken: '复制 Token',
+  connectionsTokenCopied: 'Token 已复制',
+  addConnectionImportToken: '从已有连接导入',
   connectionsConnect: '连接',
   connectionsLastConnected: '最近使用',
   connectionsNever: '从未',

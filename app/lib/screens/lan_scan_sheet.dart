@@ -139,6 +139,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
     final t = AppTokens.of(context);
     final tokenCtrl = TextEditingController();
     String? errMsg;
+    bool obscure = true;
 
     final result = await showDialog<LanScanResult>(
       context: context,
@@ -162,10 +163,19 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
               TextField(
                 controller: tokenCtrl,
                 autofocus: true,
+                obscureText: obscure,
                 style: TextStyle(fontFamily: 'monospace', fontSize: 13, color: t.text),
                 decoration: InputDecoration(
                   hintText: s.lanScanTokenHint,
                   hintStyle: TextStyle(fontSize: 12, color: t.textDim),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                      size: 17, color: t.textDim,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => setDialogState(() => obscure = !obscure),
+                  ),
                 ),
               ),
               if (errMsg != null) ...[

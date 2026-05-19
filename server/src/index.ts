@@ -11,7 +11,7 @@ import qrcode from 'qrcode-terminal';
 import type { HealthResponse, Project } from '@pawterm/shared';
 
 import { registerChatRest } from './chat-rest.js';
-import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath } from './config.js';
+import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun } from './config.js';
 import { buildLoggerOptions } from './logger.js';
 import { registerSessionsApi } from './sessions-api.js';
 import { registerUpload } from './upload.js';
@@ -30,6 +30,112 @@ function getLanIp(): string {
   return 'localhost';
 }
 
+function isValidPassword(pw: string): boolean {
+  return pw.length >= 8 && /[a-zA-Z]/.test(pw) && /[0-9]/.test(pw);
+}
+
+async function promptPassword(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    // Non-interactive: read single line from stdin
+    return new Promise((resolve) => {
+      const chunks: string[] = [];
+      process.stdin.setEncoding('utf8');
+      process.stdin.once('data', (d) => { resolve(String(d).trim()); });
+    });
+  }
+  process.stdout.write(prompt);
+  return new Promise((resolve) => {
+    let input = '';
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    const onData = (char: string) => {
+      if (char === '\n' || char === '\r' || char === '') {
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        process.stdin.removeListener('data', onData);
+        process.stdout.write('\n');
+        resolve(input);
+      } else if (char === '') {
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        process.stdin.removeListener('data', onData);
+        process.stdout.write('\n');
+        process.exit(0);
+      } else if (char === '' || char === '\b') {
+        if (input.length > 0) {
+          input = input.slice(0, -1);
+          process.stdout.write('\b \b');
+        }
+      } else {
+        input += char;
+        process.stdout.write('*');
+      }
+    };
+    process.stdin.on('data', onData);
+  });
+}
+
+async function runPasswordCommand(): Promise<void> {
+  const action = process.argv[3];
+  if (!action || !['set', 'clear', 'show'].includes(action)) {
+    console.log('Usage: pawterm-server password <set|clear|show>');
+    console.log('  set [password]  Set a memorable password (prompts if omitted)');
+    console.log('  clear           Remove the password');
+    console.log('  show            Show the current password / token');
+    process.exit(0);
+  }
+  if (action === 'show') {
+    if (settings.password) {
+      console.log(`Password : ${settings.password}`);
+    } else {
+      console.log('No password set. Auth uses the random token only.');
+    }
+    console.log(`Token    : ${settings.token}`);
+    process.exit(0);
+  }
+  if (action === 'clear') {
+    await clearPassword();
+    console.log('Password cleared.');
+    process.exit(0);
+  }
+  if (action === 'set') {
+    let pw = process.argv[4] ?? '';
+    if (!pw) pw = await promptPassword('New password: ');
+    if (!pw) { console.error('No password provided.'); process.exit(1); }
+    if (!isValidPassword(pw)) {
+      console.error('Password must be ≥8 characters and contain both letters and digits.');
+      process.exit(1);
+    }
+    await setPassword(pw);
+    console.log('Password set.');
+    process.exit(0);
+  }
+}
+
+async function firstRunSetup(): Promise<void> {
+  console.log('\n┌─ PawTerm — First-time setup');
+  console.log('│  A random token has been generated and saved.');
+  console.log('│');
+  console.log('│  Tip: Set a memorable password so you can connect from');
+  console.log('│  new devices without needing the random token.');
+  console.log('│');
+  console.log('│  Requirements: ≥8 characters, letters + digits.');
+  console.log('└─────────────────────────────────────────────────\n');
+  const pw = await promptPassword('Set password (Enter to skip): ');
+  if (!pw) {
+    console.log('\nSkipped. Set one later: pawterm-server password set\n');
+    return;
+  }
+  if (!isValidPassword(pw)) {
+    console.log('\nInvalid (need ≥8 chars with letters and digits). Skipped.');
+    console.log('Set one later: pawterm-server password set\n');
+    return;
+  }
+  await setPassword(pw);
+  console.log('\nPassword set!\n');
+}
+
 async function main(): Promise<void> {
   const app = Fastify({ logger: buildLoggerOptions() });
 
@@ -42,8 +148,9 @@ async function main(): Promise<void> {
     const url = req.url.split('?')[0];
     if (url === '/health' || url === '/ws/shell') return;
     const auth = req.headers['authorization'];
-    const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    if (token !== settings.token) {
+    const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    const valid = bearer === settings.token || (!!settings.password && bearer === settings.password);
+    if (!valid) {
       reply.code(401).send({ error: 'unauthorized' });
     }
   });
@@ -292,10 +399,13 @@ const subcommand = process.argv[2];
 if (subcommand === '--version' || subcommand === '-v') {
   console.log(`pawterm-server ${VERSION}`);
   process.exit(0);
+} else if (subcommand === 'password') {
+  await runPasswordCommand();
 } else if (subcommand && SERVICE_CMDS.has(subcommand)) {
   const { runServiceCommand } = await import('./service.js');
   runServiceCommand(subcommand);
 } else {
+  if (isFirstRun) await firstRunSetup();
   main().catch((err) => {
     console.error(err);
     process.exit(1);

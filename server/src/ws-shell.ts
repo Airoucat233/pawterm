@@ -253,7 +253,7 @@ export function handleShellSocket(socket: WebSocket, _req: FastifyRequest): void
           send({ type: 'error', message: 'Already initialized; open a new socket to re-init' });
           return;
         }
-        if (msg.token !== settings.token) {
+        if (msg.token !== settings.token && !(settings.password && msg.token === settings.password)) {
           send({ type: 'error', message: 'unauthorized' });
           try { socket.close(4001, 'unauthorized'); } catch { /* ignore */ }
           return;
