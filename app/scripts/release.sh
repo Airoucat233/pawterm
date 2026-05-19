@@ -68,7 +68,7 @@ case "$CHOICE" in
   *)       echo "  invalid choice" >&2; exit 1 ;;
 esac
 
-TAG="release/app-v${NEW%%+*}"
+TAG="release/v${NEW%%+*}"
 
 echo
 echo "  new version : \033[32m$NEW\033[0m"
@@ -82,9 +82,10 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exi
 # -------- 4. Confirm --------
 
 if [[ $LOCAL -eq 1 ]]; then
-  ARTIFACTS=("$REPO_ROOT"/dist/pawterm-*.apk)
-  if [[ ${#ARTIFACTS[@]} -eq 0 || ! -f "${ARTIFACTS[1]}" ]]; then
-    echo "✗ No artifacts found in dist/. Run build-apk.sh first." >&2
+  ARTIFACTS=("$REPO_ROOT"/dist/pawterm-*.apk "$REPO_ROOT"/dist-mac/PawTerm-*.zip)
+  ARTIFACTS=(${^ARTIFACTS}(N))  # filter non-existent
+  if [[ ${#ARTIFACTS[@]} -eq 0 ]]; then
+    echo "✗ No artifacts found. Run build-apk.sh (and optionally mac/scripts/build.sh --release) first." >&2
     exit 1
   fi
   echo "  local artifacts:"

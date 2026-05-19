@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'release/v*'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Check if release already exists (--local flow)
+  # ─────────────────────────────────────────────────────────────
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - name: Check if release already exists
+        id: check
+        run: |
+          if gh release view "${{ github.ref_name }}" --repo Airoucat233/pawterm &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release already exists — skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # ─────────────────────────────────────────────────────────────
+  # Android APK — split per ABI
+  # ─────────────────────────────────────────────────────────────
+  build-apk:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.0'
+          channel: stable
+          cache: true
+
+      - name: Build APKs
+        run: bash app/scripts/build-apk.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: dist/*.apk
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────
+  # macOS .app — universal binary, unsigned
+  # ─────────────────────────────────────────────────────────────
+  build-mac:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal .app
+        run: bash mac/scripts/build.sh --release
+        # mac/scripts/build.sh --release calls: bash build.sh --universal --version=$VER
+
+      - name: Zip .app
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER#release/v}"
+          mkdir -p dist-mac
+          ditto -c -k --keepParent mac/PawTerm.app "dist-mac/PawTerm-${VER}-mac.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: dist-mac/*.zip
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────
+  # GitHub Release
+  # ─────────────────────────────────────────────────────────────
+  release:
+    needs: [check, build-apk, build-mac]
+    if: needs.check.outputs.exists == 'false'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Read versions
+        id: ver
+        run: |
+          SERVER=$(python3 -c "import json; print(json.load(open('server/package.json'))['version'])")
+          TAG="${{ github.ref_name }}"
+          APP="${TAG#release/v}"
+          echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+          echo "app=$APP"      >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "v${{ steps.ver.outputs.app }}  ·  server v${{ steps.ver.outputs.server }}"
+          generate_release_notes: true
+          files: |
+            artifacts/android-apks/*.apk
+            artifacts/mac-app/*.zip
+          body: |
+            ## Downloads
+
+            **Android APK**
+            - `pawterm-*-arm64-v8a.apk` — modern devices
+            - `pawterm-*-armeabi-v7a.apk` — older devices
+
+            **macOS .app** (unsigned)
+            ```
+            unzip PawTerm-*-mac.zip
+            xattr -d com.apple.quarantine PawTerm.app
+            mv PawTerm.app /Applications/
+            ```
+
+            ## Install Server
+            See [README](https://github.com/Airoucat233/pawterm#readme) for server setup.
