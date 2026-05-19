@@ -902,7 +902,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// - [force] = false（默认）：仅在当前已经"贴底"时滚（用于流式 delta 自动跟随）
   void _scrollToEnd({bool force = false}) {
     if (!force && !_stickToBottom) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // force=true（发送消息后）用双帧回调：第一帧完成 setState rebuild，
+    // 第二帧 layout 稳定后 maxScrollExtent 才包含新消息的完整高度。
+    // 长文本消息尤为重要，单帧时 maxScrollExtent 可能尚未更新。
+    void doScroll() {
       if (!_scrollController.hasClients) return;
       _scrollController.animateTo(
         _scrollController.position.maxScrollExtent,
@@ -910,7 +913,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         curve: Curves.easeOut,
       );
       if (force) setState(() => _stickToBottom = true);
-    });
+    }
+    if (force) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => doScroll());
+      });
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => doScroll());
+    }
   }
 
   void _submit() {
@@ -1388,45 +1398,45 @@ class _StatusRow extends StatelessWidget {
   }
 }
 
-class _UserMessage extends ConsumerWidget {
+class _UserMessage extends ConsumerStatefulWidget {
   final String text;
   final int? timestamp;
   const _UserMessage({required this.text, this.timestamp});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_UserMessage> createState() => _UserMessageState();
+}
+
+class _UserMessageState extends ConsumerState<_UserMessage> {
+  /// 超过该字符数时折叠显示（换行符也算）。
+  static const _kCollapseThreshold = 300;
+  /// 超过该行数时折叠显示。
+  static const _kCollapseLines = 6;
+
+  bool _expanded = false;
+
+  bool get _shouldCollapse {
+    final lines = '\n'.allMatches(widget.text).length + 1;
+    return widget.text.length > _kCollapseThreshold || lines > _kCollapseLines;
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final s = ref.watch(stringsProvider);
-    final ts = tsFromMillis(timestamp);
+    final ts = tsFromMillis(widget.timestamp);
     final maxW = MediaQuery.of(context).size.width * 0.78;
+
+    final bubble = _shouldCollapse
+        ? _collapsibleBubble(t, maxW)
+        : _normalBubble(t, maxW);
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: maxW),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: t.accentSubt,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(14),
-                  topRight: Radius.circular(14),
-                  bottomLeft: Radius.circular(14),
-                  bottomRight: Radius.circular(4),
-                ),
-                border: Border.all(
-                  color: t.accent.withValues(alpha: 0.18),
-                  width: 0.5,
-                ),
-              ),
-              child: SelectableText(
-                text,
-                style: TextStyle(fontSize: 14, color: t.text, height: 1.45),
-              ),
-            ),
-          ),
+          bubble,
           if (ts != null)
             Padding(
               padding: const EdgeInsets.only(top: 4, right: 2),
@@ -1439,6 +1449,97 @@ class _UserMessage extends ConsumerWidget {
       ),
     );
   }
+
+  Widget _normalBubble(AppTokens t, double maxW) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxW),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: _bubbleDecoration(t),
+        child: SelectableText(
+          widget.text,
+          style: TextStyle(fontSize: 14, color: t.text, height: 1.45),
+        ),
+      ),
+    );
+  }
+
+  Widget _collapsibleBubble(AppTokens t, double maxW) {
+    final lines = '\n'.allMatches(widget.text).length + 1;
+    final chars = widget.text.length;
+    final firstLine = widget.text.split('\n').first.trim();
+    final preview = firstLine.length > 60 ? '${firstLine.substring(0, 60)}…' : firstLine;
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxW),
+      child: GestureDetector(
+        onTap: () => setState(() => _expanded = !_expanded),
+        child: Container(
+          decoration: _bubbleDecoration(t),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── 头部：行数/字数 + 展开按钮 ──────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                child: Row(
+                  children: [
+                    Icon(Icons.subject, size: 14, color: t.accent),
+                    const SizedBox(width: 6),
+                    Text(
+                      '$lines 行 · $chars 字',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: t.accent,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                    const Spacer(),
+                    Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 14,
+                      color: t.textMuted,
+                    ),
+                  ],
+                ),
+              ),
+              // ── 分隔线 ──────────────────────────────────────────
+              Divider(height: 0.5, thickness: 0.5, color: t.accent.withValues(alpha: 0.2)),
+              // ── 内容：折叠时只显示首行预览，展开后显示全文 ──────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                child: _expanded
+                    ? SelectableText(
+                        widget.text,
+                        style: TextStyle(fontSize: 13, color: t.text, height: 1.45),
+                      )
+                    : Text(
+                        preview,
+                        style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.4),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  BoxDecoration _bubbleDecoration(AppTokens t) => BoxDecoration(
+        color: t.accentSubt,
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(14),
+          topRight: Radius.circular(14),
+          bottomLeft: Radius.circular(14),
+          bottomRight: Radius.circular(4),
+        ),
+        border: Border.all(
+          color: t.accent.withValues(alpha: 0.18),
+          width: 0.5,
+        ),
+      );
 }
 
 class _Composer extends ConsumerWidget {
