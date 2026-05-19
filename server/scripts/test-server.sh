@@ -55,7 +55,7 @@ get_pid() {
   fi
   # fallback：lsof
   local lsof_pid
-  lsof_pid=$(lsof -ti :$PORT 2>/dev/null | head -1 || true)
+  lsof_pid=$(lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null | head -1 || true)
   if [[ -n "$lsof_pid" ]]; then
     echo "$lsof_pid"
     return 0
@@ -87,22 +87,20 @@ cmd_start() {
 
   info "starting on port $PORT, config=$CONFIG_FILE"
   cd "$SERVER_DIR"
-  # nohup + setsid + disown：彻底脱离 controlling terminal、shell job table、父进程组。
+  # nohup + disown：彻底脱离 controlling terminal、shell job table、父进程组。
   # 这样 claude code 重启 / 终端关 / shell 退出，都不会发 SIGHUP/SIGTERM 把它带走。
+  # PID 文件存 root pnpm 进程，stop 时杀 root 会级联到 tsx/node 全部子进程。
   nohup env PAWTERM_CONFIG="$CONFIG_FILE" pnpm exec tsx src/index.ts \
     > "$LOG_FILE" 2>&1 &
   local started=$!
   disown "$started" 2>/dev/null || true
+  echo "$started" > "$PID_FILE"
 
-  # tsx 会再 fork 一个 node 子进程跑 server。我们要的是 listening 那个 PID
-  # 等几秒让它真正绑端口，然后从 lsof 取实际监听 PID。
+  # 等端口绑定，确认真正起来了
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.4
-    local lp
-    lp=$(lsof -ti :$PORT 2>/dev/null | head -1 || true)
-    if [[ -n "$lp" ]]; then
-      echo "$lp" > "$PID_FILE"
-      ok "started pid=$lp"
+    if lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null | grep -q .; then
+      ok "started pid=$started"
       info "log: tail -f $LOG_FILE"
       return 0
     fi
@@ -116,24 +114,41 @@ cmd_start() {
 }
 
 cmd_stop() {
-  if ! pid=$(get_pid); then
+  local file_pid=""
+  [[ -f "$PID_FILE" ]] && file_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+  local port_pids
+  port_pids=$(lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null || true)
+
+  if [[ -z "$file_pid" ]] && [[ -z "$port_pids" ]]; then
     info "not running"
     return 0
   fi
-  info "stopping pid=$pid"
-  # 给一次温和 SIGTERM 机会
-  kill "$pid" 2>/dev/null || true
-  for i in 1 2 3 4 5; do
+
+  # 杀 root 进程（级联到 tsx/node 所有子进程）
+  if [[ -n "$file_pid" ]] && kill -0 "$file_pid" 2>/dev/null; then
+    info "stopping root pid=$file_pid"
+    kill "$file_pid" 2>/dev/null || true
+  fi
+  # 同时直接杀掉端口上的监听进程（兜底）
+  for p in $port_pids; do
+    kill "$p" 2>/dev/null || true
+  done
+
+  # 等端口真正释放
+  for i in $(seq 1 10); do
     sleep 0.3
-    if ! kill -0 "$pid" 2>/dev/null; then
+    if ! lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null | grep -q .; then
       rm -f "$PID_FILE"
       ok "stopped"
       return 0
     fi
   done
-  # 不肯走就 SIGKILL
+
+  # 还没走就 SIGKILL 全部残留
   warn "didn't exit on SIGTERM, sending SIGKILL"
-  kill -9 "$pid" 2>/dev/null || true
+  port_pids=$(lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null || true)
+  for p in $port_pids; do kill -9 "$p" 2>/dev/null || true; done
+  [[ -n "$file_pid" ]] && kill -9 "$file_pid" 2>/dev/null || true
   rm -f "$PID_FILE"
   ok "killed"
 }

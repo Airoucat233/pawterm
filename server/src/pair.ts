@@ -114,7 +114,7 @@ class PairingManager {
     deviceId: string,
     deviceName: string,
   ): Promise<{ ok: true; deviceToken: string; serverId: string }> {
-    const deviceToken = 'dt-' + randomBytes(24).toString('hex');
+    const deviceToken = 'dt-' + randomBytes(16).toString('hex');
     const now = Date.now();
 
     // Replace existing device with same deviceId, or push new

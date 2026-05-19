@@ -122,7 +122,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
   /**
    * POST /chat/stream — send a message and start streaming the response.
    *
-   * Body: { uuid, cwd, text, model?, permission_mode? }
+   * Body: { uuid, cwd, text, permission_mode, model? }
    * Returns: { ok: true } — actual events come via GET /chat/events?uuid=
    *
    * 409 if a run is already active for this uuid.
@@ -138,6 +138,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
       if (!body.cwd) { reply.code(400); return { error: 'cwd required' }; }
       if (!body.text) { reply.code(400); return { error: 'text required' }; }
+      if (!body.permission_mode) { reply.code(400); return { error: 'permission_mode required' }; }
 
       const cwd = resolve(body.cwd);
       if (!isPathAllowed(cwd)) { reply.code(403); return { error: `Project not allowed: ${cwd}` }; }
@@ -159,7 +160,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         return { error: 'run already active for this session' };
       }
 
-      const permissionMode = body.permission_mode ?? settings.permissionMode;
+      const permissionMode = body.permission_mode;
 
       const sessionInfo = await getSessionInfo(uuid, { dir: cwd });
       const askRegistry = new AskUserQuestionRegistry();

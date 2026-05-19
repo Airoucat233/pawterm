@@ -2,13 +2,11 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import websocketPlugin from '@fastify/websocket';
 import Fastify from 'fastify';
-import { createReadStream } from 'node:fs';
+import { createReadStream, readFileSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { hostname, homedir, networkInterfaces } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import qrcode from 'qrcode-terminal';
 import QRCode from 'qrcode';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,7 +24,10 @@ import { registerUpload } from './upload.js';
 import { handleShellSocket } from './ws-shell.js';
 
 declare const __SERVER_VERSION__: string;
-const VERSION: string = typeof __SERVER_VERSION__ !== 'undefined' ? __SERVER_VERSION__ : 'dev';
+const VERSION: string = typeof __SERVER_VERSION__ !== 'undefined' ? __SERVER_VERSION__ : (() => {
+  try { return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version ?? 'dev'; }
+  catch { return 'dev'; }
+})();
 
 function getLanIp(): string {
   const ifaces = networkInterfaces();
@@ -650,7 +651,6 @@ async function main(): Promise<void> {
       `│  listen   : http://${settings.host}:${settings.port}`,
       `│  config   : ${configPath}`,
       `│  serverId : ${settings.serverId}`,
-      `│  perm mode: ${settings.permissionMode}`,
       `│  log      : ${settings.logFormat} / ${settings.logLevel}${settings.logFile ? ` → ${settings.logFile}` : ''}`,
       `│  projects :`,
       ...settings.projects.map((p) => `│    • ${p.name}  (${p.path})`),
@@ -661,27 +661,8 @@ async function main(): Promise<void> {
 
   const lanIp = getLanIp();
   const qrContent = `pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`;
-  app.log.info(`\nScan QR to connect from the app:\n  ${qrContent}\n`);
-  await new Promise<void>((resolve) => {
-    qrcode.generate(qrContent, { small: true }, (code) => {
-      process.stdout.write(code + '\n');
-      resolve();
-    });
-  });
+  app.log.info(`  pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`);
 
-  // Auto-open Web Admin in browser (macOS/Linux only, skip if PAWTERM_NO_OPEN=1)
-  if (process.env.PAWTERM_NO_OPEN !== '1') {
-    const adminUrl = `http://localhost:${settings.port}/admin?token=${settings.adminToken}`;
-    const cmd = process.platform === 'darwin' ? 'open' :
-                process.platform === 'linux' ? 'xdg-open' : null;
-    if (cmd) {
-      try {
-        spawn(cmd, [adminUrl], { detached: true, stdio: 'ignore' }).unref();
-      } catch {
-        // Best-effort: ignore if spawn fails
-      }
-    }
-  }
 
   // Start mDNS advertisement
   const stopMdns = startMdns({
@@ -693,12 +674,15 @@ async function main(): Promise<void> {
   });
 
   // Cleanup on shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
+    console.log('\n[pawterm] shutting down…');
     stopMdns();
+    try { await app.close(); } catch {}
+    console.log('[pawterm] bye');
     process.exit(0);
   };
-  process.once('SIGTERM', shutdown);
-  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', () => { void shutdown(); });
+  process.once('SIGINT',  () => { void shutdown(); });
 }
 
 const SERVICE_CMDS = new Set(['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'update', 'help']);

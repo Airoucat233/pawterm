@@ -25,7 +25,6 @@ export interface StoredDevice {
 export interface ServerSettings {
   host: string;
   port: number;
-  permissionMode: PermissionMode;
   projects: Project[];
   logLevel: string;
   logFormat: LogFormat;
@@ -54,7 +53,6 @@ function loadConfig(): ServerSettings {
     const defaultConfig = {
       host: '0.0.0.0',
       port: 8765,
-      permission_mode: 'bypassPermissions',
       projects: [] as Array<{ name: string; path: string }>,
       token: adminToken,
       server_id: serverId,
@@ -71,7 +69,6 @@ function loadConfig(): ServerSettings {
     return {
       host: defaultConfig.host,
       port: defaultConfig.port,
-      permissionMode: 'bypassPermissions',
       projects: [],
       logLevel: process.env.PAWTERM_LOG_LEVEL ?? process.env.CC_LOG_LEVEL ?? 'info',
       logFormat: (process.env.PAWTERM_LOG_FORMAT ?? process.env.CC_LOG_FORMAT ?? defaultLogFormat) as LogFormat,
@@ -85,7 +82,6 @@ function loadConfig(): ServerSettings {
   const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as {
     host?: string;
     port?: number;
-    permission_mode?: PermissionMode;
     projects?: Array<{ name?: string; path: string }>;
     log_level?: string;
     log_format?: LogFormat;
@@ -134,7 +130,6 @@ function loadConfig(): ServerSettings {
   return {
     host: raw.host ?? '0.0.0.0',
     port: raw.port ?? 8765,
-    permissionMode: raw.permission_mode ?? 'bypassPermissions',
     projects: (raw.projects ?? []).map((p) => {
       const path = expandHome(p.path);
       return { name: p.name?.trim() || basename(path) || path, path };

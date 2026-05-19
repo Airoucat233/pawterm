@@ -92,10 +92,9 @@ export function runServiceCommand(cmd: string): void {
 
     if (p === 'darwin') {
       mkdirSync(resolve(HOME, 'Library', 'LaunchAgents'), { recursive: true });
-      writeFileSync(PLIST_PATH, darwinPlist(nodeBin, scriptPath));
       tryExec(`launchctl unload "${PLIST_PATH}"`);
-      exec(`launchctl load "${PLIST_PATH}"`);
-      console.log('✓ Service installed and started');
+      writeFileSync(PLIST_PATH, darwinPlist(nodeBin, scriptPath));
+      console.log('✓ Service installed (not started)');
       console.log('  Auto-starts at login');
       console.log(`  Logs:  ${LOG_PATH}`);
       console.log(`  Plist: ${PLIST_PATH}`);
@@ -103,8 +102,8 @@ export function runServiceCommand(cmd: string): void {
       mkdirSync(SYSTEMD_DIR, { recursive: true });
       writeFileSync(SYSTEMD_UNIT, linuxUnit(nodeBin, scriptPath));
       exec('systemctl --user daemon-reload');
-      exec('systemctl --user enable --now pawterm-server');
-      console.log('✓ Service installed and started');
+      exec('systemctl --user enable pawterm-server');
+      console.log('✓ Service installed (not started)');
       console.log('  Auto-starts at login (loginctl enable-linger may be required)');
       console.log(`  Logs: ${LOG_PATH}`);
     }

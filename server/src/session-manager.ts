@@ -12,7 +12,10 @@ import { type AskUserQuestionRegistry, makeAskUserMcpServer } from './ask-user-t
 function resolveLoginShellPath(): string {
   try {
     const shell = process.env.SHELL ?? '/bin/zsh';
-    return execSync(`${shell} -ilc 'echo $PATH'`, {
+    // -i causes interactive-only plugins (gitstatus, p10k) to emit noise to stderr.
+    // Source .zshrc/.bashrc manually so nvm/conda paths are included without -i.
+    const rc = shell.includes('zsh') ? '[ -f ~/.zshrc ] && source ~/.zshrc' : '[ -f ~/.bashrc ] && source ~/.bashrc';
+    return execSync(`${shell} -lc '${rc}; echo $PATH'`, {
       encoding: 'utf-8',
       timeout: 5000,
     }).trim();
