@@ -139,7 +139,7 @@ if [ "$OS" = "Darwin" ]; then
   info "Launching $APP_NAME …"
   open "$APP_DEST"
 
-  SERVER_VER="$(pawterm-server --version 2>/dev/null || echo 'unknown')"
+  SERVER_VER="$(pawterm-server --version 2>/dev/null | sed 's/pawterm-server //' || echo 'unknown')"
   APP_VER="$(echo "$ZIP_NAME" | sed 's/PawTerm-\(.*\)-mac\.zip/\1/')"
 
   printf "\n"
@@ -264,7 +264,7 @@ if [ "$OS" = "Linux" ]; then
   printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
   printf "\n"
   printf "  Installed:\n"
-  printf "    pawterm-server  ${GREEN}%s${RESET}\n" "$(pawterm-server --version 2>/dev/null || echo 'unknown')"
+  printf "    pawterm-server  ${GREEN}%s${RESET}\n" "$(pawterm-server --version 2>/dev/null | sed 's/pawterm-server //' || echo 'unknown')"
   printf "\n"
   printf "  📱  ${YELLOW}Install the phone app:${RESET}\n"
   printf "      https://github.com/Airoucat233/pawterm/releases/latest\n"
