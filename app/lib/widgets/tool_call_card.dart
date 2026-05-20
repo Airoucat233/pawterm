@@ -193,9 +193,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
   bool _isBodyEmpty(String name) => false;
 
   /// TodoWrite 显示逻辑：
-  ///   - 0 个完成 → 首次创建，显示「已创建 N 个任务」
-  ///   - 全部完成 → 最终汇报，显示「全部完成 N/N」
-  ///   - 中间状态 → 隐藏（只更新 TodoChip，不占 message 空间）
+  ///   - 全部 pending（首次创建）→ 显示「已创建 N 个任务」
+  ///   - 有任务 in_progress 或部分 completed → 隐藏（只更新 TodoChip）
+  ///   - 全部完成 → 显示「全部完成 N/N」
   ///   点击可展开查看完整任务列表。
   Widget _todoWriteCard(BuildContext context) {
     final t = AppTokens.of(context);
@@ -204,7 +204,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
     if (total == 0) return const SizedBox.shrink();
     final completed =
         rawList.where((e) => (e as Map)['status'] == 'completed').length;
-    // 中间状态 → 完全隐藏，不渲染任何 widget
+    final inProgress =
+        rawList.where((e) => (e as Map)['status'] == 'in_progress').length;
+    // 中间状态 → 完全隐藏，TodoChip 负责实时进度展示：
+    //   • 有任务进行中（completed==0 但 inProgress>0）
+    //   • 部分完成但未全部完成
+    if (inProgress > 0) return const SizedBox.shrink();
     if (completed > 0 && completed < total) return const SizedBox.shrink();
 
     final isFirst = completed == 0;
@@ -329,7 +334,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
         return Icons.public;
       case 'Agent':
       case 'Task':
-        return Icons.support_agent;
+        return Icons.smart_toy_outlined;
       case 'Skill':
         return Icons.auto_awesome_outlined;
       default:
