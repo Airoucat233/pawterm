@@ -62,6 +62,11 @@ class SseClient {
       _closed = true;
       return;
     }
+    if (response.statusCode == 401) {
+      _events.add(SseEvent(type: '__auth_error', data: 'token rejected by server'));
+      _closed = true;
+      return;
+    }
     if (response.statusCode != 200) {
       throw Exception('SSE HTTP ${response.statusCode}');
     }

@@ -28,6 +28,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   final Set<String> _expanded = {};
   _PhaseStatus _phase = _PhaseStatus.connecting;
   String? _connectError;
+  bool _needsRepair = false;
 
   @override
   void initState() {
@@ -82,11 +83,19 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       }
       if (!mounted) return;
       if (resp.statusCode == 200) {
-        setState(() => _phase = _PhaseStatus.ready);
+        setState(() { _phase = _PhaseStatus.ready; _needsRepair = false; });
+      } else if (resp.statusCode == 401) {
+        if (!mounted) return;
+        setState(() {
+          _connectError = '服务端已拒绝令牌，配对信息已失效';
+          _phase = _PhaseStatus.failed;
+          _needsRepair = true;
+        });
       } else {
         setState(() {
           _connectError = '服务端返回 ${resp.statusCode}';
           _phase = _PhaseStatus.failed;
+          _needsRepair = false;
         });
       }
     } catch (e) {
@@ -123,8 +132,10 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       key: const ValueKey('connecting'),
       conn: conn,
       error: _phase == _PhaseStatus.failed ? _connectError : null,
+      needsRepair: _needsRepair,
       onBack: () => Navigator.of(context).pop(),
       onRetry: _checkConnection,
+      onRepair: () => Navigator.of(context).pop('repair'),
     );
   }
 
@@ -302,14 +313,18 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
 class _ConnectingView extends StatefulWidget {
   final Connection conn;
   final String? error;
+  final bool needsRepair;
   final VoidCallback onBack;
   final VoidCallback onRetry;
+  final VoidCallback onRepair;
   const _ConnectingView({
     super.key,
     required this.conn,
     required this.error,
+    this.needsRepair = false,
     required this.onBack,
     required this.onRetry,
+    required this.onRepair,
   });
 
   @override
@@ -498,6 +513,20 @@ class _ConnectingViewState extends State<_ConnectingView>
                         ),
                       ],
                     ),
+                    if (widget.needsRepair) ...[
+                      const SizedBox(height: 8),
+                      FilledButton.icon(
+                        onPressed: widget.onRepair,
+                        icon: const Icon(Icons.link_off_rounded, size: 16),
+                        label: const Text('重新配对'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFF59E0B),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ],
                   ],
                 ],
               ),

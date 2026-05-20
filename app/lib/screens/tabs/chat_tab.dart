@@ -81,6 +81,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _connected = false;
+  bool _authFailed = false;
   bool _observeMode = false;
   SessionHolder? _observeHolder;
   Timer? _observeTimer;
@@ -251,6 +252,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _sessionId = null;
       _chatApi = null;
       _connected = false;
+      _authFailed = false;
       _observeMode = false;
       _observeHolder = null;
       _busy = false;
@@ -707,6 +709,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _error = 'event gap, reloading…';
           _connected = false;
         });
+      } else if (ev.type == '__auth_error') {
+        if (!mounted) return;
+        _sseClient?.close();
+        setState(() => _authFailed = true);
+        return;
       } else if (ev.type == '__client_error') {
         // Transient — the SSE client will retry. Surface the latest error.
         if (!mounted) return;
@@ -1189,6 +1196,38 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             error: _error,
             uuid: _sessionId,
             onReconnect: _manualReconnect,
+          ),
+        if (_authFailed)
+          Container(
+            color: t.error.withValues(alpha: 0.1),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            child: Row(
+              children: [
+                Icon(Icons.lock_outline, size: 16, color: t.error),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '令牌已失效，请重新配对',
+                    style: TextStyle(
+                        color: t.error,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      Navigator.of(context).popUntil((route) => route.isFirst),
+                  style: TextButton.styleFrom(
+                    foregroundColor: t.error,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text(
+                    '返回',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
           ),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         Expanded(
