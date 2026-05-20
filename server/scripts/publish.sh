@@ -1,7 +1,11 @@
 #!/usr/bin/env zsh
-# Bump server version, commit, push to main, push release tag, then npm publish.
+# Bump server version, commit, push, push release tag, then npm publish.
 #
-# Usage: ./scripts/publish.sh
+# --dev:  prerelease publish from any branch (tag: dev/server-v*, npm tag: dev)
+#
+# Usage:
+#   ./scripts/publish.sh        # publish to npm latest (main branch)
+#   ./scripts/publish.sh --dev  # publish to npm dev tag (any branch)
 
 set -euo pipefail
 
@@ -10,11 +14,19 @@ SERVER_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$SERVER_DIR")"
 PKG="$SERVER_DIR/package.json"
 
+DEV=0
+for arg in "$@"; do
+  case "$arg" in
+    --dev) DEV=1 ;;
+  esac
+done
+
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-if [[ "$CURRENT_BRANCH" != "main" ]]; then
+if [[ $DEV -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
   echo "✗ release must be run from main (current: $CURRENT_BRANCH)" >&2
+  echo "  use --dev to publish from a non-main branch" >&2
   exit 1
 fi
 
@@ -26,6 +38,7 @@ IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
 
 echo
 echo "  current: \033[36m$CURRENT\033[0m"
+[[ $DEV -eq 1 ]] && echo "  mode   : dev (tag: dev/server-v*, npm tag: dev)"
 echo
 
 # -------- 2. Bump --------
@@ -52,7 +65,11 @@ case "$CHOICE" in
   *)       echo "  invalid choice" >&2; exit 1 ;;
 esac
 
-TAG="release/server-v$NEW"
+if [[ $DEV -eq 1 ]]; then
+  TAG="dev/server-v$NEW"
+else
+  TAG="release/server-v$NEW"
+fi
 
 echo
 echo "  new version : \033[32m$NEW\033[0m"
@@ -66,7 +83,11 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && TAG_EXISTS=1
 
 # -------- 4. Confirm --------
 
-printf "  → bump, commit, push, tag, npm publish? [y/N]: "
+if [[ $DEV -eq 1 ]]; then
+  printf "  → bump, commit, push, tag, npm publish --tag dev? [y/N]: "
+else
+  printf "  → bump, commit, push, tag, npm publish? [y/N]: "
+fi
 read -r CONFIRM
 [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
 
@@ -87,7 +108,12 @@ fi
 
 git -C "$REPO_ROOT" add server/package.json
 git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore(server): bump version to $NEW"
-git -C "$REPO_ROOT" push origin main
+
+if [[ $DEV -eq 1 ]]; then
+  git -C "$REPO_ROOT" push origin "$CURRENT_BRANCH"
+else
+  git -C "$REPO_ROOT" push origin main
+fi
 
 # -------- 7. Tag + push --------
 
@@ -108,8 +134,13 @@ cd "$SERVER_DIR"
 pnpm build
 
 echo
-echo "▶ npm publish --registry https://registry.npmjs.org"
-npm publish --registry https://registry.npmjs.org
+if [[ $DEV -eq 1 ]]; then
+  echo "▶ npm publish --tag dev --registry https://registry.npmjs.org"
+  npm publish --tag dev --registry https://registry.npmjs.org
+else
+  echo "▶ npm publish --registry https://registry.npmjs.org"
+  npm publish --registry https://registry.npmjs.org
+fi
 
 echo
 echo "\033[32m✓ published pawterm-server@$NEW\033[0m"
