@@ -61,7 +61,8 @@ echo
 
 # -------- 3. Check tag --------
 
-git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exists." >&2; exit 1; }
+TAG_EXISTS=0
+git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && TAG_EXISTS=1
 
 # -------- 4. Confirm --------
 
@@ -90,10 +91,14 @@ git -C "$REPO_ROOT" push origin main
 
 # -------- 7. Tag + push --------
 
-echo
-echo "▶ git tag $TAG && git push origin $TAG"
-git -C "$REPO_ROOT" tag "$TAG"
-git -C "$REPO_ROOT" push origin "$TAG"
+if [[ $TAG_EXISTS -eq 0 ]]; then
+  echo
+  echo "▶ git tag $TAG && git push origin $TAG"
+  git -C "$REPO_ROOT" tag "$TAG"
+  git -C "$REPO_ROOT" push origin "$TAG"
+else
+  echo "  tag $TAG already exists, skipping"
+fi
 
 # -------- 8. Build + npm publish --------
 
