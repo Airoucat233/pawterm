@@ -13,7 +13,7 @@ import '../state/server_config.dart';
 import '../theme.dart';
 
 /// Single-page sequential pairing flow.
-/// Returns a [PairedServer] when pairing succeeds, or null when cancelled.
+/// Returns a [Connection] when pairing succeeds, or null when cancelled.
 class PairSheet extends ConsumerStatefulWidget {
   final LanScanResult server;
 
@@ -48,7 +48,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
   String? _pinError;
 
   // Success state
-  PairedServer? _savedServer;
+  Connection? _savedConn;
   late final TextEditingController _nameCtrl;
   String _serverName = '';
 
@@ -80,8 +80,8 @@ class _PairSheetState extends ConsumerState<PairSheet> {
     });
 
     try {
-      final deviceId = await PairedServersNotifier.getOrCreateDeviceId();
-      final deviceName = PairedServersNotifier.deviceName;
+      final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
+      final deviceName = ConnectionsNotifier.deviceName;
 
       final resp = await http
           .post(
@@ -185,23 +185,41 @@ class _PairSheetState extends ConsumerState<PairSheet> {
   // ─── Save on approval ──────────────────────────────────────────────────────
 
   Future<void> _saveImmediately(String serverId, String deviceToken) async {
-    final server = PairedServer(
-      serverId: serverId,
-      deviceToken: deviceToken,
-      name: widget.server.name,
-      host: widget.server.host,
-      port: widget.server.port,
-      lastSeen: DateTime.now(),
-    );
-    await ref.read(pairedServersProvider.notifier).add(server);
+    final url = 'http://${widget.server.host}:${widget.server.port}';
+
+    // Check for existing Connection with same serverId (re-pair case)
+    final existing = ref.read(connectionsProvider)
+        .where((c) => c.serverId == serverId)
+        .firstOrNull;
+
+    late final Connection conn;
+    if (existing != null) {
+      conn = existing.copyWith(
+        token: deviceToken,
+        url: url,
+        lastSeen: DateTime.now(),
+      );
+      await ref.read(connectionsProvider.notifier).update(conn);
+    } else {
+      conn = Connection(
+        id: ConnectionsNotifier.newId(),
+        name: widget.server.name,
+        emoji: '🖥️',
+        url: url,
+        token: deviceToken,
+        serverId: serverId,
+        lastSeen: DateTime.now(),
+      );
+      await ref.read(connectionsProvider.notifier).add(conn);
+    }
+
     if (!mounted) return;
     if (widget.skipSuccess) {
-      // 调用方负责后续 UI（名称/图标编辑），这里直接 pop 把结果交回去。
-      Navigator.of(context).pop(server);
+      Navigator.of(context).pop(conn);
       return;
     }
     setState(() {
-      _savedServer = server;
+      _savedConn = conn;
       _serverName = widget.server.name;
       _nameCtrl.text = _serverName;
       _phase = _PairPhase.success;
@@ -222,8 +240,8 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       _pinError = null;
     });
     try {
-      final deviceId = await PairedServersNotifier.getOrCreateDeviceId();
-      final deviceName = PairedServersNotifier.deviceName;
+      final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
+      final deviceName = ConnectionsNotifier.deviceName;
       final resp = await http
           .post(
             Uri.parse(
@@ -579,16 +597,16 @@ class _PairSheetState extends ConsumerState<PairSheet> {
   }
 
   Future<void> _onDone() async {
-    final saved = _savedServer;
+    final saved = _savedConn;
     if (saved == null) {
       Navigator.of(context).pop();
       return;
     }
+    Connection result = saved;
     final newName = _nameCtrl.text.trim();
-    PairedServer result = saved;
     if (newName.isNotEmpty && newName != saved.name) {
       result = saved.copyWith(name: newName);
-      await ref.read(pairedServersProvider.notifier).update(result);
+      await ref.read(connectionsProvider.notifier).update(result);
     }
     if (mounted) Navigator.of(context).pop(result);
   }
