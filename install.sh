@@ -31,14 +31,92 @@ printf "\n"
 OS="$(uname -s)"
 
 # ═══════════════════════════════════════════════════════════════
-# macOS — install PawTerm.app (the app manages the server itself)
+# macOS — install pawterm-server via npm, then install PawTerm.app
 # ═══════════════════════════════════════════════════════════════
 if [ "$OS" = "Darwin" ]; then
   info "Platform: macOS"
+  printf "\n"
+
+  # 1. Node 20+ check
+  need_node_version=20
+  node_ok() {
+    if command -v node >/dev/null 2>&1; then
+      local v
+      v="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
+      [ "$v" -ge "$need_node_version" ] 2>/dev/null
+    else
+      return 1
+    fi
+  }
+
+  if node_ok; then
+    ok "Node $(node --version) found"
+  else
+    err "Node $need_node_version+ not found."
+    printf "\n"
+    printf "  Install Node.js via Homebrew:\n"
+    printf "    ${YELLOW}brew install node@20${RESET}\n"
+    printf "  Or download from: ${YELLOW}https://nodejs.org/${RESET}\n"
+    printf "  Then re-run this installer.\n\n"
+    exit 1
+  fi
+
+  # 2. claude CLI check
+  if command -v claude >/dev/null 2>&1; then
+    ok "claude CLI found: $(claude --version 2>/dev/null || true)"
+  else
+    warn "claude CLI not found."
+    printf "\n"
+    printf "  PawTerm bridges your phone to Claude Code, so the claude CLI must\n"
+    printf "  be installed and logged in before the server is useful.\n"
+    printf "\n"
+    printf "    ${YELLOW}npm install -g @anthropic-ai/claude-code${RESET}\n"
+    printf "    ${YELLOW}claude login${RESET}\n"
+    printf "\n"
+    printf "  Then re-run this installer.\n\n"
+    exit 1
+  fi
+
+  # 3. Install / upgrade pawterm-server
+  info "Installing pawterm-server@latest …"
+  npm install -g pawterm-server@latest
+  ok "pawterm-server installed: $(pawterm-server --version 2>/dev/null || true)"
+
+  # 4. Register + start service
+  info "Registering pawterm-server as a launchd service …"
+  pawterm-server install
+  ok "Service registered (auto-starts at login)"
+  info "Starting pawterm-server …"
+  pawterm-server start
+  ok "Service started"
+
+  # 5. Wait for /health
+  HEALTH_URL="http://localhost:8765/health"
+  TIMEOUT=30
+  elapsed=0
+  printf "  Waiting for server to be ready"
+  while true; do
+    if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
+      printf "\n"
+      ok "Server is ready at $HEALTH_URL"
+      break
+    fi
+    if [ "$elapsed" -ge "$TIMEOUT" ]; then
+      printf "\n"
+      err "Server did not become ready within ${TIMEOUT}s."
+      info "Check logs: pawterm-server logs"
+      exit 1
+    fi
+    printf "."
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  # 6. Install PawTerm.app
+  printf "\n"
   info "Installing PawTerm.app from the latest GitHub release …"
   printf "\n"
 
-  # Fetch download URL for the mac zip from latest release
   RELEASE_API="https://api.github.com/repos/Airoucat233/pawterm/releases/latest"
   ZIP_URL="$(curl -fsSL "$RELEASE_API" \
     | grep '"browser_download_url"' \
@@ -88,12 +166,10 @@ if [ "$OS" = "Darwin" ]; then
 
   printf "\n"
   printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
-  printf "${GREEN}  PawTerm.app is running!  Next steps:     ${RESET}\n"
+  printf "${GREEN}  PawTerm is ready!  Next steps:           ${RESET}\n"
   printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
   printf "\n"
   printf "  The menu bar icon shows server status.\n"
-  printf "  On first launch the app installs and starts pawterm-server\n"
-  printf "  automatically — no separate setup needed.\n"
   printf "\n"
   printf "  📱  ${YELLOW}Install the phone app:${RESET}\n"
   printf "      https://github.com/Airoucat233/pawterm/releases/latest\n"
