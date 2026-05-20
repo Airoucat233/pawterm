@@ -924,24 +924,33 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// - [force] = false（默认）：仅在当前已经"贴底"时滚（用于流式 delta 自动跟随）
   void _scrollToEnd({bool force = false}) {
     if (!force && !_stickToBottom) return;
-    // force=true（发送消息后）用双帧回调：第一帧完成 setState rebuild，
-    // 第二帧 layout 稳定后 maxScrollExtent 才包含新消息的完整高度。
-    // 长文本消息尤为重要，单帧时 maxScrollExtent 可能尚未更新。
-    void doScroll() {
-      if (!_scrollController.hasClients) return;
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.easeOut,
-      );
-      if (force) setState(() => _stickToBottom = true);
-    }
+
     if (force) {
+      // force=true 用双帧 jumpTo（同 _loadHistory 的策略）：
+      //   第 1 帧：jumpTo 估算底部，触发底部附近 item 构建；
+      //   第 2 帧：再 jumpTo，此时 item 已构建，maxScrollExtent 精确。
+      // 不用 animateTo 的原因：加载更早消息后用户离底部较远，
+      // ListView.builder 底部 item 尚未构建，maxScrollExtent 是估算值；
+      // animateTo 以估算值为目标，动画结束时实际位置偏上。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => doScroll());
+        if (!mounted || !_scrollController.hasClients) return;
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        if (mounted) setState(() => _stickToBottom = true);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scrollController.hasClients) return;
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        });
       });
     } else {
-      WidgetsBinding.instance.addPostFrameCallback((_) => doScroll());
+      // force=false：流式 delta 自动跟随，用 animateTo 保持流畅。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scrollController.hasClients) return;
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+        );
+      });
     }
   }
 
