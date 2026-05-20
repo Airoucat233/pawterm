@@ -82,37 +82,12 @@ if [ "$OS" = "Darwin" ]; then
   npm install -g pawterm-server@latest
   ok "pawterm-server installed: $(pawterm-server --version 2>/dev/null || true)"
 
-  # 4. Register + start service
+  # 4. Register service (do not start — user starts via Mac App or CLI)
   info "Registering pawterm-server as a launchd service …"
   pawterm-server install
   ok "Service registered (auto-starts at login)"
-  info "Starting pawterm-server …"
-  pawterm-server start
-  ok "Service started"
 
-  # 5. Wait for /health
-  HEALTH_URL="http://localhost:8765/health"
-  TIMEOUT=30
-  elapsed=0
-  printf "  Waiting for server to be ready"
-  while true; do
-    if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
-      printf "\n"
-      ok "Server is ready at $HEALTH_URL"
-      break
-    fi
-    if [ "$elapsed" -ge "$TIMEOUT" ]; then
-      printf "\n"
-      err "Server did not become ready within ${TIMEOUT}s."
-      info "Check logs: pawterm-server logs"
-      exit 1
-    fi
-    printf "."
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-
-  # 6. Install PawTerm.app
+  # 5. Install PawTerm.app
   printf "\n"
   info "Installing PawTerm.app from the latest GitHub release …"
   printf "\n"
@@ -169,7 +144,8 @@ if [ "$OS" = "Darwin" ]; then
   printf "${GREEN}  PawTerm is ready!  Next steps:           ${RESET}\n"
   printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
   printf "\n"
-  printf "  The menu bar icon shows server status.\n"
+  printf "  Click the menu bar icon to start the server,\n"
+  printf "  or run: ${YELLOW}pawterm-server start${RESET}\n"
   printf "\n"
   printf "  📱  ${YELLOW}Install the phone app:${RESET}\n"
   printf "      https://github.com/Airoucat233/pawterm/releases/latest\n"
