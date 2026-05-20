@@ -127,6 +127,8 @@ if [ "$OS" = "Darwin" ]; then
 
   if [ -d "$APP_DEST" ]; then
     info "Removing existing $APP_DEST …"
+    pkill -f "$APP_DEST/Contents/MacOS" 2>/dev/null || true
+    sleep 1
     rm -rf "$APP_DEST"
   fi
 
