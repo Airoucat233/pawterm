@@ -35,6 +35,8 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   String? _detectedName;
   String? _detectedVersion;
   String? _errorMsg;
+  // 配对成功后保存下来的设备凭据；新建连接路径下 detected 状态依赖它判定来源。
+  PairedServer? _pairedServer;
 
   @override
   void initState() {
@@ -89,12 +91,18 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
         final body = jsonDecode(res.body) as Map<String, dynamic>;
         final hostname = body['hostname'] as String? ?? _ipCtrl.text.trim();
         final version = body['version'] as String? ?? '';
-        setState(() {
-          _detectedName = hostname;
-          _detectedVersion = version;
-          _nameCtrl.text = hostname;
-          _phase = _SheetState.detected;
-        });
+        _detectedName = hostname;
+        _detectedVersion = version;
+        if (widget.editing != null) {
+          // 编辑模式：保留原 detected 状态，允许改名称/图标。
+          setState(() {
+            _nameCtrl.text = hostname;
+            _phase = _SheetState.detected;
+          });
+        } else {
+          // 新建连接：探测成功立即进入配对流程，配对成功后才显示名称+图标编辑。
+          await _openPairSheet();
+        }
       } else {
         final s = ref.read(stringsProvider);
         setState(() {
@@ -144,17 +152,54 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => PairSheet(server: scanResult),
+      builder: (_) => PairSheet(server: scanResult, skipSuccess: true),
     );
-    if (result == null || !mounted) return;
-    // PairSheet already saved to pairedServersProvider; create ServerEntry here
+    if (!mounted) return;
+    if (result == null) {
+      // 用户取消配对：回到输入态，方便重试或改 IP。
+      setState(() => _phase = _SheetState.input);
+      return;
+    }
+    // 配对成功 → 进入 detected 状态，允许用户改名称+图标，再点"保存"落库。
+    setState(() {
+      _pairedServer = result;
+      _nameCtrl.text = result.name;
+      _emoji = '🖥️';
+      _phase = _SheetState.detected;
+    });
+  }
+
+  Future<void> _saveAndClose() async {
+    final paired = _pairedServer;
+    if (paired == null) return;
+    final name = _nameCtrl.text.trim().isNotEmpty
+        ? _nameCtrl.text.trim()
+        : paired.name;
+    // Dedup：优先按 token，未命中则 fallback 到 URL —— re-pair 情况下
+    // 服务端的 deviceToken 已替换为新值，老 ServerEntry 仍持有旧 token，
+    // 必须用 URL 匹配它并把 token 刷成最新的，否则用户点旧条目会 401。
+    final connections = ref.read(connectionsProvider);
+    var existing = connections
+        .where((c) => c.token != null && c.token == paired.deviceToken)
+        .firstOrNull;
+    existing ??=
+        connections.where((c) => c.url == paired.httpBase).firstOrNull;
     final notifier = ref.read(connectionsProvider.notifier);
-    await notifier.add(
-      name: result.name,
-      emoji: '🖥️',
-      url: result.httpBase,
-      token: result.deviceToken,
-    );
+    if (existing != null) {
+      await notifier.update(existing.copyWith(
+        name: name,
+        emoji: _emoji,
+        url: paired.httpBase,
+        token: paired.deviceToken,
+      ));
+    } else {
+      await notifier.add(
+        name: name,
+        emoji: _emoji,
+        url: paired.httpBase,
+        token: paired.deviceToken,
+      );
+    }
     if (mounted) Navigator.of(context).pop();
   }
 
@@ -247,7 +292,24 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
           .where((s) => s.serverId == result.serverId)
           .firstOrNull;
       if (paired != null) {
+        // 已配对设备：dedup 先按 token、再 fallback 按 URL —— 后者用于
+        // 兜底服务端 deviceToken 替换后老 ServerEntry 失效的情况。
+        final connections = ref.read(connectionsProvider);
+        var existing = connections
+            .where((c) => c.token != null && c.token == paired.deviceToken)
+            .firstOrNull;
+        existing ??=
+            connections.where((c) => c.url == paired.httpBase).firstOrNull;
         final notifier = ref.read(connectionsProvider.notifier);
+        if (existing != null) {
+          // 已有同 token / 同 URL 的条目：刷一遍 token & url，避免旧 token 失效。
+          await notifier.update(existing.copyWith(
+            url: paired.httpBase,
+            token: paired.deviceToken,
+          ));
+          if (mounted) Navigator.of(context).pop();
+          return;
+        }
         await notifier.add(
           name: paired.name,
           emoji: '🖥️',
@@ -465,11 +527,13 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                         size: 14, color: t.accent),
                     const SizedBox(width: 8),
                     Text(
-                      s.addConnectionDetectedTpl.replaceAll(
-                          '{ver}',
-                          _detectedVersion != null
-                              ? ' · v$_detectedVersion'
-                              : ''),
+                      _pairedServer != null
+                          ? '${s.pairSheetSuccess}${_detectedVersion != null && _detectedVersion!.isNotEmpty ? ' · v$_detectedVersion' : ''}'
+                          : s.addConnectionDetectedTpl.replaceAll(
+                              '{ver}',
+                              _detectedVersion != null
+                                  ? ' · v$_detectedVersion'
+                                  : ''),
                       style:
                           TextStyle(fontSize: 12, color: t.accent),
                     ),
@@ -525,7 +589,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                               if (isEditing) {
                                 _save();
                               } else {
-                                _openPairSheet();
+                                _saveAndClose();
                               }
                             } else {
                               _detect();
@@ -539,9 +603,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                     ),
                     child: Text(
                       _phase == _SheetState.detected
-                          ? (isEditing
-                              ? s.addConnectionSave
-                              : s.addConnectionPairConnect)
+                          ? s.addConnectionSave
                           : s.addConnectionConnectBtn,
                       style: const TextStyle(
                           fontSize: 14,

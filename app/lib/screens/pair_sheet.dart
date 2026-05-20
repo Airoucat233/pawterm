@@ -18,7 +18,11 @@ import 'qr_scan_screen.dart';
 class PairSheet extends ConsumerStatefulWidget {
   final LanScanResult server;
 
-  const PairSheet({super.key, required this.server});
+  /// 当配对成功时是否跳过自带的成功页面（名称编辑）直接 pop 返回。
+  /// 调用方需要自己提供 post-pair 的成功页面时使用。
+  final bool skipSuccess;
+
+  const PairSheet({super.key, required this.server, this.skipSuccess = false});
 
   @override
   ConsumerState<PairSheet> createState() => _PairSheetState();
@@ -193,6 +197,11 @@ class _PairSheetState extends ConsumerState<PairSheet> {
     );
     await ref.read(pairedServersProvider.notifier).add(server);
     if (!mounted) return;
+    if (widget.skipSuccess) {
+      // 调用方负责后续 UI（名称/图标编辑），这里直接 pop 把结果交回去。
+      Navigator.of(context).pop(server);
+      return;
+    }
     setState(() {
       _savedServer = server;
       _serverName = widget.server.name;

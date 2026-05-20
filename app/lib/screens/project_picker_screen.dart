@@ -426,13 +426,27 @@ class _ConnectingViewState extends State<_ConnectingView>
                     ),
                   ),
                   const SizedBox(height: 6),
-                  Text(
-                    widget.conn.name,
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: t.text,
-                      letterSpacing: -0.3,
+                  // 名称单行；过长时允许横向滑动，短文本依旧居中显示。
+                  LayoutBuilder(
+                    builder: (ctx, constraints) => SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: ConstrainedBox(
+                        constraints:
+                            BoxConstraints(minWidth: constraints.maxWidth),
+                        child: Center(
+                          child: Text(
+                            widget.conn.name,
+                            maxLines: 1,
+                            softWrap: false,
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                              color: t.text,
+                              letterSpacing: -0.3,
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 6),
