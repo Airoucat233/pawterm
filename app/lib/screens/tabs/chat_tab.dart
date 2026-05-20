@@ -379,8 +379,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _observeMode = false;
             _observeHolder = null;
           });
-          // preloadedHolder 已消费，清掉避免再次触发冲突弹框。
-          unawaited(_connectToSession(httpBase, session.copyWith(preloadedHolder: null)));
+          // 等 400ms 让 claude 子进程完成 pid.json 清理，再重连避免
+          // status 短暂窗口内仍返回 running 导致再次弹框。
+          await Future.delayed(const Duration(milliseconds: 400));
+          if (!mounted) return;
+          unawaited(_connectToSession(httpBase, session));
           return;
         }
       } catch (_) {}
@@ -442,9 +445,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 建立到会话的连接。为新建会话生成 UUID，为已有会话使用 resumeId。
   /// 根据 /chat/status 结果决定：直连 SSE（live）、等待发消息（idle）或进入冲突处理（running）。
-  ///
-  /// 快速路径：若 session.preloadedHolder 不为 null（会话列表已经告知存在 holder），
-  /// 直接跳过 /chat/status 网络请求，立即弹出接管对话框。
   Future<void> _connectToSession(String httpBase, CurrentSession session) async {
     final uuid = session.resumeId ?? const Uuid().v4();
     _sessionId = uuid;
@@ -453,15 +453,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final api = ChatApi(httpBase, token: _serverToken);
     _chatApi = api;
 
-    // 快速路径：会话列表已提供 holder 信息，无需再发 /chat/status 请求。
-    // 同时推迟 _loadHistory：若用户取消冲突弹窗，避免多余的历史加载。
-    if (session.preloadedHolder != null) {
-      setState(() => _attempting = false);
-      unawaited(_handleConflict(httpBase, session, uuid, session.preloadedHolder!));
-      return;
-    }
-
-    // 常规路径：先开始加载历史（与状态查询并行），再检测是否有冲突。
+    // 先加载历史（与状态查询并行）。
     if (session.resumeId != null) {
       _loadHistory(httpBase, session.cwd, session.resumeId!);
     }
