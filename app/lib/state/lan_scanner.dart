@@ -37,7 +37,10 @@ class LanScanner {
 
   /// Scan via mDNS + subnet sweep. Returns a snapshot after [_timeout].
   /// Emits incremental updates via the stream.
-  static Stream<List<LanScanResult>> scan() async* {
+  ///
+  /// [port] 仅作用于 subnet sweep（每个 IP 探 `http://ip:port/health`）。
+  /// mDNS 路径继续用服务声明里的端口，跟该参数无关。
+  static Stream<List<LanScanResult>> scan({int port = 8765}) async* {
     final results = <String, LanScanResult>{}; // keyed by serverId
 
     void addOrUpdate(LanScanResult r) {
@@ -114,7 +117,7 @@ class LanScanner {
 
     // Run both in parallel; close controller after _timeout regardless.
     runMdns().ignore();
-    runSubnetSweep(8765).ignore();
+    runSubnetSweep(port).ignore();
     Future.delayed(_timeout, () {
       if (!controller.isClosed) controller.close();
     });

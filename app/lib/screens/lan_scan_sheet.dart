@@ -31,6 +31,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
   bool _done = false;
   List<LanScanResult> _results = [];
   StreamSubscription<List<LanScanResult>>? _sub;
+  final TextEditingController _portCtrl = TextEditingController(text: '8765');
 
   @override
   void initState() {
@@ -41,10 +42,13 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
   @override
   void dispose() {
     _sub?.cancel();
+    _portCtrl.dispose();
     super.dispose();
   }
 
   void _startScan() {
+    final port = int.tryParse(_portCtrl.text.trim());
+    if (port == null || port < 1 || port > 65535) return;
     _sub?.cancel();
     setState(() {
       _scanning = true;
@@ -55,7 +59,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
     final pairedServers = ref.read(pairedServersProvider);
     final pairedIds = pairedServers.map((s) => s.serverId).toSet();
 
-    _sub = LanScanner.scan().listen(
+    _sub = LanScanner.scan(port: port).listen(
       (snapshot) {
         if (!mounted) return;
         for (final r in snapshot) {
@@ -127,6 +131,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
                   child: Column(
@@ -153,6 +158,58 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
                               style: TextStyle(
                                   fontSize: 12, color: t.textMuted)),
                         ],
+                      ),
+                    ],
+                  ),
+                ),
+                // Port chip — 编辑后回车/失焦触发重扫；subnet sweep 用这个端口。
+                Container(
+                  margin: const EdgeInsets.only(left: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: t.surfaceHi,
+                    border: Border.all(color: t.border),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        s.addConnectionPort,
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: t.textDim,
+                            fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(width: 6),
+                      SizedBox(
+                        width: 44,
+                        child: TextField(
+                          controller: _portCtrl,
+                          keyboardType: TextInputType.number,
+                          textAlign: TextAlign.center,
+                          textInputAction: TextInputAction.done,
+                          style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 13,
+                              color: t.text,
+                              fontWeight: FontWeight.w600),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                                horizontal: 2, vertical: 4),
+                            border: InputBorder.none,
+                            isCollapsed: true,
+                          ),
+                          onSubmitted: (_) {
+                            FocusScope.of(context).unfocus();
+                            _startScan();
+                          },
+                          onEditingComplete: () {
+                            FocusScope.of(context).unfocus();
+                            _startScan();
+                          },
+                        ),
                       ),
                     ],
                   ),
