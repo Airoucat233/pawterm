@@ -681,10 +681,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     await prefs.setString(_kLastUuidKey, uuid);
   }
 
-  Future<String?> _loadPersistedUuid() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_kLastUuidKey);
-  }
 
   void _manualReconnect() {
     _stopObserveTimer();
