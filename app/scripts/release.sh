@@ -3,12 +3,11 @@
 #
 # Default: bump version → push tag → CI builds APK + Mac + GitHub Release
 # --local:  verify exact artifacts in dist/, create GH Release, push tag (no bump)
-# --local --force: tag already exists → replace artifacts in existing release (no new tag)
+#           if tag already exists, prompts whether to replace artifacts
 #
 # Usage:
-#   ./scripts/release.sh                  # CI build
-#   ./scripts/release.sh --local          # upload local artifacts (build first)
-#   ./scripts/release.sh --local --force  # update artifacts in existing release
+#   ./scripts/release.sh          # CI build
+#   ./scripts/release.sh --local  # upload local artifacts (build first)
 
 set -euo pipefail
 
@@ -18,11 +17,9 @@ REPO_ROOT="$(dirname "$APP_DIR")"
 PUBSPEC="$APP_DIR/pubspec.yaml"
 
 LOCAL=0
-FORCE=0
 for arg in "$@"; do
   case "$arg" in
     --local) LOCAL=1 ;;
-    --force) FORCE=1 ;;
   esac
 done
 
@@ -85,14 +82,8 @@ print(pl.get('CFBundleShortVersionString', ''))
   TAG_EXISTS=0
   git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && TAG_EXISTS=1
 
-  if [[ $TAG_EXISTS -eq 1 && $FORCE -eq 0 ]]; then
-    echo "✗ Tag $TAG already exists. Use --force to update artifacts in the existing release." >&2
-    exit 1
-  fi
-
-  # ---- --force: replace artifacts in existing release (no new tag) ----
-  if [[ $TAG_EXISTS -eq 1 && $FORCE -eq 1 ]]; then
-    printf "  → replace artifacts in existing release %s? [y/N]: " "$TAG"
+  if [[ $TAG_EXISTS -eq 1 ]]; then
+    printf "  Tag $TAG already exists. Replace artifacts in existing release? [y/N]: "
     read -r CONFIRM
     [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
 
