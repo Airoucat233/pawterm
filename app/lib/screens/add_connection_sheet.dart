@@ -18,7 +18,7 @@ const _emojis = ['🖥️', '💻', '☁️', '🌐', '🏢', '🚀', '⚡', '�
 enum _SheetState { input, detecting, detected, error }
 
 class AddConnectionSheet extends ConsumerStatefulWidget {
-  final ServerEntry? editing;
+  final Connection? editing;
   const AddConnectionSheet({super.key, this.editing});
 
   @override
@@ -36,7 +36,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   String? _detectedVersion;
   String? _errorMsg;
   // 配对成功后保存下来的设备凭据；新建连接路径下 detected 状态依赖它判定来源。
-  PairedServer? _pairedServer;
+  Connection? _pairedConn;
 
   @override
   void initState() {
@@ -148,7 +148,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
       version: _detectedVersion ?? '',
       pairingOpen: true,
     );
-    final result = await showModalBottomSheet<PairedServer>(
+    final result = await showModalBottomSheet<Connection>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -162,42 +162,23 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     }
     // 配对成功 → 进入 detected 状态，允许用户改名称+图标，再点"保存"落库。
     setState(() {
-      _pairedServer = result;
+      _pairedConn = result;
       _nameCtrl.text = result.name;
-      _emoji = '🖥️';
+      _emoji = result.emoji;
       _phase = _SheetState.detected;
     });
   }
 
   Future<void> _saveAndClose() async {
-    final paired = _pairedServer;
+    final paired = _pairedConn;
     if (paired == null) return;
     final name = _nameCtrl.text.trim().isNotEmpty
         ? _nameCtrl.text.trim()
         : paired.name;
-    // Dedup：优先按 token，未命中则 fallback 到 URL —— re-pair 情况下
-    // 服务端的 deviceToken 已替换为新值，老 ServerEntry 仍持有旧 token，
-    // 必须用 URL 匹配它并把 token 刷成最新的，否则用户点旧条目会 401。
-    final connections = ref.read(connectionsProvider);
-    var existing = connections
-        .where((c) => c.token != null && c.token == paired.deviceToken)
-        .firstOrNull;
-    existing ??=
-        connections.where((c) => c.url == paired.httpBase).firstOrNull;
-    final notifier = ref.read(connectionsProvider.notifier);
-    if (existing != null) {
-      await notifier.update(existing.copyWith(
-        name: name,
-        emoji: _emoji,
-        url: paired.httpBase,
-        token: paired.deviceToken,
-      ));
-    } else {
-      await notifier.add(
-        name: name,
-        emoji: _emoji,
-        url: paired.httpBase,
-        token: paired.deviceToken,
+    // Only update if name/emoji changed from what PairSheet saved
+    if (name != paired.name || _emoji != paired.emoji) {
+      await ref.read(connectionsProvider.notifier).update(
+        paired.copyWith(name: name, emoji: _emoji),
       );
     }
     if (mounted) Navigator.of(context).pop();
@@ -209,11 +190,10 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     );
     if (result == null || !mounted) return;
 
-    // QR 里只带一次性 claim code，server 校验通过后才发 deviceToken。
     setState(() { _phase = _SheetState.detecting; _errorMsg = null; });
     try {
-      final deviceId = await PairedServersNotifier.getOrCreateDeviceId();
-      final deviceName = PairedServersNotifier.deviceName;
+      final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
+      final deviceName = ConnectionsNotifier.deviceName;
       final claimResp = await http.post(
         Uri.parse('${result.url}/pair/qr-claim'),
         headers: {'Content-Type': 'application/json'},
@@ -228,29 +208,40 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
         final body = jsonDecode(claimResp.body) as Map<String, dynamic>;
         final deviceToken = body['deviceToken'] as String;
         final serverId = body['serverId'] as String? ?? '';
-        // Get hostname from /health
-        String name = result.url.replaceFirst(RegExp(r'^https?://'), '').split(':').first;
+
+        String name = result.url
+            .replaceFirst(RegExp(r'^https?://'), '')
+            .split(':')
+            .first;
         try {
-          final healthResp = await http.get(Uri.parse('${result.url}/health'))
+          final healthResp = await http
+              .get(Uri.parse('${result.url}/health'))
               .timeout(const Duration(seconds: 5));
           if (healthResp.statusCode == 200) {
             final h = jsonDecode(healthResp.body) as Map<String, dynamic>;
             name = h['hostname'] as String? ?? name;
           }
         } catch (_) {}
-        final uri = Uri.tryParse(result.url);
-        final server = PairedServer(
-          serverId: serverId,
-          deviceToken: deviceToken,
-          name: name,
-          host: uri?.host ?? name,
-          port: uri?.port ?? 8765,
-          lastSeen: DateTime.now(),
-        );
-        await ref.read(pairedServersProvider.notifier).add(server);
-        await ref.read(connectionsProvider.notifier).add(
-          name: name, emoji: '🖥️', url: result.url, token: deviceToken,
-        );
+
+        // Check for existing connection with same serverId
+        final existing = ref.read(connectionsProvider)
+            .where((c) => c.serverId == serverId)
+            .firstOrNull;
+        if (existing != null) {
+          await ref.read(connectionsProvider.notifier).update(
+            existing.copyWith(token: deviceToken, url: result.url, lastSeen: DateTime.now()),
+          );
+        } else {
+          await ref.read(connectionsProvider.notifier).add(Connection(
+            id: ConnectionsNotifier.newId(),
+            name: name,
+            emoji: '🖥️',
+            url: result.url,
+            token: deviceToken,
+            serverId: serverId.isNotEmpty ? serverId : null,
+            lastSeen: DateTime.now(),
+          ));
+        }
         if (mounted) Navigator.of(context).pop();
       } else {
         final s = ref.read(stringsProvider);
@@ -267,66 +258,15 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   }
 
   Future<void> _openLanScan() async {
-    final result = await showModalBottomSheet<Object>(
+    await showModalBottomSheet<Connection>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => const LanScanSheet(),
     );
-    if (result == null || !mounted) return;
-
-    if (result is PairedServer) {
-      final notifier = ref.read(connectionsProvider.notifier);
-      await notifier.add(
-        name: result.name,
-        emoji: '🖥️',
-        url: result.httpBase,
-        token: result.deviceToken,
-      );
-      if (mounted) Navigator.of(context).pop();
-      return;
-    }
-
-    if (result is LanScanResult) {
-      final paired = ref
-          .read(pairedServersProvider)
-          .where((s) => s.serverId == result.serverId)
-          .firstOrNull;
-      if (paired != null) {
-        // 已配对设备：dedup 先按 token、再 fallback 按 URL —— 后者用于
-        // 兜底服务端 deviceToken 替换后老 ServerEntry 失效的情况。
-        final connections = ref.read(connectionsProvider);
-        var existing = connections
-            .where((c) => c.token != null && c.token == paired.deviceToken)
-            .firstOrNull;
-        existing ??=
-            connections.where((c) => c.url == paired.httpBase).firstOrNull;
-        final notifier = ref.read(connectionsProvider.notifier);
-        if (existing != null) {
-          // 已有同 token / 同 URL 的条目：刷一遍 token & url，避免旧 token 失效。
-          await notifier.update(existing.copyWith(
-            url: paired.httpBase,
-            token: paired.deviceToken,
-          ));
-          if (mounted) Navigator.of(context).pop();
-          return;
-        }
-        await notifier.add(
-          name: paired.name,
-          emoji: '🖥️',
-          url: paired.httpBase,
-          token: paired.deviceToken,
-        );
-        if (mounted) Navigator.of(context).pop();
-      } else {
-        _ipCtrl.text = result.host;
-        _portCtrl.text = '${result.port}';
-        _detectedName = result.name;
-        _detectedVersion = result.version;
-        _nameCtrl.text = result.name;
-        setState(() => _phase = _SheetState.input);
-      }
-    }
+    // Connection already saved to store by PairSheet or LanScanSheet.
+    // Just close this sheet regardless of whether we got a result.
+    if (mounted) Navigator.of(context).pop();
   }
 
   @override
@@ -528,7 +468,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                         size: 14, color: t.accent),
                     const SizedBox(width: 8),
                     Text(
-                      _pairedServer != null
+                      _pairedConn != null
                           ? '${s.pairSheetSuccess}${_detectedVersion != null && _detectedVersion!.isNotEmpty ? ' · v$_detectedVersion' : ''}'
                           : s.addConnectionDetectedTpl.replaceAll(
                               '{ver}',
