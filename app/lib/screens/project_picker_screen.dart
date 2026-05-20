@@ -118,7 +118,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     );
   }
 
-  Widget _connectingView(BuildContext context, ServerEntry conn, AppTokens t) {
+  Widget _connectingView(BuildContext context, Connection conn, AppTokens t) {
     return _ConnectingView(
       key: const ValueKey('connecting'),
       conn: conn,
@@ -128,7 +128,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     );
   }
 
-  Widget _readyView(BuildContext context, ServerEntry conn, AppTokens t) {
+  Widget _readyView(BuildContext context, Connection conn, AppTokens t) {
     final projectsAsync = ref.watch(projectsProvider);
     return Column(
       key: const ValueKey('ready'),
@@ -300,7 +300,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
 // ── Connecting / failed view ──────────────────────────────────
 
 class _ConnectingView extends StatefulWidget {
-  final ServerEntry conn;
+  final Connection conn;
   final String? error;
   final VoidCallback onBack;
   final VoidCallback onRetry;
@@ -549,7 +549,7 @@ class _RingPainter extends CustomPainter {
 // ── Top bar ──────────────────────────────────────────────────
 
 class _TopBar extends StatelessWidget {
-  final ServerEntry conn;
+  final Connection conn;
   final VoidCallback onRefresh;
   final VoidCallback onAdd;
   const _TopBar({required this.conn, required this.onRefresh, required this.onAdd});

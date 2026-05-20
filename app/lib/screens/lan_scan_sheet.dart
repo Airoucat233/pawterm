@@ -351,7 +351,7 @@ class _ServerTile extends StatelessWidget {
           Text(
             [
               '${result.host}:${result.port}',
-              if (ipChanged) '(原: ${conn!.host})',
+              if (ipChanged) '(原: ${conn.host})',
               if (result.version.isNotEmpty) 'v${result.version}',
             ].join('  ·  '),
             style: TextStyle(

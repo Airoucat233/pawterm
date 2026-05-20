@@ -153,7 +153,7 @@ class _LazyTabSwitcherState extends State<_LazyTabSwitcher> {
 // ── Top bar ───────────────────────────────────────────────────
 
 class _TopBar extends StatelessWidget {
-  final ServerEntry? conn;
+  final Connection? conn;
   final CurrentSession? session;
   final VoidCallback onSessionTap;
   const _TopBar({

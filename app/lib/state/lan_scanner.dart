@@ -23,6 +23,8 @@ class LanScanResult {
     required this.pairingOpen,
     this.alreadyPaired = false,
   });
+
+  String get httpBase => 'http://$host:$port';
 }
 
 class LanScanner {
