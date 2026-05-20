@@ -92,15 +92,20 @@ if [ "$OS" = "Darwin" ]; then
   info "Installing PawTerm.app from the latest GitHub release …"
   printf "\n"
 
-  RELEASE_API="https://api.github.com/repos/Airoucat233/pawterm/releases/latest"
-  ZIP_URL="$(curl -fsSL "$RELEASE_API" \
-    | grep '"browser_download_url"' \
-    | grep 'mac\.zip"' \
-    | tail -1 \
-    | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')"
+  RELEASES_API="https://api.github.com/repos/Airoucat233/pawterm/releases"
+  ZIP_URL=""
+  page=1
+  while [ -z "$ZIP_URL" ] && [ "$page" -le 5 ]; do
+    ZIP_URL="$(curl -fsSL "${RELEASES_API}?per_page=10&page=${page}" \
+      | grep '"browser_download_url"' \
+      | grep 'mac\.zip"' \
+      | tail -1 \
+      | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')"
+    page=$((page + 1))
+  done
 
   if [ -z "$ZIP_URL" ]; then
-    err "Could not find a mac.zip in the latest release."
+    err "Could not find a mac.zip in any recent release."
     info "Download manually: https://github.com/Airoucat233/pawterm/releases/latest"
     exit 1
   fi
