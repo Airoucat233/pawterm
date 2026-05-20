@@ -44,7 +44,7 @@ SEMVER="${CURRENT%%+*}"
 if [[ $LOCAL -eq 1 ]]; then
   TAG="release/v$SEMVER"
   echo
-  echo "  version : \033[36m$CURRENT\033[0m  →  tag: \033[1m$TAG\033[0m"
+  printf "  version : \033[36m%s\033[0m  →  tag: \033[1m%s\033[0m\n" "$CURRENT" "$TAG"
   echo
 
   # ---- Check artifacts (exact filenames) ----
@@ -103,7 +103,7 @@ print(pl.get('CFBundleShortVersionString', ''))
     gh release upload "$TAG" "${ARTIFACTS[@]}" --repo Airoucat233/pawterm
 
     echo
-    echo "\033[32m✓ artifacts updated\033[0m  https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+    printf "\033[32m✓ artifacts updated\033[0m  https://github.com/Airoucat233/pawterm/releases/tag/%s\n" "$TAG"
     exit 0
   fi
 
@@ -135,7 +135,7 @@ print(pl.get('CFBundleShortVersionString', ''))
   git -C "$REPO_ROOT" push origin "$TAG"
 
   echo
-  echo "\033[32m✓ released\033[0m  https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
+  printf "\033[32m✓ released\033[0m  https://github.com/Airoucat233/pawterm/releases/tag/%s\n" "$TAG"
   exit 0
 fi
 
@@ -148,7 +148,7 @@ BUILD="${CURRENT#*+}"
 IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
 
 echo
-echo "  current: \033[36m$CURRENT\033[0m"
+printf "  current: \033[36m%s\033[0m\n" "$CURRENT"
 echo
 
 cat <<MENU
@@ -178,8 +178,8 @@ esac
 TAG="release/v${NEW%%+*}"
 
 echo
-echo "  new version : \033[32m$NEW\033[0m"
-echo "  tag         : \033[1m$TAG\033[0m"
+printf "  new version : \033[32m%s\033[0m\n" "$NEW"
+printf "  tag         : \033[1m%s\033[0m\n" "$TAG"
 echo
 
 git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && { echo "✗ Tag $TAG already exists." >&2; exit 1; }
@@ -207,6 +207,6 @@ git -C "$REPO_ROOT" tag "$TAG"
 git -C "$REPO_ROOT" push origin "$TAG"
 
 echo
-echo "\033[32m✓ tag pushed\033[0m — CI is building"
+printf "\033[32m✓ tag pushed\033[0m — CI is building\n"
 echo "  Watch:   https://github.com/Airoucat233/pawterm/actions"
 echo "  Release: https://github.com/Airoucat233/pawterm/releases/tag/$TAG"
