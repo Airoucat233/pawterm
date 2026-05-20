@@ -16,7 +16,7 @@ import type { HealthResponse, Project, PairedDevice } from '@pawterm/shared';
 import { registerChatRest } from './chat-rest.js';
 import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices } from './config.js';
 import { adminEventBus } from './event-bus.js';
-import { buildLoggerOptions } from './logger.js';
+import { buildLoggerOptions, SILENT_PATHS } from './logger.js';
 import { startMdns } from './mdns.js';
 import { pairingManager } from './pair.js';
 import { registerSessionsApi } from './sessions-api.js';
@@ -146,11 +146,32 @@ async function firstRunSetup(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const app = Fastify({ logger: buildLoggerOptions() });
+  const app = Fastify({ logger: buildLoggerOptions(), disableRequestLogging: true });
 
   await app.register(cors, { origin: true });
   await app.register(websocketPlugin);
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // Request/response logging (manual, so we can suppress noisy paths and control format)
+  app.addHook('preHandler', async (req) => {
+    const path = req.url.split('?')[0];
+    if (SILENT_PATHS.has(path)) return;
+    const body = req.body != null ? ` ${JSON.stringify(req.body)}` : '';
+    req.log.info(`→ ${req.method} ${req.url}${body}`);
+  });
+
+  app.addHook('onSend', async (req, reply, payload) => {
+    const path = req.url.split('?')[0];
+    if (SILENT_PATHS.has(path)) return payload;
+    const ms = Math.round(reply.elapsedTime);
+    // Only log response body for non-streaming, non-large payloads
+    const isStream = typeof (payload as { pipe?: unknown })?.pipe === 'function';
+    const bodyStr = (!isStream && typeof payload === 'string' && payload.length < 512)
+      ? ` ${payload}`
+      : '';
+    req.log.info(`← ${reply.statusCode} ${req.method} ${req.url}  ${ms}ms${bodyStr}`);
+    return payload;
+  });
 
   // Auth middleware
   // Skipped: /health (LAN discovery), /ws/shell (WS auth via init message),
