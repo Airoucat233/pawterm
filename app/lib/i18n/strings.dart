@@ -267,12 +267,7 @@ class Strings {
   final String updateChecking;
   final String updateUpToDate;
   final String updateAvailableTpl; // {version}
-  final String updateDialogTitle;
-  final String updateDownloadInstall;
-  final String updateInstall;
   final String updateCheckFailed;
-  final String updateNoApk;
-  final String updateDownloadFailed;
 
   // Generic
   final String genericRetry;
@@ -496,12 +491,7 @@ class Strings {
     required this.updateChecking,
     required this.updateUpToDate,
     required this.updateAvailableTpl,
-    required this.updateDialogTitle,
-    required this.updateDownloadInstall,
-    required this.updateInstall,
     required this.updateCheckFailed,
-    required this.updateNoApk,
-    required this.updateDownloadFailed,
     required this.genericRetry,
     required this.genericClose,
     required this.genericConfirm,
@@ -730,12 +720,7 @@ const Strings stringsEn = Strings(
   updateChecking: 'Checking…',
   updateUpToDate: 'Up to date',
   updateAvailableTpl: '{version} available',
-  updateDialogTitle: 'Update available',
-  updateDownloadInstall: 'Download & Install',
-  updateInstall: 'Install',
   updateCheckFailed: 'Check failed',
-  updateNoApk: 'No APK found',
-  updateDownloadFailed: 'Download failed',
   genericRetry: 'Retry',
   genericClose: 'Close',
   genericConfirm: 'OK',
@@ -963,12 +948,7 @@ const Strings stringsZh = Strings(
   updateChecking: '检测中…',
   updateUpToDate: '已是最新',
   updateAvailableTpl: '有新版本 {version}',
-  updateDialogTitle: '发现新版本',
-  updateDownloadInstall: '下载并安装',
-  updateInstall: '立即安装',
   updateCheckFailed: '检测失败',
-  updateNoApk: '未找到适用的 APK',
-  updateDownloadFailed: '下载失败',
   genericRetry: '重试',
   genericClose: '关闭',
   genericConfirm: '确定',

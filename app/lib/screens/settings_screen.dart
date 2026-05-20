@@ -1,10 +1,6 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open_file/open_file.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../i18n/locale_provider.dart';
 import '../state/app_info.dart';
@@ -469,12 +465,10 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
     }
   }
 
-  void _showDialog() {
+  Future<void> _openReleasePage() async {
     if (_release == null) return;
-    showDialog<void>(
-      context: context,
-      builder: (_) => _UpdateDialog(release: _release!),
-    );
+    final url = Uri.parse('https://github.com/Airoucat233/pawterm/releases/tag/${_release!.tagName}');
+    if (await canLaunchUrl(url)) await launchUrl(url, mode: LaunchMode.externalApplication);
   }
 
   @override
@@ -509,7 +503,7 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
     }
 
     return InkWell(
-      onTap: _status == _UpdateStatus.hasUpdate ? _showDialog : _check,
+      onTap: _status == _UpdateStatus.hasUpdate ? _openReleasePage : _check,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
@@ -543,195 +537,3 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
   }
 }
 
-// ── Update download dialog ─────────────────────────────────────────────────────
-
-enum _DlStatus { idle, downloading, done, failed, noApk }
-
-class _UpdateDialog extends ConsumerStatefulWidget {
-  final GithubRelease release;
-  const _UpdateDialog({required this.release});
-
-  @override
-  ConsumerState<_UpdateDialog> createState() => _UpdateDialogState();
-}
-
-class _UpdateDialogState extends ConsumerState<_UpdateDialog> {
-  _DlStatus _dlStatus = _DlStatus.idle;
-  double _progress = 0;
-  File? _file;
-
-  Future<void> _download() async {
-    final asset = findApkAsset(widget.release);
-    if (asset == null) {
-      setState(() => _dlStatus = _DlStatus.noApk);
-      return;
-    }
-
-    setState(() {
-      _dlStatus = _DlStatus.downloading;
-      _progress = 0;
-    });
-
-    final dlDir = await getDownloadsDir();
-    final file = await downloadAsset(asset, dlDir, onProgress: (p) {
-      if (mounted) setState(() => _progress = p);
-    });
-
-    if (!mounted) return;
-    if (file != null) {
-      setState(() {
-        _dlStatus = _DlStatus.done;
-        _file = file;
-      });
-    } else {
-      setState(() => _dlStatus = _DlStatus.failed);
-    }
-  }
-
-  Future<void> _install() async {
-    final f = _file;
-    if (f == null) return;
-    if (Platform.isAndroid) {
-      final status = await Permission.requestInstallPackages.status;
-      if (!status.isGranted) {
-        await Permission.requestInstallPackages.request();
-        if (!mounted) return;
-        final after = await Permission.requestInstallPackages.status;
-        if (!after.isGranted) return;
-      }
-    }
-    final result = await OpenFile.open(f.path);
-    if (!mounted) return;
-    if (result.type != ResultType.done && result.type != ResultType.noAppToOpen) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.message)),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    final s = ref.watch(stringsProvider);
-
-    final notes = widget.release.body.trim();
-    final preview = notes.length > 280 ? '${notes.substring(0, 280)}…' : notes;
-
-    Widget content;
-    List<Widget> actions;
-
-    switch (_dlStatus) {
-      case _DlStatus.idle:
-        content = Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              widget.release.tagName,
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: t.accent),
-            ),
-            if (preview.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Text(preview, style: TextStyle(fontSize: 12, color: t.textMuted, height: 1.5)),
-            ],
-          ],
-        );
-        actions = [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(s.genericCancel, style: TextStyle(color: t.textMuted)),
-          ),
-          FilledButton(
-            onPressed: _download,
-            style: FilledButton.styleFrom(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            child: Text(s.updateDownloadInstall),
-          ),
-        ];
-
-      case _DlStatus.downloading:
-        final pct = (_progress * 100).toInt();
-        content = Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            LinearProgressIndicator(
-              value: _progress > 0 ? _progress : null,
-              color: t.accent,
-              backgroundColor: t.border,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _progress > 0 ? '$pct%' : s.filesDownloading,
-              style: TextStyle(fontSize: 12, color: t.textMuted),
-            ),
-          ],
-        );
-        actions = [];
-
-      case _DlStatus.done:
-        content = Row(
-          children: [
-            const Icon(Icons.check_circle_outline, color: Colors.green, size: 20),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                _file?.path.split('/').last ?? '',
-                style: TextStyle(fontSize: 13, color: t.text),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        );
-        actions = [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(s.genericClose, style: TextStyle(color: t.textMuted)),
-          ),
-          FilledButton(
-            onPressed: _install,
-            style: FilledButton.styleFrom(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            child: Text(s.updateInstall),
-          ),
-        ];
-
-      case _DlStatus.failed:
-      case _DlStatus.noApk:
-        final msg = _dlStatus == _DlStatus.noApk ? s.updateNoApk : s.updateDownloadFailed;
-        content = Row(
-          children: [
-            Icon(Icons.error_outline, color: t.error, size: 20),
-            const SizedBox(width: 10),
-            Text(msg, style: TextStyle(fontSize: 13, color: t.error)),
-          ],
-        );
-        actions = [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(s.genericClose, style: TextStyle(color: t.textMuted)),
-          ),
-          if (_dlStatus == _DlStatus.failed)
-            FilledButton(
-              onPressed: _download,
-              style: FilledButton.styleFrom(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: Text(s.genericRetry),
-            ),
-        ];
-    }
-
-    return AlertDialog(
-      backgroundColor: t.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: Text(
-        s.updateDialogTitle,
-        style: TextStyle(color: t.text, fontSize: 16, fontWeight: FontWeight.w600),
-      ),
-      content: content,
-      actions: actions,
-    );
-  }
-}

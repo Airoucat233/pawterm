@@ -1,8 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 
 const _repo = 'Airoucat233/pawterm';
 
@@ -94,41 +92,3 @@ GithubAsset? findApkAsset(GithubRelease release) {
   return any.isEmpty ? null : any.first;
 }
 
-Future<Directory> getDownloadsDir() async {
-  if (Platform.isAndroid) {
-    final ext = await getExternalStorageDirectory();
-    if (ext != null) {
-      final parts = ext.path.split('/');
-      final idx = parts.indexOf('Android');
-      if (idx > 0) return Directory('${parts.sublist(0, idx).join('/')}/Download');
-    }
-    return Directory('/storage/emulated/0/Download');
-  }
-  return getApplicationDocumentsDirectory();
-}
-
-Future<File?> downloadAsset(
-  GithubAsset asset,
-  Directory destDir, {
-  void Function(double progress)? onProgress,
-}) async {
-  try {
-    if (!destDir.existsSync()) await destDir.create(recursive: true);
-    final destFile = File('${destDir.path}/${asset.name}');
-    final request = http.Request('GET', Uri.parse(asset.downloadUrl));
-    final response = await request.send().timeout(const Duration(minutes: 10));
-    if (response.statusCode != 200) return null;
-    final total = response.contentLength ?? asset.size;
-    var received = 0;
-    final sink = destFile.openWrite();
-    await for (final chunk in response.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      if (total > 0 && onProgress != null) onProgress(received / total);
-    }
-    await sink.close();
-    return destFile;
-  } catch (_) {
-    return null;
-  }
-}
