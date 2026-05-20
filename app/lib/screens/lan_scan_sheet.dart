@@ -15,9 +15,7 @@ export '../state/lan_scanner.dart' show LanScanResult;
 /// Bottom sheet that scans the LAN for PawTerm servers.
 ///
 /// Returns on pop:
-///  - [PairedServer] when user completes a new pairing via [PairSheet]
-///  - [LanScanResult] when user taps an already-paired server (caller handles
-///    switching to that server via existing ServerEntry or PairedServer)
+///  - [Connection] when a server was paired or a known server was tapped
 ///  - null if dismissed
 class LanScanSheet extends ConsumerStatefulWidget {
   const LanScanSheet({super.key});
@@ -32,6 +30,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
   List<LanScanResult> _results = [];
   StreamSubscription<List<LanScanResult>>? _sub;
   final TextEditingController _portCtrl = TextEditingController(text: '8765');
+  Map<String, Connection> _connByServerId = {};
 
   @override
   void initState() {
@@ -50,14 +49,22 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
     final port = int.tryParse(_portCtrl.text.trim());
     if (port == null || port < 1 || port > 65535) return;
     _sub?.cancel();
+
+    // Build serverId → Connection map for already-paired display
+    final connections = ref.read(connectionsProvider);
+    final connMap = <String, Connection>{
+      for (final c in connections)
+        if (c.serverId != null) c.serverId!: c,
+    };
+
     setState(() {
       _scanning = true;
       _done = false;
       _results = [];
+      _connByServerId = connMap;
     });
 
-    final pairedServers = ref.read(pairedServersProvider);
-    final pairedIds = pairedServers.map((s) => s.serverId).toSet();
+    final pairedIds = connMap.keys.toSet();
 
     _sub = LanScanner.scan(ports: {port}).listen(
       (snapshot) {
@@ -79,24 +86,30 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
 
   Future<void> _onTapResult(LanScanResult result) async {
     if (result.alreadyPaired) {
-      // Already paired — return the result directly; caller connects.
-      if (mounted) Navigator.of(context).pop(result);
+      final conn = _connByServerId[result.serverId];
+      if (conn != null) {
+        final freshUrl = result.httpBase;
+        if (freshUrl != conn.url) {
+          await ref.read(connectionsProvider.notifier).updateUrl(conn.id, freshUrl);
+        }
+        if (mounted) Navigator.of(context).pop(conn);
+      } else {
+        if (mounted) Navigator.of(context).pop();
+      }
       return;
     }
 
-    // Open pair sheet; it pops with PairedServer on success, or null on dismiss.
-    final paired = await showModalBottomSheet<PairedServer>(
+    // New pairing — open PairSheet; it saves the Connection internally.
+    final paired = await showModalBottomSheet<Connection>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => PairSheet(server: result),
     );
 
-    // If pairing succeeded, propagate PairedServer up to AddConnectionSheet.
     if (paired != null && mounted) {
       Navigator.of(context).pop(paired);
     }
-    // If null (user dismissed pair sheet), stay on this LAN scan sheet.
   }
 
   @override
@@ -240,7 +253,13 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
                     itemCount: _results.length,
                     itemBuilder: (ctx, i) {
                       final r = _results[i];
-                      return _ServerTile(result: r, onTap: _onTapResult, t: t, s: s);
+                      return _ServerTile(
+                        result: r,
+                        pairedConn: r.alreadyPaired ? _connByServerId[r.serverId] : null,
+                        onTap: _onTapResult,
+                        t: t,
+                        s: s,
+                      );
                     },
                   ),
           ),
@@ -252,12 +271,14 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
 
 class _ServerTile extends StatelessWidget {
   final LanScanResult result;
+  final Connection? pairedConn;
   final Future<void> Function(LanScanResult) onTap;
   final AppTokens t;
   final Strings s;
 
   const _ServerTile({
     required this.result,
+    required this.pairedConn,
     required this.onTap,
     required this.t,
     required this.s,
@@ -265,9 +286,9 @@ class _ServerTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final idSuffix = result.serverId.length >= 6
-        ? result.serverId.substring(result.serverId.length - 6)
-        : result.serverId;
+    final conn = pairedConn;
+    final displayName = conn?.name ?? result.name;
+    final ipChanged = conn != null && conn.host != result.host;
 
     return ListTile(
       leading: Container(
@@ -277,72 +298,103 @@ class _ServerTile extends StatelessWidget {
           color: result.alreadyPaired ? t.accentSubt : t.surfaceHi,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Icon(
-          result.alreadyPaired
-              ? Icons.link_rounded
-              : Icons.computer_rounded,
-          size: 18,
-          color: result.alreadyPaired ? t.accent : t.textMuted,
+        child: Center(
+          child: result.alreadyPaired
+              ? Text(conn?.emoji ?? '🖥️', style: const TextStyle(fontSize: 18))
+              : Icon(Icons.computer_rounded, size: 18, color: t.textMuted),
         ),
       ),
       title: Row(
         children: [
           Expanded(
             child: Text(
-              result.name,
+              displayName,
               style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                   color: t.text),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
           if (result.alreadyPaired)
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: t.accentSubt,
-                borderRadius: BorderRadius.circular(4),
-                border:
-                    Border.all(color: t.accent.withValues(alpha: 0.3)),
-              ),
-              child: Text(
-                s.pairSheetAlreadyPaired,
-                style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: t.accent),
-              ),
+            _Badge(
+              label: ipChanged ? 'IP 已更新' : s.pairSheetAlreadyPaired,
+              color: ipChanged ? const Color(0xFFF59E0B) : t.accent,
+              bgColor: ipChanged
+                  ? const Color(0xFFF59E0B).withValues(alpha: 0.12)
+                  : t.accentSubt,
+              borderColor: ipChanged
+                  ? const Color(0xFFF59E0B).withValues(alpha: 0.4)
+                  : t.accent.withValues(alpha: 0.3),
             ),
           if (!result.alreadyPaired && result.pairingOpen) ...[
             const SizedBox(width: 4),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: const Color(0xFF22C55E).withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(
-                    color: const Color(0xFF22C55E).withValues(alpha: 0.4)),
-              ),
-              child: Text(
-                s.pairSheetPinOpen,
-                style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF22C55E)),
-              ),
+            _Badge(
+              label: s.pairSheetPinOpen,
+              color: const Color(0xFF22C55E),
+              bgColor: const Color(0xFF22C55E).withValues(alpha: 0.1),
+              borderColor: const Color(0xFF22C55E).withValues(alpha: 0.4),
             ),
           ],
         ],
       ),
-      subtitle: Text(
-        '${result.host}:${result.port}  ·  …$idSuffix'
-        '${result.version.isNotEmpty ? "  ·  v${result.version}" : ""}',
-        style: TextStyle(fontSize: 12, color: t.textMuted),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Show machine hostname if it differs from display name
+          if (conn != null && result.name != displayName)
+            Text(
+              result.name,
+              style: TextStyle(fontSize: 11.5, color: t.textMuted),
+              overflow: TextOverflow.ellipsis,
+            ),
+          Text(
+            [
+              '${result.host}:${result.port}',
+              if (ipChanged) '(原: ${conn!.host})',
+              if (result.version.isNotEmpty) 'v${result.version}',
+            ].join('  ·  '),
+            style: TextStyle(
+                fontSize: 11.5,
+                fontFamily: 'monospace',
+                color: t.textMuted),
+          ),
+        ],
       ),
       trailing: Icon(Icons.chevron_right, color: t.textDim, size: 18),
       onTap: () => onTap(result),
+    );
+  }
+}
+
+class _Badge extends StatelessWidget {
+  final String label;
+  final Color color;
+  final Color bgColor;
+  final Color borderColor;
+  const _Badge({
+    required this.label,
+    required this.color,
+    required this.bgColor,
+    required this.borderColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: borderColor),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: color),
+      ),
     );
   }
 }
