@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -118,6 +119,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// 参考 claude-code messageQueueManager.ts 的单优先级简化版本。
   final List<String> _pending = [];
 
+  /// 输入框是否有内容（实时跟踪），用于切换发送/停止/排队按钮。
+  bool _hasText = false;
+
+  /// 当前轮次是否已收到 AI 文本响应（流式或最终消息）。
+  /// 在 _sendNow 时重置；AI text block 开始时置 true。
+  bool _aiRespondedThisTurn = false;
+
+  /// 上一轮用户消息的原文，仅在 AI 未响应就中断时保留。
+  /// 非 null 时在输入框上方显示"重新编辑"快捷条。
+  String? _unrespondedUserText;
+
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
   final List<_AttachmentState> _attachments = [];
@@ -133,6 +145,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
+    _textController.addListener(_onTextChanged);
   }
 
   void _onScroll() {
@@ -164,6 +177,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _thoughtForTimer?.cancel();
     _observeTimer?.cancel();
     _closeSse();
+    _textController.removeListener(_onTextChanged);
     _textController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -795,6 +809,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _thoughtSeconds = null;
         _currentBlockKind = null;
         _messages.add(msg); _debugTrack(msg, json);
+        // 如果 AI 这一轮根本没有响应（中断发生在响应之前），
+        // 保留 _unrespondedUserText，让"重新编辑"条出现。
+        // 否则清掉。
+        if (_aiRespondedThisTurn) _unrespondedUserText = null;
         // 当前轮结束 — 看看队列里有没有用户在 busy 期间堆的消息，
         // 有就出队继续发（递归触发下一轮）。
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -820,6 +838,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _mode = CcStreamMode.responding;
             _thoughtForTimer?.cancel();
             _thoughtSeconds = null;
+            _aiRespondedThisTurn = true; // AI 开始回复，清掉"重新编辑"暂存
+            _unrespondedUserText = null;
             _messages.add(StreamingAssistant());
             break;
           case 'thinking':
@@ -871,6 +891,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           final removed = _messages.removeLast();
           _debugRaw.remove(removed);
         }
+        _aiRespondedThisTurn = true;
+        _unrespondedUserText = null;
         _messages.add(msg); _debugTrack(msg, json);
         // 拦截 TodoWrite 工具调用 → 更新全局 todoListProvider，让顶部 chip 反映进度。
         // 注意：tool_use 块本身仍保留在 message 里（_buildToolResultIndex 还要用），
@@ -959,6 +981,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _currentBlockKind = null;
       _thoughtSeconds = null;
       _thoughtForTimer?.cancel();
+      _aiRespondedThisTurn = false;
+      _unrespondedUserText = text; // 暂存；AI 开始响应后清除
     });
     final uuid = _sessionId;
     final config = ref.read(activeConnectionProvider);
@@ -1006,6 +1030,46 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (_busy && _sessionId != null && _chatApi != null) {
       unawaited(_chatApi!.interrupt(_sessionId!));
     }
+  }
+
+  /// 输入框内容变化时同步 _hasText 标志，驱动发送/排队按钮切换。
+  void _onTextChanged() {
+    final h = _textController.text.isNotEmpty;
+    if (h != _hasText) setState(() => _hasText = h);
+  }
+
+  /// 重新编辑上一条未被 AI 响应的消息：
+  /// 把文本放回输入框，并从消息列表里撤销那次发送的记录。
+  void _reEditLastMessage() {
+    final text = _unrespondedUserText;
+    if (text == null) return;
+    setState(() {
+      _unrespondedUserText = null;
+      // 找到最后一条 LocalUserInput 并移除它
+      final idx = _messages.lastIndexWhere((m) => m is LocalUserInput);
+      if (idx >= 0) {
+        // 如果紧跟着一条 ResultMsg（turn 已结束），也一起清掉
+        if (idx + 1 < _messages.length && _messages[idx + 1] is ResultMsg) {
+          _messages.removeAt(idx + 1);
+        }
+        _messages.removeAt(idx);
+      }
+    });
+    _textController.text = text;
+    _textController.selection = TextSelection.fromPosition(
+      TextPosition(offset: text.length),
+    );
+  }
+
+  /// 长按队列中某条消息时：把它提到最前面，然后中断当前响应。
+  /// ResultMsg 到达后 _drainQueue 会立刻发送这条优先消息。
+  void _prioritizePending(int index) {
+    if (index < 0 || index >= _pending.length) return;
+    setState(() {
+      final item = _pending.removeAt(index);
+      _pending.insert(0, item);
+    });
+    _interrupt();
   }
 
   /// 把用户对 AskUserQuestion 工具的回答通过 REST 发给 server。
@@ -1209,6 +1273,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _PendingQueueBar(
             messages: _pending,
             onRemove: _removePending,
+            onPrioritize: _prioritizePending,
+          ),
+        if (_unrespondedUserText != null)
+          _ReEditBar(
+            text: _unrespondedUserText!,
+            onReEdit: _reEditLastMessage,
           ),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         if (!_observeMode)
@@ -1216,6 +1286,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             controller: _textController,
             connected: _connected,
             busy: _busy,
+            hasText: _hasText,
             attachments: _attachments,
             attachmentsAllReady: _attachmentsAllReady,
             onPickAttachment: _pickAndUploadAttachments,
@@ -1546,6 +1617,7 @@ class _Composer extends ConsumerWidget {
   final TextEditingController controller;
   final bool connected;
   final bool busy;
+  final bool hasText;
   final List<_AttachmentState> attachments;
   final bool attachmentsAllReady;
   final VoidCallback onPickAttachment;
@@ -1559,6 +1631,7 @@ class _Composer extends ConsumerWidget {
     required this.controller,
     required this.connected,
     required this.busy,
+    required this.hasText,
     required this.attachments,
     required this.attachmentsAllReady,
     required this.onPickAttachment,
@@ -1574,8 +1647,11 @@ class _Composer extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
     final model = ref.watch(currentModelProvider);
-    // 任意附件没就绪（上传中/失败）都禁止发送，避免发出去的引用不可达。
+    // canSend：非 busy 且附件就绪才能直接发。
+    // canQueue：busy 中且有文字，点击可排队。
+    // busy + !hasText：显示停止按钮。
     final canSend = connected && !busy && attachmentsAllReady;
+    final canQueue = connected && busy && hasText;
     final editable = connected; // 文本框 busy 时仍可编辑（用户能预写下一条），但发送被 stop 按钮替代。
     return SafeArea(
       top: false,
@@ -1640,6 +1716,7 @@ class _Composer extends ConsumerWidget {
                   _SendOrStopButton(
                     busy: busy,
                     canSend: canSend,
+                    canQueue: canQueue,
                     onSubmit: onSubmit,
                     onStop: onStop,
                   ),
@@ -1681,17 +1758,20 @@ class _Composer extends ConsumerWidget {
 }
 
 /// 输入框右侧的 40×40 圆形按钮（黑白主题，对照 cxclaw）。
-/// - busy=false → 发送上箭头
-/// - busy=true  → 停止方块（同一种背景，仅图标变）
-/// - 不可用    → 浅灰
+/// - busy=false, canSend=true  → 发送上箭头（深色）
+/// - busy=false, canSend=false → 发送上箭头（浅灰，禁用）
+/// - busy=true, canQueue=true  → 排队上箭头（accent 色背景，表示"加入队列"）
+/// - busy=true, canQueue=false → 停止方块
 class _SendOrStopButton extends StatefulWidget {
   final bool busy;
   final bool canSend;
+  final bool canQueue;
   final VoidCallback onSubmit;
   final VoidCallback onStop;
   const _SendOrStopButton({
     required this.busy,
     required this.canSend,
+    required this.canQueue,
     required this.onSubmit,
     required this.onStop,
   });
@@ -1708,15 +1788,43 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
     final t = AppTokens.of(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
 
-    // 主题色：亮模式黑底，暗模式近白底。按下时 / 不可用时颜色降级。
+    // 三种视觉态
     final Color bg;
     final Color fg;
-    if (!widget.canSend && !widget.busy) {
+    final Widget icon;
+
+    if (widget.busy && widget.canQueue) {
+      // 排队模式：accent 色背景 + 上箭头
+      bg = t.accent;
+      fg = Colors.white;
+      icon = Icon(Icons.arrow_upward_rounded, size: 18, color: fg);
+    } else if (!widget.canSend && !widget.busy) {
+      // 禁用态
       bg = dark ? t.borderSubt : const Color(0xFFE4E7EC);
       fg = dark ? t.textDim : const Color(0xFF98A2B3);
+      icon = Icon(Icons.arrow_upward_rounded, size: 18, color: fg);
     } else {
+      // 正常发送 或 停止
       bg = dark ? t.text : const Color(0xFF101828);
       fg = dark ? const Color(0xFF0B1210) : Colors.white;
+      icon = widget.busy
+          ? Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: fg,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            )
+          : Icon(Icons.arrow_upward_rounded, size: 18, color: fg);
+    }
+
+    // 点击行为
+    final VoidCallback? onTap;
+    if (widget.busy) {
+      onTap = widget.canQueue ? widget.onSubmit : widget.onStop;
+    } else {
+      onTap = widget.canSend ? widget.onSubmit : null;
     }
 
     return GestureDetector(
@@ -1726,9 +1834,7 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
       },
       onTapUp: (_) => setState(() => _pressed = false),
       onTapCancel: () => setState(() => _pressed = false),
-      onTap: widget.busy
-          ? widget.onStop
-          : (widget.canSend ? widget.onSubmit : null),
+      onTap: onTap,
       child: AnimatedScale(
         scale: _pressed ? 0.96 : 1.0,
         duration: const Duration(milliseconds: 100),
@@ -1737,7 +1843,9 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
           width: 44,
           height: 44,
           child: Center(
-            child: Container(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
               width: 40,
               height: 40,
               decoration: BoxDecoration(
@@ -1754,16 +1862,7 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
                       ],
               ),
               alignment: Alignment.center,
-              child: widget.busy
-                  ? Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: fg,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    )
-                  : Icon(Icons.arrow_upward_rounded, size: 18, color: fg),
+              child: icon,
             ),
           ),
         ),
@@ -2222,14 +2321,19 @@ class _AttachmentChip extends StatelessWidget {
 /// 看起来就像最终消息的同一条 block。
 /// 流式期间用户连发的消息在 composer 上方堆叠显示，每条带 × 撤回按钮。
 /// 复刻 claude-code 的 messageQueueManager：busy 时所有 user prompt 排队，
-/// 当前 turn 结束后 FIFO 出队继续发。
-class _PendingQueueBar extends ConsumerWidget {
+/// 当前 turn 结束后 FIFO 出队继续发。长按某条可优先发送并中断当前响应。
+class _PendingQueueBar extends StatelessWidget {
   final List<String> messages;
   final void Function(int) onRemove;
-  const _PendingQueueBar({required this.messages, required this.onRemove});
+  final void Function(int) onPrioritize;
+  const _PendingQueueBar({
+    required this.messages,
+    required this.onRemove,
+    required this.onPrioritize,
+  });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     return Container(
       color: t.surface,
@@ -2252,41 +2356,166 @@ class _PendingQueueBar extends ConsumerWidget {
                     fontWeight: FontWeight.w500,
                   ),
                 ),
+                const SizedBox(width: 6),
+                Text(
+                  '长按可优先发送',
+                  style: TextStyle(fontSize: 10, color: t.textDim.withValues(alpha: 0.6)),
+                ),
               ],
             ),
           ),
           for (int i = 0; i < messages.length; i++)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: t.accent.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: t.accent.withValues(alpha: 0.18)),
+              child: _PendingQueueItem(
+                key: ValueKey('pending_$i'),
+                text: messages[i],
+                onRemove: () => onRemove(i),
+                onPrioritize: () => onPrioritize(i),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 单条队列消息 item：支持长按抖动 → 优先发送。
+class _PendingQueueItem extends StatefulWidget {
+  final String text;
+  final VoidCallback onRemove;
+  final VoidCallback onPrioritize;
+  const _PendingQueueItem({
+    super.key,
+    required this.text,
+    required this.onRemove,
+    required this.onPrioritize,
+  });
+
+  @override
+  State<_PendingQueueItem> createState() => _PendingQueueItemState();
+}
+
+class _PendingQueueItemState extends State<_PendingQueueItem>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _shakeCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _shakeCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+  }
+
+  @override
+  void dispose() {
+    _shakeCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onLongPress() {
+    HapticFeedback.heavyImpact();
+    _shakeCtrl.forward(from: 0).then((_) {
+      if (mounted) widget.onPrioritize();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return AnimatedBuilder(
+      animation: _shakeCtrl,
+      builder: (_, child) {
+        // 衰减正弦抖动：2.5 次振荡，幅度随进度衰减
+        final dx = sin(_shakeCtrl.value * pi * 5) * 6.0 * (1 - _shakeCtrl.value);
+        return Transform.translate(offset: Offset(dx, 0), child: child);
+      },
+      child: GestureDetector(
+        onLongPress: _onLongPress,
+        child: Container(
+          decoration: BoxDecoration(
+            color: t.accent.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: t.accent.withValues(alpha: 0.18)),
+          ),
+          padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  widget.text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: t.text, height: 1.3),
                 ),
-                padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        messages[i],
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 13, color: t.text, height: 1.3),
-                      ),
-                    ),
-                    InkResponse(
-                      onTap: () => onRemove(i),
-                      radius: 18,
-                      child: Padding(
-                        padding: const EdgeInsets.all(6),
-                        child: Icon(Icons.close, size: 14, color: t.textDim),
-                      ),
-                    ),
-                  ],
+              ),
+              InkResponse(
+                onTap: widget.onRemove,
+                radius: 18,
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(Icons.close, size: 14, color: t.textDim),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// "重新编辑"快捷条：当用户中断且 AI 未响应时显示。
+/// 点击把上一条用户消息放回输入框，撤销那次发送记录。
+class _ReEditBar extends StatelessWidget {
+  final String text;
+  final VoidCallback onReEdit;
+  const _ReEditBar({required this.text, required this.onReEdit});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final preview = text.length > 60 ? '${text.substring(0, 60)}…' : text;
+    return Container(
+      color: t.surface,
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      child: Row(
+        children: [
+          Icon(Icons.undo_rounded, size: 13, color: t.warning),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              preview,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: t.textMuted),
+            ),
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            onTap: onReEdit,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: t.warning.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: t.warning.withValues(alpha: 0.3),
+                  width: 0.5,
+                ),
+              ),
+              child: Text(
+                '重新编辑',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: t.warning,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
+          ),
         ],
       ),
     );
