@@ -112,17 +112,21 @@ export function runServiceCommand(cmd: string): void {
 
   if (cmd === 'uninstall') {
     if (p === 'darwin') {
-      if (!existsSync(PLIST_PATH)) { console.log('Service is not installed.'); return; }
-      tryExec(`launchctl unload "${PLIST_PATH}"`);
-      unlinkSync(PLIST_PATH);
-      console.log('✓ Service uninstalled');
+      if (existsSync(PLIST_PATH)) {
+        tryExec(`launchctl unload "${PLIST_PATH}"`);
+        unlinkSync(PLIST_PATH);
+        console.log('✓ Service deregistered');
+      }
     } else if (p === 'linux') {
       tryExec('systemctl --user disable --now pawterm-server');
       if (existsSync(SYSTEMD_UNIT)) { unlinkSync(SYSTEMD_UNIT); tryExec('systemctl --user daemon-reload'); }
-      console.log('✓ Service uninstalled');
+      console.log('✓ Service deregistered');
     } else {
-      console.error('Unsupported platform.');
+      console.error('Unsupported platform.'); return;
     }
+    console.log('Removing npm package…');
+    exec('npm uninstall -g pawterm-server');
+    console.log('✓ pawterm-server removed');
     return;
   }
 
