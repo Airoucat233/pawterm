@@ -90,14 +90,14 @@ print(pl.get('CFBundleShortVersionString', ''))
     echo
     echo "▶ removing old APK / mac zip assets from $TAG …"
     existing=$(gh release view "$TAG" --repo Airoucat233/pawterm --json assets --jq '.assets[].name' 2>/dev/null || true)
-    for asset in ${(f)existing}; do
+    while IFS= read -r asset; do
       case "$asset" in
         pawterm-*-arm64*.apk|pawterm-*-armeabi*.apk|pawterm-*-x86*.apk|PawTerm-*-mac.zip)
           echo "  - $asset"
           gh release delete-asset "$TAG" "$asset" --yes --repo Airoucat233/pawterm 2>/dev/null || true
           ;;
       esac
-    done
+    done <<< "$existing"
 
     echo "▶ gh release upload $TAG"
     gh release upload "$TAG" "${ARTIFACTS[@]}" --repo Airoucat233/pawterm
