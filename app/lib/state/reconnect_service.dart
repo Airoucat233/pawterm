@@ -10,11 +10,11 @@ enum ReconnectStatus { idle, scanning, found, notFound }
 
 class ReconnectState {
   final ReconnectStatus status;
-  final String? updatedServerId;
+  final String? updatedConnectionId;   // Connection.id (was: updatedServerId)
 
   const ReconnectState({
     this.status = ReconnectStatus.idle,
-    this.updatedServerId,
+    this.updatedConnectionId,
   });
 }
 
@@ -26,7 +26,6 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
 
   ReconnectNotifier(this._ref) : super(const ReconnectState()) {
     _startListening();
-    // Initial scan on startup
     _scheduleRun(delay: const Duration(seconds: 2));
   }
 
@@ -37,7 +36,6 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
           r == ConnectivityResult.mobile ||
           r == ConnectivityResult.ethernet);
       if (hasNetwork) {
-        // Debounce: network changes fire multiple times during handoff
         _debounce?.cancel();
         _debounce = Timer(const Duration(seconds: 2), _run);
       }
@@ -50,61 +48,57 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
 
   Future<void> _run() async {
     if (_running) return;
-    final pairedServers = _ref.read(pairedServersProvider);
-    if (pairedServers.isEmpty) return;
+
+    // Only consider paired connections (those with a serverId)
+    final paired = _ref
+        .read(connectionsProvider)
+        .where((c) => c.serverId != null)
+        .toList();
+    if (paired.isEmpty) return;
 
     _running = true;
     state = const ReconnectState(status: ReconnectStatus.scanning);
 
-    // mDNS 端口无关；subnet sweep 走配过的所有 port（外加 8765 默认兜底），
-    // 让非默认端口的服务端也能被自动重连找回。
-    final sweepPorts = <int>{8765, for (final p in pairedServers) p.port};
+    final sweepPorts = <int>{8765, for (final c in paired) c.port};
 
-    String? foundServerId;
+    String? foundId;
     try {
       await for (final snapshot in LanScanner.scan(ports: sweepPorts)) {
         for (final found in snapshot) {
-          // Match against any known paired server
-          final match = pairedServers
-              .where((p) => p.serverId == found.serverId)
+          final match = paired
+              .where((c) => c.serverId == found.serverId)
               .firstOrNull;
-          if (match != null && found.host != match.host) {
-            // Host changed — update stored host
+          if (match != null) {
             await _ref
-                .read(pairedServersProvider.notifier)
-                .updateHost(match.serverId, found.host);
-            foundServerId = match.serverId;
-          } else if (match != null) {
-            // Same host — touch lastSeen
-            await _ref
-                .read(pairedServersProvider.notifier)
-                .updateHost(match.serverId, found.host);
-            foundServerId = match.serverId;
+                .read(connectionsProvider.notifier)
+                .updateUrl(match.id, found.httpBase);
+            foundId = match.id;
           }
         }
       }
     } catch (_) {}
 
-    if (foundServerId != null) {
+    if (foundId != null) {
       state = ReconnectState(
-          status: ReconnectStatus.found, updatedServerId: foundServerId);
+          status: ReconnectStatus.found, updatedConnectionId: foundId);
     } else {
-      // Fallback: probe recentHosts for active paired servers
-      for (final paired in pairedServers) {
-        if (paired.recentHosts.isEmpty) continue;
-        final liveHost = await LanScanner.probeRecentHosts(
-            paired.recentHosts, paired.port);
+      // Fallback: probe recentHosts for each paired connection
+      for (final conn in paired) {
+        if (conn.recentHosts.isEmpty) continue;
+        final liveHost =
+            await LanScanner.probeRecentHosts(conn.recentHosts, conn.port);
         if (liveHost != null) {
+          final freshUrl = 'http://$liveHost:${conn.port}';
           await _ref
-              .read(pairedServersProvider.notifier)
-              .updateHost(paired.serverId, liveHost);
-          foundServerId = paired.serverId;
+              .read(connectionsProvider.notifier)
+              .updateUrl(conn.id, freshUrl);
+          foundId = conn.id;
           break;
         }
       }
-      state = foundServerId != null
+      state = foundId != null
           ? ReconnectState(
-              status: ReconnectStatus.found, updatedServerId: foundServerId)
+              status: ReconnectStatus.found, updatedConnectionId: foundId)
           : const ReconnectState(status: ReconnectStatus.notFound);
     }
 
