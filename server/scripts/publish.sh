@@ -72,8 +72,8 @@ else
 fi
 
 echo
-echo "  new version : \033[32m$NEW\033[0m"
-echo "  tag         : \033[1m$TAG\033[0m"
+printf "  new version : \033[32m%s\033[0m\n" "$NEW"
+printf "  tag         : \033[1m%s\033[0m\n" "$TAG"
 echo
 
 # -------- 3. Check tag --------
@@ -143,6 +143,6 @@ else
 fi
 
 echo
-echo "\033[32m✓ published pawterm-server@$NEW\033[0m"
+printf "\033[32m✓ published pawterm-server@%s\033[0m\n" "$NEW"
 echo "  npm:  https://www.npmjs.com/package/pawterm-server"
 echo "  tag:  $TAG"
