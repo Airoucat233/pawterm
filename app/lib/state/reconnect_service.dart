@@ -63,46 +63,48 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
 
     String? foundId;
     try {
-      await for (final snapshot in LanScanner.scan(ports: sweepPorts)) {
-        for (final found in snapshot) {
-          final match = paired
-              .where((c) => c.serverId == found.serverId)
-              .firstOrNull;
-          if (match != null) {
-            await _ref
-                .read(connectionsProvider.notifier)
-                .updateUrl(match.id, found.httpBase);
-            foundId = match.id;
+      try {
+        await for (final snapshot in LanScanner.scan(ports: sweepPorts)) {
+          for (final found in snapshot) {
+            final match = paired
+                .where((c) => c.serverId == found.serverId)
+                .firstOrNull;
+            if (match != null) {
+              await _ref
+                  .read(connectionsProvider.notifier)
+                  .updateUrl(match.id, found.httpBase);
+              foundId = match.id;
+            }
           }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
 
-    if (foundId != null) {
-      state = ReconnectState(
-          status: ReconnectStatus.found, updatedConnectionId: foundId);
-    } else {
-      // Fallback: probe recentHosts for each paired connection
-      for (final conn in paired) {
-        if (conn.recentHosts.isEmpty) continue;
-        final liveHost =
-            await LanScanner.probeRecentHosts(conn.recentHosts, conn.port);
-        if (liveHost != null) {
-          final freshUrl = 'http://$liveHost:${conn.port}';
-          await _ref
-              .read(connectionsProvider.notifier)
-              .updateUrl(conn.id, freshUrl);
-          foundId = conn.id;
-          break;
+      if (foundId != null) {
+        state = ReconnectState(
+            status: ReconnectStatus.found, updatedConnectionId: foundId);
+      } else {
+        // Fallback: probe recentHosts for each paired connection
+        for (final conn in paired) {
+          if (conn.recentHosts.isEmpty) continue;
+          final liveHost =
+              await LanScanner.probeRecentHosts(conn.recentHosts, conn.port);
+          if (liveHost != null) {
+            final freshUrl = 'http://$liveHost:${conn.port}';
+            await _ref
+                .read(connectionsProvider.notifier)
+                .updateUrl(conn.id, freshUrl);
+            foundId = conn.id;
+            break;
+          }
         }
+        state = foundId != null
+            ? ReconnectState(
+                status: ReconnectStatus.found, updatedConnectionId: foundId)
+            : const ReconnectState(status: ReconnectStatus.notFound);
       }
-      state = foundId != null
-          ? ReconnectState(
-              status: ReconnectStatus.found, updatedConnectionId: foundId)
-          : const ReconnectState(status: ReconnectStatus.notFound);
+    } finally {
+      _running = false;
     }
-
-    _running = false;
   }
 
   @override
