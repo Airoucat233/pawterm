@@ -90,7 +90,7 @@ describe('PairingManager', () => {
       const result = await pairingManager.tryRedeemPin(pin, 'dev1', 'My Phone', '1.2.3.4');
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.deviceToken).toMatch(/^dt-[0-9a-f]{48}$/);
+        expect(result.deviceToken).toMatch(/^dt-[0-9a-f]{32}$/);
         expect(result.serverId).toBe('test-server-uuid');
       }
     });

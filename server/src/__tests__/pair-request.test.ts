@@ -97,7 +97,7 @@ describe('PairRequest (phone-triggered pairing)', () => {
 
       const result = await pairingManager.approve(submitResult.request.requestId);
       expect(result).not.toBeNull();
-      expect(result!.deviceToken).toMatch(/^dt-[0-9a-f]{48}$/);
+      expect(result!.deviceToken).toMatch(/^dt-[0-9a-f]{32}$/);
       expect(result!.serverId).toBe('test-server-uuid');
     });
 
