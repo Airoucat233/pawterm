@@ -153,10 +153,14 @@ async function main(): Promise<void> {
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
   // Request/response logging (manual, so we can suppress noisy paths and control format)
+  const BODY_LIMIT = 512;
+  const truncate = (s: string) =>
+    s.length <= BODY_LIMIT ? s : `${s.slice(0, BODY_LIMIT)} …(+${s.length - BODY_LIMIT} bytes)`;
+
   app.addHook('preHandler', async (req) => {
     const path = req.url.split('?')[0];
     if (SILENT_PATHS.has(path)) return;
-    const body = req.body != null ? ` ${JSON.stringify(req.body)}` : '';
+    const body = req.body != null ? ` ${truncate(JSON.stringify(req.body))}` : '';
     req.log.info(`→ ${req.method} ${req.url}${body}`);
   });
 
@@ -164,10 +168,9 @@ async function main(): Promise<void> {
     const path = req.url.split('?')[0];
     if (SILENT_PATHS.has(path)) return payload;
     const ms = Math.round(reply.elapsedTime);
-    // Only log response body for non-streaming, non-large payloads
     const isStream = typeof (payload as { pipe?: unknown })?.pipe === 'function';
-    const bodyStr = (!isStream && typeof payload === 'string' && payload.length < 512)
-      ? ` ${payload}`
+    const bodyStr = (!isStream && typeof payload === 'string')
+      ? ` ${truncate(payload)}`
       : '';
     req.log.info(`← ${reply.statusCode} ${req.method} ${req.url}  ${ms}ms${bodyStr}`);
     return payload;
