@@ -6,8 +6,8 @@ import '../i18n/locale_provider.dart';
 
 class PawTermQrResult {
   final String url;
-  final String token;
-  const PawTermQrResult({required this.url, required this.token});
+  final String claim;
+  const PawTermQrResult({required this.url, required this.claim});
 }
 
 class QrScanScreen extends ConsumerStatefulWidget {
@@ -45,12 +45,12 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
     final uri = Uri.tryParse(raw);
     if (uri == null) return null;
     if (uri.scheme != 'pawterm') return null;
-    final token = uri.queryParameters['token'];
-    if (token == null || token.isEmpty) return null;
+    final claim = uri.queryParameters['claim'];
+    if (claim == null || claim.isEmpty) return null;
     final host = uri.host;
     final port = uri.hasPort ? uri.port : 8765;
     if (host.isEmpty) return null;
-    return PawTermQrResult(url: 'http://$host:$port', token: token);
+    return PawTermQrResult(url: 'http://$host:$port', claim: claim);
   }
 
   @override

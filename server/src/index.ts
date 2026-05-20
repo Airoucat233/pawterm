@@ -153,10 +153,20 @@ async function main(): Promise<void> {
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
   // Auth middleware
-  // Skipped: /health (LAN discovery), /ws/shell (WS auth via init message), /pair/start (PIN is the credential)
+  // Skipped: /health (LAN discovery), /ws/shell (WS auth via init message),
+  // /pair/start (PIN is the credential), /pair/qr-claim (claim code is the credential)
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
-    if (url === '/health' || url === '/ws/shell' || url === '/pair/start' || url === '/pair/request' || url.startsWith('/pair/poll/')) return;
+    if (
+      url === '/health' ||
+      url === '/ws/shell' ||
+      url === '/pair/start' ||
+      url === '/pair/request' ||
+      url === '/pair/qr-claim' ||
+      url.startsWith('/pair/poll/')
+    ) {
+      return;
+    }
 
     const auth = req.headers['authorization'];
     // Also accept ?token= query param for SSE connections (EventSource can't set headers)
@@ -427,14 +437,19 @@ async function main(): Promise<void> {
     },
   );
 
-  // POST /pair/qr-claim — adminToken required
-  app.post<{ Body: { deviceId: string; deviceName: string } }>(
+  // POST /pair/qr-claim — no auth; claim code (from QR) is the credential
+  app.post<{ Body: { deviceId: string; deviceName: string; claim: string } }>(
     '/pair/qr-claim',
     async (req, reply) => {
-      const { deviceId, deviceName } = req.body ?? {};
-      if (!deviceId || !deviceName) {
+      const { deviceId, deviceName, claim } = req.body ?? {};
+      if (!deviceId || !deviceName || !claim) {
         reply.code(400);
         return { error: 'missing fields' };
+      }
+      const ok = pairingManager.consumeQrClaim(claim);
+      if (!ok) {
+        reply.code(403);
+        return { error: 'invalid or expired claim' };
       }
       const result = await pairingManager.issueDeviceTokenAndNotify(deviceId, deviceName);
       return result;
@@ -465,12 +480,14 @@ async function main(): Promise<void> {
   // ==========================================
   // ======== Slice 8: Web Admin APIs =========
 
-  // GET /admin/qr — adminToken required
+  // GET /admin/qr — adminToken required.
+  // 生成一次性 QR claim code，5min 过期，扫码端用 POST /pair/qr-claim 兑换 deviceToken。
   app.get('/admin/qr', async (_req, _reply) => {
     const lanIp = getLanIp();
-    const content = `pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`;
+    const { code, expiresAt } = pairingManager.createQrClaim();
+    const content = `pawterm://${lanIp}:${settings.port}?claim=${code}`;
     const svg = await QRCode.toString(content, { type: 'svg' });
-    return { content, svg };
+    return { content, svg, expiresAt };
   });
 
   // POST /pair/request — no auth

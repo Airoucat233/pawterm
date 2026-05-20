@@ -59,7 +59,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
     final pairedServers = ref.read(pairedServersProvider);
     final pairedIds = pairedServers.map((s) => s.serverId).toSet();
 
-    _sub = LanScanner.scan(port: port).listen(
+    _sub = LanScanner.scan(ports: {port}).listen(
       (snapshot) {
         if (!mounted) return;
         for (final r in snapshot) {

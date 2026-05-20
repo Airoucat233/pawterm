@@ -2,7 +2,7 @@
  * PawTerm Admin — Developer Debug Center
  * Aesthetic: Terminal-industrial precision. Signal grid. Live data.
  */
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import clsx from 'clsx';
 import { useAdminStore } from './store';
 import { useHealthPing, useDevicesPoll, useAdminSSE } from './useAdminData';
@@ -120,17 +120,41 @@ function StatusBar() {
 function QrCard() {
   const token = useAdminStore((s) => s.token);
   const [qrSvg, setQrSvg] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [pin, setPin] = useState<string | null>(null);
   const [pinLoading, setPinLoading] = useState(false);
+  const [qrLoading, setQrLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadQr = useCallback(() => {
     if (!token) return;
+    setQrLoading(true);
+    setError(null);
     fetch('/admin/qr', { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.json())
-      .then((d) => setQrSvg(d.svg))
-      .catch(() => setError('QR unavailable'));
+      .then((d) => {
+        setQrSvg(d.svg);
+        setExpiresAt(typeof d.expiresAt === 'number' ? d.expiresAt : null);
+      })
+      .catch(() => setError('QR unavailable'))
+      .finally(() => setQrLoading(false));
   }, [token]);
+
+  useEffect(() => {
+    loadQr();
+  }, [loadQr]);
+
+  // 一旦过期自动刷新一次。QR claim 是 single-use + 5min TTL，避免用户看到死码。
+  useEffect(() => {
+    if (!expiresAt) return;
+    const ms = expiresAt - Date.now();
+    if (ms <= 0) {
+      loadQr();
+      return;
+    }
+    const timer = window.setTimeout(loadQr, ms + 500);
+    return () => window.clearTimeout(timer);
+  }, [expiresAt, loadQr]);
 
   async function handleShowPin() {
     if (!token) return;
@@ -148,8 +172,18 @@ function QrCard() {
 
   return (
     <div className="bg-[#141B18] border border-[#2A332E] p-4 flex flex-col gap-3">
-      <div className="text-[#4D6358] text-[10px] tracking-[0.3em] uppercase">
-        Scan to pair
+      <div className="flex items-center justify-between">
+        <div className="text-[#4D6358] text-[10px] tracking-[0.3em] uppercase">
+          Scan to pair
+        </div>
+        <button
+          onClick={loadQr}
+          disabled={qrLoading}
+          className="text-[#4D6358] text-[10px] hover:text-[#10B981] transition-colors disabled:opacity-50"
+          title="新生成一个一次性 claim code"
+        >
+          {qrLoading ? '…' : '↻ refresh'}
+        </button>
       </div>
 
       <div className="flex items-center justify-center bg-[#0B1210] border border-[#2A332E] p-3 min-h-[200px]">

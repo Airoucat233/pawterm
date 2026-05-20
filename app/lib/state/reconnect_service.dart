@@ -56,9 +56,13 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
     _running = true;
     state = const ReconnectState(status: ReconnectStatus.scanning);
 
+    // mDNS 端口无关；subnet sweep 走配过的所有 port（外加 8765 默认兜底），
+    // 让非默认端口的服务端也能被自动重连找回。
+    final sweepPorts = <int>{8765, for (final p in pairedServers) p.port};
+
     String? foundServerId;
     try {
-      await for (final snapshot in LanScanner.scan()) {
+      await for (final snapshot in LanScanner.scan(ports: sweepPorts)) {
         for (final found in snapshot) {
           // Match against any known paired server
           final match = pairedServers

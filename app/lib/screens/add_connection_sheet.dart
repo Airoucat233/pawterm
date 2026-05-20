@@ -209,18 +209,19 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     );
     if (result == null || !mounted) return;
 
-    // QR gives adminToken — call qr-claim directly, no PairSheet needed
+    // QR 里只带一次性 claim code，server 校验通过后才发 deviceToken。
     setState(() { _phase = _SheetState.detecting; _errorMsg = null; });
     try {
       final deviceId = await PairedServersNotifier.getOrCreateDeviceId();
       final deviceName = PairedServersNotifier.deviceName;
       final claimResp = await http.post(
         Uri.parse('${result.url}/pair/qr-claim'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${result.token}',
-        },
-        body: jsonEncode({'deviceId': deviceId, 'deviceName': deviceName}),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'deviceId': deviceId,
+          'deviceName': deviceName,
+          'claim': result.claim,
+        }),
       ).timeout(const Duration(seconds: 10));
       if (!mounted) return;
       if (claimResp.statusCode == 200) {

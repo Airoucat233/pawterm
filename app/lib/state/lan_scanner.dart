@@ -38,9 +38,10 @@ class LanScanner {
   /// Scan via mDNS + subnet sweep. Returns a snapshot after [_timeout].
   /// Emits incremental updates via the stream.
   ///
-  /// [port] 仅作用于 subnet sweep（每个 IP 探 `http://ip:port/health`）。
-  /// mDNS 路径继续用服务声明里的端口，跟该参数无关。
-  static Stream<List<LanScanResult>> scan({int port = 8765}) async* {
+  /// [ports] 仅作用于 subnet sweep：每个 IP × 每个 port 都会探一次 `/health`。
+  /// mDNS 路径继续用服务声明里的端口，跟这个参数无关。
+  static Stream<List<LanScanResult>> scan(
+      {Set<int> ports = const {8765}}) async* {
     final results = <String, LanScanResult>{}; // keyed by serverId
 
     void addOrUpdate(LanScanResult r) {
@@ -89,23 +90,27 @@ class LanScanner {
     }
 
     // Subnet sweep fallback
-    Future<void> runSubnetSweep(int targetPort) async {
+    Future<void> runSubnetSweep(Set<int> targetPorts) async {
+      if (targetPorts.isEmpty) return;
       final myIp = await _getLocalIp();
       if (myIp == null) return;
       final parts = myIp.split('.');
       if (parts.length != 4) return;
       final prefix = '${parts[0]}.${parts[1]}.${parts[2]}';
 
-      // Probe in batches of _maxConcurrent; stop early if controller closed.
-      final pending = List.generate(254, (i) => '$prefix.${i + 1}');
+      // 任务单位 = (ip, port)。批次内并发，避免一次撑爆 socket。
+      final pending = <_SweepTarget>[
+        for (int i = 0; i < 254; i++)
+          for (final p in targetPorts) _SweepTarget('$prefix.${i + 1}', p),
+      ];
       while (pending.isNotEmpty && !controller.isClosed) {
         final batch = pending.take(_maxConcurrent).toList();
         pending.removeRange(0, batch.length);
-        await Future.wait(batch.map((ip) async {
+        await Future.wait(batch.map((target) async {
           if (controller.isClosed) return;
-          final info = await _probeHealth(ip, targetPort);
+          final info = await _probeHealth(target.ip, target.port);
           if (info != null && !controller.isClosed) {
-            final r = _toResult(ip, targetPort, info);
+            final r = _toResult(target.ip, target.port, info);
             if (r != null) {
               addOrUpdate(r);
               controller.add(List.unmodifiable(results.values.toList()));
@@ -117,7 +122,7 @@ class LanScanner {
 
     // Run both in parallel; close controller after _timeout regardless.
     runMdns().ignore();
-    runSubnetSweep(port).ignore();
+    runSubnetSweep(ports).ignore();
     Future.delayed(_timeout, () {
       if (!controller.isClosed) controller.close();
     });
@@ -191,4 +196,10 @@ class LanScanner {
     }
     return null;
   }
+}
+
+class _SweepTarget {
+  final String ip;
+  final int port;
+  const _SweepTarget(this.ip, this.port);
 }

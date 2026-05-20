@@ -11,7 +11,6 @@ import '../i18n/strings.dart';
 import '../state/lan_scanner.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
-import 'qr_scan_screen.dart';
 
 /// Single-page sequential pairing flow.
 /// Returns a [PairedServer] when pairing succeeds, or null when cancelled.
@@ -33,7 +32,6 @@ enum _PairPhase {
   autoDenied,  // denied — show "Use PIN instead" button
   pinInput,    // 6-box OTP input
   pinLoading,  // spinner while submitting PIN
-  qrLoading,   // spinner while submitting QR
   success,     // green check + name edit + Done button
 }
 
@@ -278,62 +276,6 @@ class _PairSheetState extends ConsumerState<PairSheet> {
     }
   }
 
-  // ─── QR pair ───────────────────────────────────────────────────────────────
-
-  Future<void> _pairWithQr() async {
-    final result = await Navigator.of(context).push<PawTermQrResult>(
-      MaterialPageRoute(builder: (_) => const QrScanScreen()),
-    );
-    if (result == null || !mounted) return;
-
-    setState(() {
-      _phase = _PairPhase.qrLoading;
-      _pinError = null;
-    });
-
-    try {
-      final deviceId = await PairedServersNotifier.getOrCreateDeviceId();
-      final deviceName = PairedServersNotifier.deviceName;
-      final resp = await http
-          .post(
-            Uri.parse('${result.url}/pair/qr-claim'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ${result.token}',
-            },
-            body: jsonEncode({
-              'deviceId': deviceId,
-              'deviceName': deviceName,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (!mounted) return;
-
-      if (resp.statusCode == 200) {
-        final body = jsonDecode(resp.body) as Map<String, dynamic>;
-        final deviceToken = body['deviceToken'] as String;
-        final serverId =
-            body['serverId'] as String? ?? widget.server.serverId;
-        await _saveImmediately(serverId, deviceToken);
-      } else {
-        final s = ref.read(stringsProvider);
-        setState(() {
-          _phase = _PairPhase.pinInput;
-          _pinError =
-              s.pairSheetFailed.replaceAll('{error}', '${resp.statusCode}');
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      final s = ref.read(stringsProvider);
-      setState(() {
-        _phase = _PairPhase.pinInput;
-        _pinError = s.pairSheetConnFailed;
-      });
-    }
-  }
-
   // ─── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -410,8 +352,6 @@ class _PairSheetState extends ConsumerState<PairSheet> {
         return _buildPinInput(t, s);
       case _PairPhase.pinLoading:
         return _buildSpinner(t, s.pairSheetPairBtn);
-      case _PairPhase.qrLoading:
-        return _buildSpinner(t, s.pairSheetQrBtn);
       case _PairPhase.success:
         return _buildSuccess(t, s);
     }
@@ -541,22 +481,6 @@ class _PairSheetState extends ConsumerState<PairSheet> {
               s.pairSheetPairBtn,
               style:
                   const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        // QR link at bottom
-        Center(
-          child: GestureDetector(
-            onTap: _pairWithQr,
-            child: Text(
-              s.pairSheetScanQr,
-              style: TextStyle(
-                fontSize: 13,
-                color: t.accent,
-                decoration: TextDecoration.underline,
-                decorationColor: t.accent,
-              ),
             ),
           ),
         ),

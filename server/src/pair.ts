@@ -11,6 +11,9 @@ const PAIR_REQUEST_EXPIRE_MS = 60 * 1000; // 60 seconds
 const PAIR_REQUEST_IP_COOLDOWN_MS = 30 * 1000; // 30 seconds between requests per IP
 const PAIR_REQUEST_MAX_PENDING = 5; // global limit on pending requests
 
+// QR claim constants
+const QR_CLAIM_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 interface PairingWindow {
   pin: string;
   expiresAt: number;
@@ -19,6 +22,11 @@ interface PairingWindow {
 interface RateLimitEntry {
   failures: number;
   cooldownUntil: number | null;
+}
+
+interface QrClaim {
+  code: string;
+  expiresAt: number;
 }
 
 export interface PairRequest {
@@ -43,6 +51,10 @@ class PairingManager {
   private pairPollListeners = new Map<string, Set<(req: PairRequest) => void>>();
   // Cleanup timer
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  // QR claims: one-shot codes that exchange for a deviceToken.
+  // 取代旧的"QR 直接塞 adminToken"设计 —— QR 截图被泄露也只能换一次设备，且 5min 后失效。
+  private qrClaims = new Map<string, QrClaim>();
 
   /**
    * Open a new pairing window. Generates a 6-digit PIN, valid for 5 minutes.
@@ -160,6 +172,46 @@ class PairingManager {
     await persistPairedDevices();
     adminEventBus.emitEvent({ type: 'device_revoked', deviceId });
     return true;
+  }
+
+  // ===== QR claims =====
+
+  /**
+   * 生成一个一次性 QR claim code。Web 端从 `/admin/qr` 拿到 QR 时调用。
+   * code 长 32 hex 字符；5min 过期；一次消耗就删除。
+   *
+   * 旧设计是 QR 直接塞 adminToken —— 截图泄露 = 服务端永久失守；现在 QR 内只带
+   * 短期 claim，泄露最差情况是别人换走一台设备，仍可由 admin 在 web 上 revoke。
+   */
+  createQrClaim(): { code: string; expiresAt: number } {
+    this.startQrClaimSweeper();
+    const code = randomBytes(16).toString('hex');
+    const expiresAt = Date.now() + QR_CLAIM_TTL_MS;
+    this.qrClaims.set(code, { code, expiresAt });
+    return { code, expiresAt };
+  }
+
+  /**
+   * 消耗一个 claim：存在 + 未过期则返回 true 并删除条目；否则返回 false。
+   */
+  consumeQrClaim(code: string): boolean {
+    const entry = this.qrClaims.get(code);
+    if (!entry) return false;
+    this.qrClaims.delete(code);
+    if (entry.expiresAt < Date.now()) return false;
+    return true;
+  }
+
+  private qrClaimSweeperTimer: ReturnType<typeof setInterval> | null = null;
+  private startQrClaimSweeper(): void {
+    if (this.qrClaimSweeperTimer !== null) return;
+    this.qrClaimSweeperTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [code, entry] of this.qrClaims) {
+        if (entry.expiresAt < now) this.qrClaims.delete(code);
+      }
+    }, 60_000);
+    if (this.qrClaimSweeperTimer.unref) this.qrClaimSweeperTimer.unref();
   }
 
   // ===== Phone-triggered pair requests =====
