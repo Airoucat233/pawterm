@@ -37,8 +37,8 @@ SEMVER="${CURRENT%%+*}"
 IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
 
 echo
-echo "  current: \033[36m$CURRENT\033[0m"
-[[ $DEV -eq 1 ]] && echo "  mode   : dev (tag: dev/server-v*, npm tag: dev)"
+printf "  current: \033[36m%s\033[0m\n" "$CURRENT"
+[[ $DEV -eq 1 ]] && echo "  mode   : dev (tag: dev-server-v*, npm tag: dev)"
 echo
 
 # -------- 2. Bump --------
@@ -66,9 +66,9 @@ case "$CHOICE" in
 esac
 
 if [[ $DEV -eq 1 ]]; then
-  TAG="dev/server-v$NEW"
+  TAG="dev-server-v$NEW"
 else
-  TAG="release/server-v$NEW"
+  TAG="release-server-v$NEW"
 fi
 
 echo

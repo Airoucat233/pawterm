@@ -50,9 +50,9 @@ SEMVER="${CURRENT%%+*}"
 
 if [[ $LOCAL -eq 1 ]]; then
   if [[ $DEV -eq 1 ]]; then
-    TAG="dev/v$SEMVER"
+    TAG="dev-v$SEMVER"
   else
-    TAG="release/v$SEMVER"
+    TAG="release-v$SEMVER"
   fi
   echo
   printf "  version : \033[36m%s\033[0m  →  tag: \033[1m%s\033[0m\n" "$CURRENT" "$TAG"
@@ -204,9 +204,9 @@ case "$CHOICE" in
 esac
 
 if [[ $DEV -eq 1 ]]; then
-  TAG="dev/v${NEW%%+*}"
+  TAG="dev-v${NEW%%+*}"
 else
-  TAG="release/v${NEW%%+*}"
+  TAG="release-v${NEW%%+*}"
 fi
 
 echo

@@ -3,7 +3,10 @@ name: Dev Release
 on:
   push:
     tags:
-      - 'dev/v*'
+      - 'dev-v*'
+
+permissions:
+  contents: write
 
 jobs:
   check:
@@ -68,7 +71,7 @@ jobs:
         run: |
           SERVER=$(python3 -c "import json; print(json.load(open('server/package.json'))['version'])")
           TAG="${{ github.ref_name }}"
-          APP="${TAG#dev/v}"
+          APP="${TAG#dev-v}"
           echo "server=$SERVER" >> "$GITHUB_OUTPUT"
           echo "app=$APP"      >> "$GITHUB_OUTPUT"
 
@@ -80,7 +83,7 @@ jobs:
           generate_release_notes: true
           prerelease: true
           files: |
-            artifacts/android-apks/dist/*.apk
+            artifacts/android-apks/*.apk
           body: |
             > **Dev build** — not for production use.
 
