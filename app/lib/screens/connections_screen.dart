@@ -210,8 +210,8 @@ class _EmptyState extends ConsumerWidget {
 }
 
 class _ConnectionList extends ConsumerWidget {
-  final List<ServerEntry> connections;
-  final ServerEntry? active;
+  final List<Connection> connections;
+  final Connection? active;
   const _ConnectionList({required this.connections, required this.active});
 
   @override
@@ -264,7 +264,7 @@ class _SectionLabel extends StatelessWidget {
 }
 
 class _ConnCard extends ConsumerWidget {
-  final ServerEntry entry;
+  final Connection entry;
   final bool isActive;
   const _ConnCard({required this.entry, required this.isActive});
 
@@ -340,12 +340,20 @@ class _ConnCard extends ConsumerWidget {
     );
   }
 
-  void _connect(BuildContext context, WidgetRef ref) {
+  Future<void> _connect(BuildContext context, WidgetRef ref) async {
     ref.read(activeConnectionProvider.notifier).state = entry;
     ref.read(connectionsProvider.notifier).touch(entry.id);
-    Navigator.of(context).push(
+    final result = await Navigator.of(context).push<String>(
       CupertinoPageRoute(builder: (_) => const ProjectPickerScreen()),
     );
+    if (result == 'repair' && context.mounted) {
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => const AddConnectionSheet(),
+      );
+    }
   }
 
   void _showActions(BuildContext context, WidgetRef ref) {
