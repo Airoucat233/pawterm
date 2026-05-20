@@ -177,42 +177,62 @@ export async function removeProject(rawPath: string): Promise<boolean> {
 }
 
 async function persistProjects(): Promise<void> {
-  const current: Record<string, unknown> = existsSync(configPath)
-    ? (JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>)
-    : { host: settings.host, port: settings.port };
-  current['projects'] = settings.projects.map((p) => ({ name: p.name, path: p.path }));
-  await writeFile(configPath, JSON.stringify(current, null, 2));
+  await writeConfigPreserving((c) => {
+    c['projects'] = settings.projects.map((p) => ({ name: p.name, path: p.path }));
+  });
 }
 
 export async function setPassword(password: string): Promise<void> {
-  const current: Record<string, unknown> = existsSync(configPath)
-    ? (JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>)
-    : {};
-  current['password'] = password;
-  await writeFile(configPath, JSON.stringify(current, null, 2));
+  await writeConfigPreserving((c) => {
+    c['password'] = password;
+  });
   (settings as any).password = password;
 }
 
 export async function clearPassword(): Promise<void> {
-  const current: Record<string, unknown> = existsSync(configPath)
-    ? (JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>)
-    : {};
-  delete current['password'];
-  await writeFile(configPath, JSON.stringify(current, null, 2));
+  await writeConfigPreserving((c) => {
+    delete c['password'];
+  });
   (settings as any).password = undefined;
 }
 
 export async function persistPairedDevices(): Promise<void> {
-  const current: Record<string, unknown> = existsSync(configPath)
-    ? (JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>)
-    : { host: settings.host, port: settings.port };
-  current['paired_devices'] = settings.pairedDevices.map((d) => ({
-    device_id: d.deviceId,
-    name: d.name,
-    device_token: d.deviceToken,
-    paired_at: d.pairedAt,
-    last_seen: d.lastSeen,
-  }));
+  await writeConfigPreserving((c) => {
+    c['paired_devices'] = settings.pairedDevices.map((d) => ({
+      device_id: d.deviceId,
+      name: d.name,
+      device_token: d.deviceToken,
+      paired_at: d.pairedAt,
+      last_seen: d.lastSeen,
+    }));
+  });
+}
+
+/**
+ * 读盘 → 修改 → 写盘，磁盘异常（不存在 / 空文件 / JSON 损坏）时回退到 `{}` 并
+ * 用内存中的 `settings` 重建 token / server_id / host / port 等关键字段，
+ * 防止一次 writeFile 半成品状态把整份配置带崩。
+ *
+ * NB: 这里没加跨调用的串行保护，若并发 persist 仍可能丢更新；那是另一个修。
+ */
+async function writeConfigPreserving(
+  mutator: (current: Record<string, unknown>) => void,
+): Promise<void> {
+  let current: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      const text = readFileSync(configPath, 'utf-8').trim();
+      if (text) current = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      // 文件被写到一半 / 被外部破坏 —— 用 settings 重建，下面会补关键字段。
+      current = {};
+    }
+  }
+  if (current['host'] === undefined) current['host'] = settings.host;
+  if (current['port'] === undefined) current['port'] = settings.port;
+  if (current['token'] === undefined) current['token'] = settings.adminToken;
+  if (current['server_id'] === undefined) current['server_id'] = settings.serverId;
+  mutator(current);
   await writeFile(configPath, JSON.stringify(current, null, 2));
 }
 
