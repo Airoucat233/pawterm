@@ -351,7 +351,7 @@ class _ConnCard extends ConsumerWidget {
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (_) => const AddConnectionSheet(),
+        builder: (_) => AddConnectionSheet(editing: entry),
       );
     }
   }
