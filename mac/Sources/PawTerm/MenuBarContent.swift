@@ -104,9 +104,6 @@ struct MenuBarContent: View {
                 HStack(spacing: 5) {
                     Image(nsImage: dotImage(color: statusDotNSColor, size: 7))
                     Text(statusText)
-                    if let ver = serverManager.currentServerVersion {
-                        Text("v\(ver)").foregroundColor(.secondary).font(.caption)
-                    }
                 }
             }
 
@@ -218,7 +215,9 @@ struct MenuBarContent: View {
 
     private var statusText: String {
         switch serverManager.status {
-        case .running:        return "Running on :\(serverManager.port)"
+        case .running:
+            let ver = serverManager.currentServerVersion.map { " v\($0)" } ?? ""
+            return "Running on :\(serverManager.port)\(ver)"
         case .starting:       return "Starting…"
         case .stopping:       return "Stopping…"
         case .stopped:        return "Stopped"
