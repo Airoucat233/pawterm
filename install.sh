@@ -96,7 +96,7 @@ if [ "$OS" = "Darwin" ]; then
   ZIP_URL="$(curl -fsSL "$RELEASE_API" \
     | grep '"browser_download_url"' \
     | grep 'mac\.zip"' \
-    | head -1 \
+    | tail -1 \
     | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')"
 
   if [ -z "$ZIP_URL" ]; then
