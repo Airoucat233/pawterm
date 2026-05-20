@@ -365,7 +365,6 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                                 cwd: p.path,
                                 resumeId: s.sessionId,
                                 label: '${p.name} · ${s.displayTitle}',
-                                preloadedHolder: s.holder,
                               );
                               widget.onPop();
                             },

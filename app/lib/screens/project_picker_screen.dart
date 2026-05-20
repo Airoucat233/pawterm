@@ -197,7 +197,6 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       cwd: project.path,
       label: '${project.name} · ${session.displayTitle}',
       resumeId: session.sessionId,
-      preloadedHolder: session.holder,
     );
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),

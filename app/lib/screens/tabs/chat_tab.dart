@@ -277,9 +277,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 处理会话冲突（另一个 CLI 进程持有该会话）。
   /// 弹窗让用户选择：旁观、接管、或取消。
-  ///
-  /// 当通过 preloadedHolder 快速路径进入时，历史尚未开始加载；
-  /// 用户确认继续（旁观/接管）后再触发，避免取消时的多余请求。
   Future<void> _handleConflict(
     String httpBase,
     CurrentSession session,
