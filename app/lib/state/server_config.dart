@@ -200,4 +200,9 @@ final connectionsProvider =
     StateNotifierProvider<ConnectionsNotifier, List<Connection>>(
         (_) => ConnectionsNotifier());
 
+/// 本设备的唯一 deviceId，首次启动时生成并持久化。
+final deviceIdProvider = FutureProvider<String>(
+  (_) => ConnectionsNotifier.getOrCreateDeviceId(),
+);
+
 final activeConnectionProvider = StateProvider<Connection?>((_) => null);

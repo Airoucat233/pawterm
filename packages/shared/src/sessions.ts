@@ -14,19 +14,11 @@ export interface SessionSummary {
   cwd?: string | null;
   num_messages?: number | null;
   total_cost_usd?: number | null;
-  /** 若该 session 当前被某个 claude CLI 进程持有，此字段包含进程信息。null 表示无持有者。 */
-  holder?: SessionHolder | null;
-}
-
-
-/** 一条 session 当前的持有者：某个活着的 claude CLI 进程。 */
-export interface SessionHolder {
-  pid: number;
-  cwd: string;
-  startedAt: number;
-  kind?: string;
-}
-
-export interface SessionHolderResponse {
-  holder: SessionHolder | null;
+  /**
+   * 当前持有该 session 的设备 id。
+   *   null / undefined  → 空闲
+   *   "server"          → PC 端 claude CLI 占用（无 activeRun）
+   *   其他字符串        → 某台移动设备通过 app 正在 streaming
+   */
+  holder_device_id?: string | null;
 }

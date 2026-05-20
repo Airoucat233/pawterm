@@ -16,7 +16,7 @@ import type { SessionSummary } from '@pawterm/shared';
 import { isPathAllowed } from './config.js';
 import { messageToWire } from './serialize.js';
 import { findAllHolders } from './holder-detect.js';
-import type { SessionHolder } from './holder-detect.js';
+import { getActiveRunHolder } from './chat-rest.js';
 
 import { readFile, access, readdir, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -95,7 +95,7 @@ function requirePath(cwd: string | undefined): string {
   return cwd;
 }
 
-function toSummary(s: SDKSessionInfo, holder: SessionHolder | null = null): SessionSummary {
+function toSummary(s: SDKSessionInfo, holderDeviceId: string | null = null): SessionSummary {
   return {
     session_id: s.sessionId,
     summary: s.summary ?? s.firstPrompt ?? null,
@@ -105,7 +105,7 @@ function toSummary(s: SDKSessionInfo, holder: SessionHolder | null = null): Sess
     cwd: s.cwd ?? null,
     num_messages: null,
     total_cost_usd: null,
-    holder: holder,
+    holder_device_id: holderDeviceId,
   };
 }
 
@@ -147,10 +147,15 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
       if (jsonlPath && await isSidechainSession(jsonlPath)) continue;
       result.push(s);
     }
-    // 一次性扫描 ~/.claude/sessions/ 获取所有活跃 holder，
-    // 避免为每条 session 单独扫描（O(n) 次目录读取 → 1 次）。
+    // 一次性扫描 ~/.claude/sessions/ 获取所有 PC CLI 持有者。
+    // 优先用 activeRun 的 holderDeviceId（移动端持有），其次才看 pid.json（PC CLI）。
     const allHolders = await findAllHolders();
-    return result.map((s) => toSummary(s, allHolders.get(s.sessionId) ?? null));
+    return result.map((s) => {
+      const activeHolder = getActiveRunHolder(s.sessionId);
+      if (activeHolder) return toSummary(s, activeHolder);
+      if (allHolders.has(s.sessionId)) return toSummary(s, 'server');
+      return toSummary(s, null);
+    });
   });
 
   app.get<{ Params: { id: string }; Querystring: { cwd: string } }>(

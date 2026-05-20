@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -263,11 +265,25 @@ class _SessionSwitcherSheet extends ConsumerStatefulWidget {
 
 class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
   late final Set<String> _expanded;
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
     _expanded = Set.of(widget.initialExpanded);
+    // 每 5s 刷新一次已展开项目的 session 列表，实时感知 holderDeviceId 变化。
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted) return;
+      for (final p in _expanded) {
+        ref.invalidate(sessionsProvider(p));
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -424,6 +440,7 @@ class _SheetProjectNode extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
     final isCurrent = currentCwd == project.path;
+    final myDeviceId = ref.watch(deviceIdProvider).valueOrNull ?? '';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -513,6 +530,7 @@ class _SheetProjectNode extends ConsumerWidget {
                               session: s,
                               isCurrent: s.sessionId == currentSessionId,
                               onTap: () => onPickSession(s),
+                              myDeviceId: myDeviceId,
                             ),
                         ],
                       ),
@@ -531,7 +549,8 @@ class _SheetSessionTile extends StatelessWidget {
   final SessionSummary session;
   final bool isCurrent;
   final VoidCallback onTap;
-  const _SheetSessionTile({required this.session, required this.isCurrent, required this.onTap});
+  final String myDeviceId;
+  const _SheetSessionTile({required this.session, required this.isCurrent, required this.onTap, required this.myDeviceId});
 
   @override
   Widget build(BuildContext context) {
@@ -581,18 +600,27 @@ class _SheetSessionTile extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 13,
                             fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w400,
-                            color: isCurrent ? t.accent : (session.holder != null ? t.textMuted : t.text),
+                            color: isCurrent ? t.accent : (session.holderDeviceId != null ? t.textMuted : t.text),
                           ),
                         ),
                       ),
-                      if (session.holder != null) ...[
+                      if (session.holderDeviceId != null) ...[
                         const SizedBox(width: 6),
-                        Container(
-                          width: 6, height: 6,
-                          decoration: BoxDecoration(color: t.warning, shape: BoxShape.circle),
-                        ),
-                        const SizedBox(width: 3),
-                        Text('占用中', style: TextStyle(fontSize: 10, color: t.warning)),
+                        if (session.holderDeviceId == myDeviceId) ...[
+                          Container(
+                            width: 6, height: 6,
+                            decoration: BoxDecoration(color: t.success, shape: BoxShape.circle),
+                          ),
+                          const SizedBox(width: 3),
+                          Text('进行中', style: TextStyle(fontSize: 10, color: t.success)),
+                        ] else ...[
+                          Container(
+                            width: 6, height: 6,
+                            decoration: BoxDecoration(color: t.warning, shape: BoxShape.circle),
+                          ),
+                          const SizedBox(width: 3),
+                          Text('占用中', style: TextStyle(fontSize: 10, color: t.warning)),
+                        ],
                       ],
                     ],
                   ),

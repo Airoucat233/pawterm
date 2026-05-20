@@ -20,6 +20,8 @@ interface RunEntry {
   writers: Set<{ write: (s: string) => void; end: () => void }>;
   /** True once a result event has been emitted for this turn. */
   resultReceived: boolean;
+  /** Device id of the client currently streaming this run. Cleared when grace starts. */
+  holderDeviceId: string;
 }
 
 /** Key = Claude UUID (same as jsonl filename). Only present during an active turn. */
@@ -49,6 +51,8 @@ function cancelGrace(entry: RunEntry): void {
 function startGrace(uuid: string, entry: RunEntry, log?: FastifyInstance['log']): void {
   if (entry.graceTimer) return;
   log?.info({ uuid, graceMs: GRACE_MS }, 'run: grace started');
+  // Clear holderDeviceId so sessions list no longer shows this session as "in use".
+  entry.holderDeviceId = '';
   entry.graceTimer = setTimeout(() => {
     closeRun(uuid, log);
   }, GRACE_MS);
@@ -118,6 +122,16 @@ async function consumeSdk(uuid: string, entry: RunEntry, log: FastifyInstance['l
   }
 }
 
+/**
+ * Returns the holderDeviceId for a given uuid if there is an active (non-grace) run.
+ * Used by sessions-api to annotate session summaries.
+ */
+export function getActiveRunHolder(uuid: string): string | null {
+  const entry = activeRuns.get(uuid);
+  if (!entry || !entry.holderDeviceId) return null;
+  return entry.holderDeviceId;
+}
+
 export async function registerChatRest(app: FastifyInstance): Promise<void> {
   /**
    * POST /chat/stream — send a message and start streaming the response.
@@ -128,7 +142,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
    * 409 if a run is already active for this uuid.
    */
   app.post<{
-    Body: { uuid?: string; cwd?: string; text?: string; model?: string; permission_mode?: PermissionMode };
+    Body: { uuid?: string; cwd?: string; text?: string; model?: string; permission_mode?: PermissionMode; device_id?: string };
   }>(
     '/chat/stream',
     async (req, reply) => {
@@ -143,6 +157,8 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       const cwd = resolve(body.cwd);
       if (!isPathAllowed(cwd)) { reply.code(403); return { error: `Project not allowed: ${cwd}` }; }
 
+      const deviceId = body.device_id ?? 'unknown';
+
       if (activeRuns.has(uuid)) {
         const existing = activeRuns.get(uuid)!;
         if (existing.resultReceived) {
@@ -151,6 +167,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           req.log.info({ uuid }, 'run: new turn during grace, cancelling grace');
           cancelGrace(existing);
           existing.resultReceived = false;
+          existing.holderDeviceId = deviceId;
           existing.buffer = new EventBuffer(2000);
           existing.session.pushUserMessage(body.text);
           return { ok: true };
@@ -178,6 +195,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         askRegistry,
         writers: new Set(),
         resultReceived: false,
+        holderDeviceId: deviceId,
       };
       activeRuns.set(uuid, entry);
       req.log.info({ uuid, cwd, resume: !!sessionInfo }, 'run: created');
@@ -328,13 +346,31 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
   );
 
   /**
-   * POST /chat/takeover — kill the holder process for a session so this client can take over.
-   * Returns 200 { ok: true } if the holder is gone (or was already gone).
+   * POST /chat/takeover — take over a session from another holder.
+   *
+   * If there is an active run (mobile device holding it): interrupt the run and
+   * transfer holderDeviceId to the requesting device.
+   * If only a pid.json holder (PC CLI): send SIGTERM and wait.
+   *
+   * Returns 200 { ok: true } if the session is now free to use.
    * Returns 409 if the holder could not be stopped within 3 s.
    */
-  app.post<{ Body: { uuid?: string } }>('/chat/takeover', async (req, reply) => {
+  app.post<{ Body: { uuid?: string; device_id?: string } }>('/chat/takeover', async (req, reply) => {
     const uuid = req.body?.uuid;
+    const deviceId = req.body?.device_id ?? 'unknown';
     if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
+
+    // Case 1: active run held by another mobile device → interrupt + transfer ownership
+    const entry = activeRuns.get(uuid);
+    if (entry && entry.holderDeviceId && entry.holderDeviceId !== deviceId) {
+      await entry.session.interrupt();
+      entry.holderDeviceId = deviceId;
+      entry.resultReceived = false;
+      entry.buffer = new EventBuffer(2000);
+      return { ok: true };
+    }
+
+    // Case 2: PC CLI holding via pid.json → SIGTERM
     const holder = await findHolder(uuid);
     if (!holder) return { ok: true };
     const killed = await killHolder(holder.pid);

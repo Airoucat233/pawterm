@@ -997,11 +997,11 @@ class _SessionRow extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 13,
-                            color: session.holder != null ? t.textMuted : t.text,
+                            color: session.holderDeviceId != null ? t.textMuted : t.text,
                           ),
                         ),
                       ),
-                      if (session.holder != null) ...[
+                      if (session.holderDeviceId != null) ...[
                         const SizedBox(width: 6),
                         Container(
                           width: 6, height: 6,

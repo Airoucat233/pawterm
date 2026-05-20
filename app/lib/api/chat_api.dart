@@ -2,41 +2,19 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-/// A Claude CLI process currently holding (writing to) a session.
-class SessionHolder {
-  final int pid;
-  final String cwd;
-  final int startedAt;
-  final String? kind;
-
-  const SessionHolder({
-    required this.pid,
-    required this.cwd,
-    required this.startedAt,
-    this.kind,
-  });
-
-  factory SessionHolder.fromJson(Map<String, dynamic> json) => SessionHolder(
-        pid: (json['pid'] as num).toInt(),
-        cwd: json['cwd'] as String? ?? '',
-        startedAt: (json['startedAt'] as num?)?.toInt() ?? 0,
-        kind: json['kind'] as String?,
-      );
-}
-
 /// Run state reported by GET /chat/status?uuid=
 enum TurnState { live, done, running, unknown }
 
 class TurnStatus {
   final TurnState state;
-  /// Only present when state == running.
-  final SessionHolder? holder;
+  /// Only present when state == running: the device id holding the session.
+  /// "server" means a PC CLI process; any other string is a mobile device id.
+  final String? holderDeviceId;
 
-  TurnStatus(this.state, {this.holder});
+  TurnStatus(this.state, {this.holderDeviceId});
 
   factory TurnStatus.fromJson(Map<String, dynamic> j) {
     final s = j['state'] as String? ?? 'unknown';
-    final h = j['holder'] as Map<String, dynamic>?;
     return TurnStatus(
       switch (s) {
         'live' => TurnState.live,
@@ -44,7 +22,7 @@ class TurnStatus {
         'running' => TurnState.running,
         _ => TurnState.unknown,
       },
-      holder: h != null ? SessionHolder.fromJson(h) : null,
+      holderDeviceId: j['holder_device_id'] as String?,
     );
   }
 }
@@ -74,6 +52,7 @@ class ChatApi {
     required String uuid,
     required String cwd,
     required String text,
+    required String deviceId,
     String? model,
     String? permissionMode,
   }) async {
@@ -84,6 +63,7 @@ class ChatApi {
         'uuid': uuid,
         'cwd': cwd,
         'text': text,
+        'device_id': deviceId,
         if (model != null) 'model': model,
         if (permissionMode != null) 'permission_mode': permissionMode,
       }),
@@ -158,13 +138,13 @@ class ChatApi {
     );
   }
 
-  /// Kill the holder process for a session so this client can take over.
+  /// Take over a session from another holder.
   /// Throws [ChatApiException] with status 409 if the holder could not be stopped.
-  Future<void> takeover(String uuid) async {
+  Future<void> takeover(String uuid, {required String deviceId}) async {
     final resp = await http.post(
       Uri.parse('$httpBase/chat/takeover'),
       headers: {'Content-Type': 'application/json', ..._auth},
-      body: jsonEncode({'uuid': uuid}),
+      body: jsonEncode({'uuid': uuid, 'device_id': deviceId}),
     );
     if (resp.statusCode != 200) {
       throw ChatApiException(resp.statusCode, resp.body);

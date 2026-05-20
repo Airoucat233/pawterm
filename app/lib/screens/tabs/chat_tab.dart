@@ -72,6 +72,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   SseClient? _sseClient;
   StreamSubscription<SseEvent>? _sseSub;
   String? _serverToken;
+  String _deviceId = '';
   /// Claude session UUID. For new sessions: client-generated and persisted.
   /// For resumed sessions: equals currentSession.resumeId.
   String? _sessionId;
@@ -83,7 +84,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   bool _connected = false;
   bool _authFailed = false;
   bool _observeMode = false;
-  SessionHolder? _observeHolder;
+  String? _observeHolderDeviceId;
   Timer? _observeTimer;
   bool _busy = false;
   DateTime? _busyStartedAt;
@@ -254,7 +255,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _connected = false;
       _authFailed = false;
       _observeMode = false;
-      _observeHolder = null;
+      _observeHolderDeviceId = null;
       _busy = false;
       _error = null;
       _boundKey = key;
@@ -275,23 +276,22 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     unawaited(_connectToSession(config.httpBase, session));
   }
 
-  /// 处理会话冲突（另一个 CLI 进程持有该会话）。
+  /// 处理会话冲突（另一个设备持有该会话）。
   /// 弹窗让用户选择：旁观、接管、或取消。
   Future<void> _handleConflict(
     String httpBase,
     CurrentSession session,
     String uuid,
-    SessionHolder holder,
+    String holderDeviceId,
   ) async {
-    final choice = await _showConflictDialog(holder);
+    final choice = await _showConflictDialog(holderDeviceId);
     if (!mounted) return;
     switch (choice) {
       case _ConflictChoice.observe:
-        // 旁观前先加载一次历史，确保消息列表有内容。
         if (session.resumeId != null && _messages.isEmpty) {
           _loadHistory(httpBase, session.cwd, session.resumeId!);
         }
-        _startObserveMode(httpBase, session, uuid, holder);
+        _startObserveMode(httpBase, session, uuid, holderDeviceId);
       case _ConflictChoice.takeover:
         if (session.resumeId != null && _messages.isEmpty) {
           _loadHistory(httpBase, session.cwd, session.resumeId!);
@@ -303,33 +303,24 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  Future<_ConflictChoice?> _showConflictDialog(SessionHolder holder) async {
+  Future<_ConflictChoice?> _showConflictDialog(String holderDeviceId) async {
     final t = AppTokens.of(context);
-    final fmt = DateTime.fromMillisecondsSinceEpoch(holder.startedAt);
-    final ago = DateTime.now().difference(fmt);
-    final agoStr = ago.inMinutes < 1
-        ? '刚刚'
-        : ago.inHours < 1
-            ? '${ago.inMinutes} 分钟前'
-            : ago.inDays < 1
-                ? '${ago.inHours} 小时前'
-                : '${ago.inDays} 天前';
+    final isServer = holderDeviceId == 'server';
+    final holderLabel = isServer ? 'PC 端 Claude CLI' : '另一台设备 (${holderDeviceId.substring(0, 8)}…)';
     return showDialog<_ConflictChoice>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: t.surface,
-        title: Text('会话正被另一个 Claude 进程使用',
+        title: Text('会话正被占用',
             style: TextStyle(color: t.text, fontSize: 15, fontWeight: FontWeight.w600)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _kv('PID', '${holder.pid}', t),
-            _kv('启动于', agoStr, t),
-            if (holder.cwd.isNotEmpty) _kv('cwd', holder.cwd, t),
+            _kv('占用方', holderLabel, t),
             const SizedBox(height: 10),
             Text(
-              '旁观：静默跟随对话进展，可随时一键接管。\n接管：终止对端进程，本端取得控制权。',
+              '旁观：静默跟随对话进展，可随时一键接管。\n接管：中断对端，本端取得控制权。',
               style: TextStyle(color: t.textMuted, fontSize: 12, height: 1.5),
             ),
           ],
@@ -356,11 +347,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     String httpBase,
     CurrentSession session,
     String uuid,
-    SessionHolder holder,
+    String holderDeviceId,
   ) {
     setState(() {
       _observeMode = true;
-      _observeHolder = holder;
+      _observeHolderDeviceId = holderDeviceId;
     });
     _stopObserveTimer();
     _observeTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
@@ -369,12 +360,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       try {
         final status = await _chatApi?.status(uuid);
         if (!mounted) return;
-        if (status != null && status.state != TurnState.running) {
+        if (status != null &&
+            (status.state != TurnState.running ||
+                status.holderDeviceId == _deviceId)) {
           _stopObserveTimer();
           if (!mounted) return;
           setState(() {
             _observeMode = false;
-            _observeHolder = null;
+            _observeHolderDeviceId = null;
           });
           // 等 400ms 让 claude 子进程完成 pid.json 清理，再重连避免
           // status 短暂窗口内仍返回 running 导致再次弹框。
@@ -412,7 +405,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   Future<void> _doTakeover(String httpBase, CurrentSession session, String uuid) async {
     try {
-      await _chatApi!.takeover(uuid);
+      await _chatApi!.takeover(uuid, deviceId: _deviceId);
     } catch (e) {
       if (mounted) setState(() => _error = '接管失败: $e');
       return;
@@ -435,7 +428,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _stopObserveTimer();
     setState(() {
       _observeMode = false;
-      _observeHolder = null;
+      _observeHolderDeviceId = null;
     });
     unawaited(_doTakeover(config.httpBase, session, uuid));
   }
@@ -446,6 +439,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final uuid = session.resumeId ?? const Uuid().v4();
     _sessionId = uuid;
     unawaited(_persistUuid(uuid));
+    _deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
 
     final api = ChatApi(httpBase, token: _serverToken);
     _chatApi = api;
@@ -465,12 +459,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (!mounted) return;
 
     if (turnStatus.state == TurnState.running) {
-      final holder = turnStatus.holder;
+      final holderDeviceId = turnStatus.holderDeviceId;
       setState(() => _attempting = false);
-      if (holder != null) {
-        unawaited(_handleConflict(httpBase, session, uuid, holder));
+      if (holderDeviceId != null && holderDeviceId != _deviceId) {
+        unawaited(_handleConflict(httpBase, session, uuid, holderDeviceId));
       } else {
-        // No holder detail — treat as idle.
+        // No holder info, or we are the holder — treat as idle.
         setState(() { _connected = true; _error = null; });
       }
       return;
@@ -684,7 +678,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _attempting = false;
       _error = null;
       _observeMode = false;
-      _observeHolder = null;
+      _observeHolderDeviceId = null;
     });
   }
 
@@ -995,6 +989,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         uuid: uuid,
         cwd: session.cwd,
         text: text,
+        deviceId: _deviceId,
         model: model.id,
         permissionMode: permMode.wire,
       ).then((_) {
@@ -1173,9 +1168,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
     return Column(
       children: [
-        if (_observeMode && _observeHolder != null)
+        if (_observeMode && _observeHolderDeviceId != null)
           _ObserveBanner(
-            holder: _observeHolder!,
+            holderDeviceId: _observeHolderDeviceId!,
             onTakeover: _takeoverFromObserve,
           )
         else
@@ -1336,20 +1331,16 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 }
 
 class _ObserveBanner extends StatelessWidget {
-  final SessionHolder holder;
+  final String holderDeviceId;
   final VoidCallback onTakeover;
-  const _ObserveBanner({required this.holder, required this.onTakeover});
+  const _ObserveBanner({required this.holderDeviceId, required this.onTakeover});
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final ago = DateTime.now().difference(
-        DateTime.fromMillisecondsSinceEpoch(holder.startedAt));
-    final agoStr = ago.inMinutes < 1
-        ? '刚刚'
-        : ago.inHours < 1
-            ? '${ago.inMinutes} 分钟前'
-            : '${ago.inHours} 小时前';
+    final label = holderDeviceId == 'server'
+        ? 'PC 端 Claude CLI'
+        : '设备 ${holderDeviceId.substring(0, 8)}…';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       color: t.surfaceHi,
@@ -1359,7 +1350,7 @@ class _ObserveBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '旁观中 · PID ${holder.pid} · $agoStr',
+              '旁观中 · $label',
               style: TextStyle(fontSize: 12, color: t.textMuted),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
