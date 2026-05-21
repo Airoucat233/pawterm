@@ -82,6 +82,23 @@ export const KNOWN_MODELS = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', tier: 'cheap' },
 ] as const;
 
+// ============== Models ==============
+
+export type ModelTier = 'fast' | 'powerful' | 'cheap';
+export type ModelProvider = 'anthropic' | 'bedrock' | 'vertex' | 'unknown';
+
+export interface ModelInfo {
+  id: string;
+  label: string;
+  tier: ModelTier;
+}
+
+export interface ModelsResponse {
+  provider: ModelProvider;
+  current: string;
+  models: ModelInfo[];
+}
+
 export type ChatServerMessage =
   | { type: 'session_ready'; session_key: string; cwd: string; permission_mode: PermissionMode; resumed?: string | null; busy?: boolean }
   | { type: 'assistant'; model?: string; content: ContentBlock[]; timestamp?: number }

@@ -138,6 +138,16 @@ class ChatApi {
     );
   }
 
+  /// Fetch available models and current provider from the server.
+  Future<ServerModels> fetchModels() async {
+    final resp = await http.get(
+      Uri.parse('$httpBase/models'),
+      headers: _auth,
+    );
+    if (resp.statusCode != 200) throw ChatApiException(resp.statusCode, resp.body);
+    return ServerModels.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+  }
+
   /// Take over a session from another holder.
   /// Throws [ChatApiException] with status 409 if the holder could not be stopped.
   Future<void> takeover(String uuid, {required String deviceId}) async {
@@ -150,4 +160,39 @@ class ChatApi {
       throw ChatApiException(resp.statusCode, resp.body);
     }
   }
+}
+
+class ServerModelInfo {
+  final String id;
+  final String label;
+  final String tier;
+  const ServerModelInfo({required this.id, required this.label, required this.tier});
+
+  factory ServerModelInfo.fromJson(Map<String, dynamic> j) => ServerModelInfo(
+    id: j['id'] as String,
+    label: j['label'] as String,
+    tier: j['tier'] as String? ?? 'fast',
+  );
+}
+
+class ServerModels {
+  final String provider; // 'anthropic' | 'bedrock' | 'vertex' | 'unknown'
+  final String current;
+  final List<ServerModelInfo> models;
+  const ServerModels({required this.provider, required this.current, required this.models});
+
+  factory ServerModels.fromJson(Map<String, dynamic> j) => ServerModels(
+    provider: j['provider'] as String? ?? 'anthropic',
+    current: j['current'] as String? ?? '',
+    models: ((j['models'] as List?) ?? [])
+        .cast<Map<String, dynamic>>()
+        .map(ServerModelInfo.fromJson)
+        .toList(),
+  );
+
+  String get providerLabel => switch (provider) {
+    'bedrock' => 'AWS Bedrock',
+    'vertex'  => 'Vertex AI',
+    _         => 'Anthropic',
+  };
 }

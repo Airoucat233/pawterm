@@ -11,7 +11,7 @@ import QRCode from 'qrcode';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-import type { HealthResponse, Project, PairedDevice } from '@pawterm/shared';
+import type { HealthResponse, Project, PairedDevice, ModelsResponse, ModelInfo, ModelProvider } from '@pawterm/shared';
 
 import { registerChatRest } from './chat-rest.js';
 import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices } from './config.js';
@@ -28,6 +28,15 @@ const VERSION: string = typeof __SERVER_VERSION__ !== 'undefined' ? __SERVER_VER
   try { return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version ?? 'dev'; }
   catch { return 'dev'; }
 })();
+
+// Extract a short human label from a model ID, falling back to the provided default.
+// e.g. "global.anthropic.claude-sonnet-4-6" → "Sonnet 4.6"
+//      "anthropic.claude-opus-4-7-20260101" → "Opus 4.7"
+function _modelLabel(id: string, fallback: string): string {
+  const m = id.match(/claude-(opus|sonnet|haiku)[-.](\d+[-.]?\d*)/i);
+  if (m) return `${m[1].charAt(0).toUpperCase()}${m[1].slice(1)} ${m[2].replace(/-/g, '.')}`;
+  return fallback;
+}
 
 function getLanIp(): string {
   const ifaces = networkInterfaces();
@@ -228,6 +237,35 @@ async function main(): Promise<void> {
     serverId: settings.serverId,
     pairingOpen: pairingManager.getState() === 'open',
   }));
+
+  // REST: models — reads ~/.claude/settings.json to detect provider + available models
+  app.get('/models', async (): Promise<ModelsResponse> => {
+    const claudeSettings = (() => {
+      try {
+        return JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8'));
+      } catch { return {}; }
+    })();
+    const env: Record<string, string> = claudeSettings.env ?? {};
+
+    const provider: ModelProvider =
+      env['CLAUDE_CODE_USE_BEDROCK'] === '1' ? 'bedrock' :
+      env['CLAUDE_CODE_USE_VERTEX'] === '1' ? 'vertex' :
+      env['ANTHROPIC_BASE_URL'] && !env['ANTHROPIC_BASE_URL'].includes('anthropic.com') ? 'unknown' :
+      'anthropic';
+
+    const sonnet = env['ANTHROPIC_DEFAULT_SONNET_MODEL'] ?? env['ANTHROPIC_MODEL'] ?? 'claude-sonnet-4-6';
+    const opus   = env['ANTHROPIC_DEFAULT_OPUS_MODEL']   ?? 'claude-opus-4-7';
+    const haiku  = env['ANTHROPIC_DEFAULT_HAIKU_MODEL']  ?? 'claude-haiku-4-5';
+    const current = env['ANTHROPIC_MODEL'] ?? sonnet;
+
+    const models: ModelInfo[] = [
+      { id: sonnet, label: _modelLabel(sonnet, 'Sonnet'), tier: 'fast' },
+      { id: opus,   label: _modelLabel(opus,   'Opus'),   tier: 'powerful' },
+      { id: haiku,  label: _modelLabel(haiku,  'Haiku'),  tier: 'cheap' },
+    ];
+
+    return { provider, current, models };
+  });
 
   // REST: projects list
   app.get('/projects', async (): Promise<Project[]> => settings.projects);

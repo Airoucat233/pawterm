@@ -1324,6 +1324,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onStop: _interrupt,
             onSwitchModel: _switchModel,
             onSwitchPermissionMode: _switchPermissionMode,
+            chatApi: _chatApi,
           ),
       ],
     );
@@ -1651,6 +1652,7 @@ class _Composer extends ConsumerWidget {
   final VoidCallback onStop;
   final void Function(ModelOption) onSwitchModel;
   final void Function(CcPermissionMode) onSwitchPermissionMode;
+  final ChatApi? chatApi;
   const _Composer({
     required this.controller,
     required this.connected,
@@ -1665,6 +1667,7 @@ class _Composer extends ConsumerWidget {
     required this.onStop,
     required this.onSwitchModel,
     required this.onSwitchPermissionMode,
+    this.chatApi,
   });
 
   @override
@@ -1769,7 +1772,7 @@ class _Composer extends ConsumerWidget {
                     current: ref.watch(permissionModeProvider),
                     onPick: onSwitchPermissionMode,
                   ),
-                  _ModelPicker(current: model, onPick: onSwitchModel),
+                  _ModelPicker(current: model, onPick: onSwitchModel, chatApi: chatApi),
                   const Spacer(),
                 ],
               ),
@@ -1895,78 +1898,52 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
   }
 }
 
-class _ModelPicker extends StatelessWidget {
+class _ModelPicker extends StatefulWidget {
   final ModelOption current;
   final void Function(ModelOption) onPick;
-  const _ModelPicker({required this.current, required this.onPick});
+  final ChatApi? chatApi;
+  const _ModelPicker({required this.current, required this.onPick, this.chatApi});
 
-  Future<void> _openSheet(BuildContext context) async {
+  @override
+  State<_ModelPicker> createState() => _ModelPickerState();
+}
+
+class _ModelPickerState extends State<_ModelPicker> {
+  Future<void> _openSheet() async {
     final t = AppTokens.of(context);
+
+    // Fetch models from server first; fall back to built-in list on error
+    ServerModels? serverModels;
+    if (widget.chatApi != null) {
+      try { serverModels = await widget.chatApi!.fetchModels(); } catch (_) {}
+    }
+
+    final models = serverModels != null
+        ? serverModels.models.map(ModelOption.fromServer).toList()
+        : knownModels;
+    final providerLabel = serverModels?.providerLabel;
+
+    if (!mounted) return;
+
     final picked = await showModalBottomSheet<ModelOption>(
       context: context,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
-      builder: (ctx) => Container(
-        margin: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: t.border),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 10, bottom: 4),
-                child: Center(
-                  child: Container(
-                    width: 36, height: 4,
-                    decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2)),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.auto_awesome_outlined, size: 16, color: t.textMuted),
-                    const SizedBox(width: 8),
-                    Text(
-                      '选择模型',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: t.text,
-                        letterSpacing: -0.1,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              for (final m in knownModels) ...[
-                Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
-                _ModelRow(
-                  model: m,
-                  selected: m.id == current.id,
-                  onTap: () => Navigator.of(ctx).pop(m),
-                ),
-              ],
-              const SizedBox(height: 6),
-            ],
-          ),
-        ),
+      isScrollControlled: true,
+      builder: (ctx) => _ModelSheet(
+        current: widget.current,
+        models: models,
+        providerLabel: providerLabel,
       ),
     );
-    if (picked != null) onPick(picked);
+    if (picked != null) widget.onPick(picked);
   }
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     return GestureDetector(
-      onTap: () => _openSheet(context),
+      onTap: _openSheet,
       behavior: HitTestBehavior.opaque,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
@@ -1976,7 +1953,7 @@ class _ModelPicker extends StatelessWidget {
             Icon(Icons.auto_awesome, size: 11, color: t.textDim),
             const SizedBox(width: 4),
             Text(
-              _shortLabel(current.label),
+              widget.current.label.split(' ').first,
               style: TextStyle(fontSize: 11.5, color: t.textMuted, fontWeight: FontWeight.w500),
             ),
             const SizedBox(width: 2),
@@ -1986,8 +1963,172 @@ class _ModelPicker extends StatelessWidget {
       ),
     );
   }
+}
 
-  String _shortLabel(String label) => label.split(' ').first;
+class _ModelSheet extends StatefulWidget {
+  final ModelOption current;
+  final List<ModelOption> models;
+  final String? providerLabel;
+  const _ModelSheet({required this.current, required this.models, this.providerLabel});
+
+  @override
+  State<_ModelSheet> createState() => _ModelSheetState();
+}
+
+class _ModelSheetState extends State<_ModelSheet> {
+  bool _showCustomInput = false;
+  final _customController = TextEditingController();
+
+  @override
+  void dispose() {
+    _customController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: t.border),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // drag handle
+            Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 4),
+              child: Center(
+                child: Container(
+                  width: 36, height: 4,
+                  decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+            ),
+            // header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+              child: Row(
+                children: [
+                  Icon(Icons.auto_awesome_outlined, size: 16, color: t.textMuted),
+                  const SizedBox(width: 8),
+                  Text(
+                    '选择模型',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.text, letterSpacing: -0.1),
+                  ),
+                  if (widget.providerLabel != null) ...[
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: t.accent.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: t.accent.withValues(alpha: 0.2)),
+                      ),
+                      child: Text(
+                        widget.providerLabel!,
+                        style: TextStyle(fontSize: 10.5, color: t.accent, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            // model list
+            for (final m in widget.models) ...[
+              Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+              _ModelRow(
+                model: m,
+                selected: m.id == widget.current.id,
+                onTap: () => Navigator.of(context).pop(m),
+              ),
+            ],
+            // custom input row
+            Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+            if (!_showCustomInput)
+              InkWell(
+                onTap: () => setState(() => _showCustomInput = true),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 18, height: 18,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: t.border, width: 1.5),
+                        ),
+                        child: Icon(Icons.add, size: 11, color: t.textDim),
+                      ),
+                      const SizedBox(width: 12),
+                      Text('自定义 Model ID', style: TextStyle(color: t.textMuted, fontSize: 14)),
+                    ],
+                  ),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _customController,
+                        autofocus: true,
+                        style: TextStyle(fontSize: 13, color: t.text, fontFamily: 'monospace'),
+                        decoration: InputDecoration(
+                          hintText: 'e.g. anthropic.claude-sonnet-4-5-...',
+                          hintStyle: TextStyle(fontSize: 12, color: t.textDim),
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: t.border),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: t.border),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: t.accent),
+                          ),
+                        ),
+                        onSubmitted: (v) {
+                          final id = v.trim();
+                          if (id.isNotEmpty) Navigator.of(context).pop(ModelOption.custom(id));
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () {
+                        final id = _customController.text.trim();
+                        if (id.isNotEmpty) Navigator.of(context).pop(ModelOption.custom(id));
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: t.accent,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.check, size: 16, color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ModelRow extends StatelessWidget {

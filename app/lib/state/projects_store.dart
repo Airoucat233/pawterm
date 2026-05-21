@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../api/chat_api.dart';
 import '../api/sessions_api.dart';
 import 'server_config.dart';
 
@@ -73,6 +74,18 @@ class ModelOption {
   final String tier;
   final String description;
   const ModelOption(this.id, this.label, this.tier, this.description);
+
+  factory ModelOption.fromServer(ServerModelInfo m) => ModelOption(
+    m.id, m.label, m.tier,
+    switch (m.tier) {
+      'powerful' => '深度推理',
+      'cheap'    => '轻量快速',
+      _          => '日常推荐',
+    },
+  );
+
+  static ModelOption custom(String id) =>
+      ModelOption(id, id.split('.').last.split('-').take(3).join('-'), 'fast', '自定义');
 }
 
 const knownModels = <ModelOption>[
