@@ -136,17 +136,13 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && TAG_EXISTS=1
 
 # -------- 4. Confirm --------
 
-if [[ "$NEW" == "$CURRENT" ]]; then
-  echo "  → resuming: commit/push/tag/publish for $NEW"
+if [[ $DEV -eq 1 ]]; then
+  printf "  → bump, commit, push, tag, npm publish --tag dev? [y/N]: "
 else
-  if [[ $DEV -eq 1 ]]; then
-    printf "  → bump, commit, push, tag, npm publish --tag dev? [y/N]: "
-  else
-    printf "  → bump, commit, push, tag, npm publish? [y/N]: "
-  fi
-  read -r CONFIRM
-  [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
+  printf "  → bump, commit, push, tag, npm publish? [y/N]: "
 fi
+read -r CONFIRM
+[[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
 
 # -------- 5. Update package.json --------
 
