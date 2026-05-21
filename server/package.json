@@ -1,6 +1,6 @@
 {
   "name": "pawterm-server",
-  "version": "0.6.4-dev.1",
+  "version": "0.6.5-dev.1",
   "type": "module",
   "bin": {
     "pawterm-server": "./dist/index.js"
