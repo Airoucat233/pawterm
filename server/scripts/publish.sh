@@ -54,25 +54,48 @@ else
 fi
 
 if [[ $DEV -eq 1 ]]; then
-  cat <<MENU
+  # If already a dev version, offer "same" as first/default option (resume interrupted run)
+  if [[ $DEV_N -gt 0 ]]; then
+    cat <<MENU
   Choose bump:
-    1)  dev      ${DEV_BASE}-dev.$((DEV_N+1))  (increment dev counter)
+    1)  same     $CURRENT  (resume / re-run)
+    2)  dev      ${DEV_BASE}-dev.$((DEV_N+1))  (new dev version)
+    3)  patch    $MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1
+    4)  minor    $MAJOR_D.$((MINOR_D+1)).0-dev.1
+    q)  quit
+MENU
+    printf "  → [1-4/q, default=1]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-1}"
+    case "$CHOICE" in
+      1|same)  NEW="$CURRENT" ;;
+      2|dev)   NEW="${DEV_BASE}-dev.$((DEV_N+1))" ;;
+      3|patch) NEW="$MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1" ;;
+      4|minor) NEW="$MAJOR_D.$((MINOR_D+1)).0-dev.1" ;;
+      q|quit)  echo "  aborted."; exit 0 ;;
+      *)       echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  else
+    cat <<MENU
+  Choose bump:
+    1)  dev      ${DEV_BASE}-dev.1
     2)  patch    $MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1
     3)  minor    $MAJOR_D.$((MINOR_D+1)).0-dev.1
     4)  major    $((MAJOR_D+1)).0.0-dev.1
     q)  quit
 MENU
-  printf "  → [1-4/q, default=1]: "
-  read -r CHOICE
-  CHOICE="${CHOICE:-1}"
-  case "$CHOICE" in
-    1|dev)   NEW="${DEV_BASE}-dev.$((DEV_N+1))" ;;
-    2|patch) NEW="$MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1" ;;
-    3|minor) NEW="$MAJOR_D.$((MINOR_D+1)).0-dev.1" ;;
-    4|major) NEW="$((MAJOR_D+1)).0.0-dev.1" ;;
-    q|quit)  echo "  aborted."; exit 0 ;;
-    *)       echo "  invalid choice" >&2; exit 1 ;;
-  esac
+    printf "  → [1-4/q, default=1]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-1}"
+    case "$CHOICE" in
+      1|dev)   NEW="${DEV_BASE}-dev.1" ;;
+      2|patch) NEW="$MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1" ;;
+      3|minor) NEW="$MAJOR_D.$((MINOR_D+1)).0-dev.1" ;;
+      4|major) NEW="$((MAJOR_D+1)).0.0-dev.1" ;;
+      q|quit)  echo "  aborted."; exit 0 ;;
+      *)       echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  fi
 else
   cat <<MENU
   Choose bump:
@@ -113,13 +136,17 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && TAG_EXISTS=1
 
 # -------- 4. Confirm --------
 
-if [[ $DEV -eq 1 ]]; then
-  printf "  → bump, commit, push, tag, npm publish --tag dev? [y/N]: "
+if [[ "$NEW" == "$CURRENT" ]]; then
+  echo "  → resuming: commit/push/tag/publish for $NEW"
 else
-  printf "  → bump, commit, push, tag, npm publish? [y/N]: "
+  if [[ $DEV -eq 1 ]]; then
+    printf "  → bump, commit, push, tag, npm publish --tag dev? [y/N]: "
+  else
+    printf "  → bump, commit, push, tag, npm publish? [y/N]: "
+  fi
+  read -r CONFIRM
+  [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
 fi
-read -r CONFIRM
-[[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
 
 # -------- 5. Update package.json --------
 
@@ -134,15 +161,26 @@ p.write_text(json.dumps(data, indent=2) + '\n')
 PY
 fi
 
-# -------- 6. Commit + push main --------
+# -------- 6. Commit + push --------
 
 git -C "$REPO_ROOT" add server/package.json
-git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore(server): bump version to $NEW"
-
-if [[ $DEV -eq 1 ]]; then
-  git -C "$REPO_ROOT" push origin "$CURRENT_BRANCH"
+if git -C "$REPO_ROOT" diff --cached --quiet; then
+  echo "  (commit already done — skipping)"
 else
-  git -C "$REPO_ROOT" push origin main
+  git -C "$REPO_ROOT" commit -m "chore(server): bump version to $NEW"
+fi
+
+REMOTE_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "")
+LOCAL_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
+REMOTE_SHA=$(git -C "$REPO_ROOT" rev-parse "@{u}" 2>/dev/null || echo "")
+if [[ "$LOCAL_SHA" == "$REMOTE_SHA" ]]; then
+  echo "  (push already done — skipping)"
+else
+  if [[ $DEV -eq 1 ]]; then
+    git -C "$REPO_ROOT" push origin "$CURRENT_BRANCH"
+  else
+    git -C "$REPO_ROOT" push origin main
+  fi
 fi
 
 # -------- 7. Tag + push --------
@@ -158,18 +196,24 @@ fi
 
 # -------- 8. Build + npm publish --------
 
-echo
-echo "▶ pnpm build"
-cd "$SERVER_DIR"
-pnpm build
-
-echo
-if [[ $DEV -eq 1 ]]; then
-  echo "▶ npm publish --tag dev --registry https://registry.npmjs.org"
-  npm publish --tag dev --registry https://registry.npmjs.org
+# Check if this version is already published
+NPM_PUBLISHED=$(npm view "pawterm-server@$NEW" version 2>/dev/null || echo "")
+if [[ "$NPM_PUBLISHED" == "$NEW" ]]; then
+  echo "  (npm pawterm-server@$NEW already published — skipping)"
 else
-  echo "▶ npm publish --registry https://registry.npmjs.org"
-  npm publish --registry https://registry.npmjs.org
+  echo
+  echo "▶ pnpm build"
+  cd "$SERVER_DIR"
+  pnpm build
+
+  echo
+  if [[ $DEV -eq 1 ]]; then
+    echo "▶ npm publish --tag dev --registry https://registry.npmjs.org"
+    npm publish --tag dev --registry https://registry.npmjs.org
+  else
+    echo "▶ npm publish --registry https://registry.npmjs.org"
+    npm publish --registry https://registry.npmjs.org
+  fi
 fi
 
 echo
