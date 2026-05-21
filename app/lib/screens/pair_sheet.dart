@@ -81,7 +81,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
 
     try {
       final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
-      final deviceName = ConnectionsNotifier.deviceName;
+      final deviceName = await ConnectionsNotifier.getDeviceName();
 
       final resp = await http
           .post(
@@ -241,7 +241,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
     });
     try {
       final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
-      final deviceName = ConnectionsNotifier.deviceName;
+      final deviceName = await ConnectionsNotifier.getDeviceName();
       final resp = await http
           .post(
             Uri.parse(

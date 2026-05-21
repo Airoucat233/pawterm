@@ -193,7 +193,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     setState(() { _phase = _SheetState.detecting; _errorMsg = null; });
     try {
       final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
-      final deviceName = ConnectionsNotifier.deviceName;
+      final deviceName = await ConnectionsNotifier.getDeviceName();
       final claimResp = await http.post(
         Uri.parse('${result.url}/pair/qr-claim'),
         headers: {'Content-Type': 'application/json'},

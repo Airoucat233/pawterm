@@ -726,7 +726,7 @@ async function main(): Promise<void> {
   process.once('SIGINT',  () => { void shutdown(); });
 }
 
-const SERVICE_CMDS = new Set(['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'update', 'help']);
+const SERVICE_CMDS = new Set(['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'logs', 'update', 'use', 'help']);
 const subcommand = process.argv[2];
 
 if (subcommand === '--version' || subcommand === '-v') {
@@ -739,7 +739,7 @@ if (subcommand === '--version' || subcommand === '-v') {
   await runPairCli();
 } else if (subcommand && SERVICE_CMDS.has(subcommand)) {
   const { runServiceCommand } = await import('./service.js');
-  runServiceCommand(subcommand);
+  runServiceCommand(subcommand, process.argv.slice(3));
 } else {
   if (isFirstRun) await firstRunSetup();
   main().catch((err) => {

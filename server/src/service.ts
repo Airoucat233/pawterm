@@ -1,7 +1,7 @@
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const LABEL = 'com.airoucat.pawterm-server';
 const HOME = homedir();
@@ -10,6 +10,7 @@ const SYSTEMD_DIR = resolve(HOME, '.config', 'systemd', 'user');
 const SYSTEMD_UNIT = resolve(SYSTEMD_DIR, 'pawterm-server.service');
 const CONFIG_DIR = resolve(HOME, '.config', 'pawterm');
 const LOG_PATH = resolve(CONFIG_DIR, 'server.log');
+export const ACTIVE_CONFIG_PTR = resolve(CONFIG_DIR, 'active-config');
 
 type SupportedPlatform = 'darwin' | 'linux';
 
@@ -80,7 +81,8 @@ function warnIfNpx(): void {
   }
 }
 
-export function runServiceCommand(cmd: string): void {
+
+export function runServiceCommand(cmd: string, args: string[] = []): void {
   const p = currentPlatform();
 
   if (cmd === 'install') {
@@ -222,22 +224,51 @@ Usage: pawterm-server [command]
   }
 
   if (cmd === 'status') {
+    let ver = 'unknown';
+    try { ver = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version ?? 'unknown'; } catch {}
     if (p === 'darwin') {
       const r = spawnSync('launchctl', ['list', LABEL], { encoding: 'utf-8' });
       if (r.status === 0) {
-        console.log('● pawterm-server  [running]');
+        console.log(`● pawterm-server ${ver}  [running]`);
         if (r.stdout.trim()) console.log(r.stdout.trim());
       } else {
-        console.log('● pawterm-server  [not running]');
+        console.log(`● pawterm-server ${ver}  [not running]`);
         if (!existsSync(PLIST_PATH)) console.log('  not installed — run: pawterm-server install');
         else console.log('  installed but stopped — run: pawterm-server start');
       }
-      console.log(`  Logs: ${LOG_PATH}`);
+      const activeConfig = existsSync(ACTIVE_CONFIG_PTR)
+        ? readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim()
+        : `${CONFIG_DIR}/config.json (default)`;
+      console.log(`  Config: ${activeConfig}`);
+      console.log(`  Logs:   ${LOG_PATH}`);
     } else if (p === 'linux') {
       spawnSync('systemctl', ['--user', 'status', 'pawterm-server'], { stdio: 'inherit' });
     } else {
       console.error('Unsupported platform.');
     }
+    return;
+  }
+
+  if (cmd === 'use') {
+    const target = args[0];
+    if (!target) {
+      const cur = existsSync(ACTIVE_CONFIG_PTR)
+        ? readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim()
+        : `${CONFIG_DIR}/config.json (default)`;
+      console.log(cur);
+      return;
+    }
+    if (target === 'default') {
+      if (existsSync(ACTIVE_CONFIG_PTR)) unlinkSync(ACTIVE_CONFIG_PTR);
+      console.log('✓ Reset to default — run: pawterm-server restart');
+      return;
+    }
+    const absPath = resolve(target.replace(/^~/, HOME));
+    if (!existsSync(absPath)) { console.error(`✗ File not found: ${absPath}`); process.exit(1); }
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(ACTIVE_CONFIG_PTR, absPath);
+    console.log(`✓ Active config → ${absPath}`);
+    console.log('  Run: pawterm-server restart');
     return;
   }
 }

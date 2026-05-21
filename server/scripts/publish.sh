@@ -43,7 +43,38 @@ echo
 
 # -------- 2. Bump --------
 
-cat <<MENU
+# For dev: extract existing pre-release counter from version like 0.6.3-dev.2
+DEV_BASE="${CURRENT%%-dev.*}"   # strip -dev.N suffix if present
+DEV_N=0
+if [[ "$CURRENT" =~ -dev\.([0-9]+)$ ]]; then
+  DEV_N="${BASH_REMATCH[1]}"
+  MAJOR_D="${DEV_BASE%%.*}"; REST="${DEV_BASE#*.}"; MINOR_D="${REST%%.*}"; PATCH_D="${REST#*.}"
+else
+  MAJOR_D="$MAJOR"; MINOR_D="$MINOR"; PATCH_D="$PATCH"
+fi
+
+if [[ $DEV -eq 1 ]]; then
+  cat <<MENU
+  Choose bump:
+    1)  dev      ${DEV_BASE}-dev.$((DEV_N+1))  (increment dev counter)
+    2)  patch    $MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1
+    3)  minor    $MAJOR_D.$((MINOR_D+1)).0-dev.1
+    4)  major    $((MAJOR_D+1)).0.0-dev.1
+    q)  quit
+MENU
+  printf "  → [1-4/q, default=1]: "
+  read -r CHOICE
+  CHOICE="${CHOICE:-1}"
+  case "$CHOICE" in
+    1|dev)   NEW="${DEV_BASE}-dev.$((DEV_N+1))" ;;
+    2|patch) NEW="$MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1" ;;
+    3|minor) NEW="$MAJOR_D.$((MINOR_D+1)).0-dev.1" ;;
+    4|major) NEW="$((MAJOR_D+1)).0.0-dev.1" ;;
+    q|quit)  echo "  aborted."; exit 0 ;;
+    *)       echo "  invalid choice" >&2; exit 1 ;;
+  esac
+else
+  cat <<MENU
   Choose bump:
     1)  same     $CURRENT  (re-publish)
     2)  patch    $MAJOR.$MINOR.$((PATCH+1))
@@ -51,19 +82,18 @@ cat <<MENU
     4)  major    $((MAJOR+1)).0.0
     q)  quit
 MENU
-
-printf "  → [1-4/q, default=2]: "
-read -r CHOICE
-CHOICE="${CHOICE:-2}"
-
-case "$CHOICE" in
-  1|same)  NEW="$CURRENT" ;;
-  2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
-  3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
-  4|major) NEW="$((MAJOR+1)).0.0" ;;
-  q|quit)  echo "  aborted."; exit 0 ;;
-  *)       echo "  invalid choice" >&2; exit 1 ;;
-esac
+  printf "  → [1-4/q, default=2]: "
+  read -r CHOICE
+  CHOICE="${CHOICE:-2}"
+  case "$CHOICE" in
+    1|same)  NEW="$CURRENT" ;;
+    2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
+    3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
+    4|major) NEW="$((MAJOR+1)).0.0" ;;
+    q|quit)  echo "  aborted."; exit 0 ;;
+    *)       echo "  invalid choice" >&2; exit 1 ;;
+  esac
+fi
 
 if [[ $DEV -eq 1 ]]; then
   TAG="dev-server-v$NEW"

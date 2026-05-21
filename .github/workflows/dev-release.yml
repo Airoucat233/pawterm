@@ -54,8 +54,25 @@ jobs:
           path: dist/*.apk
           retention-days: 7
 
+  build-mac:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Mac app
+        run: CI=true bash mac/scripts/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-zip
+          path: dist/PawTerm-*-mac.zip
+          retention-days: 7
+
   release:
-    needs: [check, build-apk]
+    needs: [check, build-apk, build-mac]
     if: needs.check.outputs.exists == 'false'
     runs-on: ubuntu-latest
 
@@ -84,6 +101,7 @@ jobs:
           prerelease: true
           files: |
             artifacts/android-apks/*.apk
+            artifacts/mac-zip/*.zip
           body: |
             > **Dev build** — not for production use.
 
@@ -92,3 +110,6 @@ jobs:
             **Android APK**
             - `pawterm-*-arm64-v8a.apk` — modern devices
             - `pawterm-*-armeabi-v7a.apk` — older devices
+
+            **Mac**
+            - `PawTerm-*-mac.zip` — macOS (Apple Silicon)

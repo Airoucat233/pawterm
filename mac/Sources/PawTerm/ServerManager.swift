@@ -75,18 +75,36 @@ class ServerManager: ObservableObject {
     private var updateCheckTimer: Timer?
     private var sseTask: Task<Void, Never>?
     private var stoppingStartedAt: Date?
-    private static let configPathKey = "pawterm_config_path"
     private static let blockedKey = "pawterm_blocked_devices"
     private var blockedDeviceIds: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: Self.blockedKey) ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: Self.blockedKey) }
     }
 
+    private static let activeConfigPtrPath = "\(NSHomeDirectory())/.config/pawterm/active-config"
+
+    private static func readActiveConfigPath() -> String {
+        if let ptr = try? String(contentsOfFile: activeConfigPtrPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           !ptr.isEmpty {
+            return ptr
+        }
+        return BuildConfig.defaultConfigPath
+    }
+
+    private func writeActiveConfigPtr(_ path: String) {
+        let dir = (Self.activeConfigPtrPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if path == BuildConfig.defaultConfigPath {
+            try? FileManager.default.removeItem(atPath: Self.activeConfigPtrPath)
+        } else {
+            try? path.write(toFile: Self.activeConfigPtrPath, atomically: true, encoding: .utf8)
+        }
+    }
+
     init() {
-        let saved = UserDefaults.standard.string(forKey: Self.configPathKey)
-            ?? BuildConfig.defaultConfigPath
-        self.configPath = saved
-        self.config = PawTermConfig.load(from: saved)
+        let active = Self.readActiveConfigPath()
+        self.configPath = active
+        self.config = PawTermConfig.load(from: active)
         refreshAvailableConfigs()
         startPolling()
     }
@@ -107,28 +125,16 @@ class ServerManager: ObservableObject {
     }
 
     private func reloadConfigAsync(from path: String) async {
-        // Stop running server before switching config
-        if case .running = status { await stop() }
-        // Wait for stop to take effect (up to 5s)
-        for _ in 0..<10 {
-            if case .stopped = status { break }
-            if case .stopping = status {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                continue
-            }
-            break
-        }
-        UserDefaults.standard.set(path, forKey: Self.configPathKey)
+        writeActiveConfigPtr(path)
         configPath = path
         config = PawTermConfig.load(from: path)
-        status = .stopped
         deviceCount = 0
         pairedDevices = []
         currentServerVersion = nil
         stopSSE()
         pollTimer?.invalidate()
-        startPolling()
         refreshAvailableConfigs()
+        await restart()
     }
 
     // MARK: - Prerequisites

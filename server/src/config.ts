@@ -42,7 +42,19 @@ function expandHome(p: string): string {
   return resolve(p);
 }
 
-export const configPath = process.env.PAWTERM_CONFIG ?? process.env.CC_CONFIG ?? DEFAULT_CONFIG_PATH;
+const ACTIVE_CONFIG_PTR = resolve(DEFAULT_CONFIG_DIR, 'active-config');
+
+function resolveConfigPath(): string {
+  if (process.env.PAWTERM_CONFIG) return process.env.PAWTERM_CONFIG;
+  if (process.env.CC_CONFIG) return process.env.CC_CONFIG;
+  if (existsSync(ACTIVE_CONFIG_PTR)) {
+    const ptr = readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim();
+    if (ptr) return resolve(ptr.replace(/^~/, homedir()));
+  }
+  return DEFAULT_CONFIG_PATH;
+}
+
+export const configPath = resolveConfigPath();
 
 export let isFirstRun = false;
 

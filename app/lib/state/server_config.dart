@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
 
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -182,15 +183,31 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
     return id;
   }
 
-  static String get deviceName {
+  static Future<String> getDeviceName() async {
     try {
-      if (Platform.isAndroid) return 'Android device';
-      if (Platform.isIOS) return 'iPhone / iPad';
+      final info = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final d = await info.androidInfo;
+        final brand = d.brand.isNotEmpty ? d.brand : '';
+        final model = d.model.isNotEmpty ? d.model : 'Android';
+        // Avoid redundant prefix like "samsung Samsung Galaxy S24"
+        if (brand.isNotEmpty && !model.toLowerCase().startsWith(brand.toLowerCase())) {
+          return '${_capitalize(brand)} $model';
+        }
+        return model;
+      }
+      if (Platform.isIOS) {
+        final d = await info.iosInfo;
+        return d.name.isNotEmpty ? d.name : d.utsname.machine;
+      }
       return '${Platform.operatingSystem} device';
     } catch (_) {
       return 'Mobile device';
     }
   }
+
+  static String _capitalize(String s) =>
+      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 
   /// Creates a new [Connection] ID.
   static String newId() => _uuid.v4();

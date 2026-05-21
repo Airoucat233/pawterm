@@ -31,6 +31,7 @@ dependencies:
   package_info_plus: ^8.0.0
   mobile_scanner: ^6.0.2
   nsd: ^5.0.0
+  device_info_plus: ^11.0.0
   connectivity_plus: ^6.1.4
   url_launcher: ^6.3.0
 
