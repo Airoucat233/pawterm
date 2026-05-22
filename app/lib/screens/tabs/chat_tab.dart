@@ -27,6 +27,7 @@ import '../../theme.dart';
 import '../../widgets/cc_spinner.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/todo_chip.dart';
+import 'chat_agent_bar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -41,7 +42,8 @@ class _HistoryPage {
   final List<IncomingMessage> messages;
   final String? oldestUuid;
   final bool hasMore;
-  const _HistoryPage({required this.messages, this.oldestUuid, required this.hasMore});
+  const _HistoryPage(
+      {required this.messages, this.oldestUuid, required this.hasMore});
 }
 
 enum _ConflictChoice { observe, takeover, cancel }
@@ -74,10 +76,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   StreamSubscription<SseEvent>? _sseSub;
   String? _serverToken;
   String _deviceId = '';
+
   /// Claude session UUID. For new sessions: client-generated and persisted.
   /// For resumed sessions: equals currentSession.resumeId.
   String? _sessionId;
   final List<IncomingMessage> _messages = [];
+
   /// Debug only: 保存每条消息对应的原始 SSE event JSON，供长按查看。
   final Map<IncomingMessage, Map<String, dynamic>> _debugRaw = {};
   final TextEditingController _textController = TextEditingController();
@@ -113,6 +117,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   String? _oldestUuid;
   bool _hasMoreHistory = false;
   bool _loadingOlder = false;
+
   /// 首屏历史加载中（resume 一个已有会话时为 true，直到第一页返回）。
   /// 用来区分"连接中"vs"加载历史中"，避免显示"开始对话"占位。
   bool _loadingHistory = false;
@@ -140,6 +145,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   // ── Sub-agent (Task tool) streaming ──────────────────────────────────
   // keyed by the Task tool_use_id (= parent_tool_use_id on sub-agent msgs)
   final Map<String, List<IncomingMessage>> _subMsgs = {};
+
   /// Tracks the live StreamingAssistant per sub-agent so deltas can be appended.
   final Map<String, StreamingAssistant> _subStreaming = {};
 
@@ -154,7 +160,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _onScroll() {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
-    final atBottom = pos.maxScrollExtent - pos.pixels <= _stickToBottomThreshold;
+    final atBottom =
+        pos.maxScrollExtent - pos.pixels <= _stickToBottomThreshold;
     if (atBottom != _stickToBottom) {
       setState(() => _stickToBottom = atBottom);
     }
@@ -224,7 +231,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  String _sessionKey(CurrentSession s) => '${s.agent.wire}|${s.cwd}|${s.resumeId ?? "new"}';
+  String _sessionKey(CurrentSession s) =>
+      '${s.agent.wire}|${s.cwd}|${s.resumeId ?? "new"}';
 
   // Throttle session-start attempts so a dead server doesn't trigger a tight loop.
   // Once api.start() failed, only the user-visible "reconnect" button will retry.
@@ -235,7 +243,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _ensureConnected(CurrentSession session) {
     final key = _sessionKey(session);
-    if (_boundKey == key && (_sseClient != null || _connected || _observeMode)) return;
+    if (_boundKey == key &&
+        (_sseClient != null || _connected || _observeMode)) {
+      return;
+    }
     if (_attempting) return;
     if (_attemptedKey == key) return;
 
@@ -307,13 +318,16 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   Future<_ConflictChoice?> _showConflictDialog(String holderDeviceId) async {
     final t = AppTokens.of(context);
     final isServer = holderDeviceId == 'server';
-    final holderLabel = isServer ? 'PC 端 Claude CLI' : '另一台设备 (${holderDeviceId.substring(0, 8)}…)';
+    final holderLabel = isServer
+        ? 'PC 端 Claude CLI'
+        : '另一台设备 (${holderDeviceId.substring(0, 8)}…)';
     return showDialog<_ConflictChoice>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: t.surface,
         title: Text('会话正被占用',
-            style: TextStyle(color: t.text, fontSize: 15, fontWeight: FontWeight.w600)),
+            style: TextStyle(
+                color: t.text, fontSize: 15, fontWeight: FontWeight.w600)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -333,7 +347,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(_ConflictChoice.observe),
-            child: Text('旁观', style: TextStyle(color: t.accent, fontWeight: FontWeight.w600)),
+            child: Text('旁观',
+                style: TextStyle(color: t.accent, fontWeight: FontWeight.w600)),
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(_ConflictChoice.takeover),
@@ -381,7 +396,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       // Silently refresh messages.
       try {
         final page = await _fetchHistoryPage(
-          httpBase, session.cwd, uuid, session.agent,
+          httpBase,
+          session.cwd,
+          uuid,
+          session.agent,
           limit: _historyPageSize,
         );
         if (!mounted || page == null) return;
@@ -404,7 +422,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _observeTimer = null;
   }
 
-  Future<void> _doTakeover(String httpBase, CurrentSession session, String uuid) async {
+  Future<void> _doTakeover(
+      String httpBase, CurrentSession session, String uuid) async {
     try {
       await _chatApi!.takeover(uuid, deviceId: _deviceId);
     } catch (e) {
@@ -424,7 +443,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _takeoverFromObserve() {
     final config = ref.read(activeConnectionProvider);
     final session = ref.read(currentSessionProvider);
-    if (config == null || session == null || _sessionId == null || _chatApi == null) return;
+    if (config == null ||
+        session == null ||
+        _sessionId == null ||
+        _chatApi == null) {
+      return;
+    }
     final uuid = _sessionId!;
     _stopObserveTimer();
     setState(() {
@@ -436,7 +460,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 建立到会话的连接。为新建会话生成 UUID，为已有会话使用 resumeId。
   /// 根据 /chat/status 结果决定：直连 SSE（live）、等待发消息（idle）或进入冲突处理（running）。
-  Future<void> _connectToSession(String httpBase, CurrentSession session) async {
+  Future<void> _connectToSession(
+      String httpBase, CurrentSession session) async {
     final uuid = session.resumeId ?? const Uuid().v4();
     _sessionId = uuid;
     unawaited(_persistUuid(uuid));
@@ -466,7 +491,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         unawaited(_handleConflict(httpBase, session, uuid, holderDeviceId));
       } else {
         // No holder info, or we are the holder — treat as idle.
-        setState(() { _connected = true; _error = null; });
+        setState(() {
+          _connected = true;
+          _error = null;
+        });
       }
       return;
     }
@@ -487,10 +515,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _subscribeSse(String httpBase, String uuid, AgentKind agent) {
-    final sseUrl = ChatApi(httpBase, token: _serverToken).eventsUrl(uuid, agent: agent);
+    final sseUrl =
+        ChatApi(httpBase, token: _serverToken).eventsUrl(uuid, agent: agent);
     final sse = SseClient(
       url: sseUrl,
-      headers: _serverToken != null ? {'Authorization': 'Bearer $_serverToken'} : const {},
+      headers: _serverToken != null
+          ? {'Authorization': 'Bearer $_serverToken'}
+          : const {},
     );
     _sseClient = sse;
     _sseSub = sse.events.listen(_onSseEvent);
@@ -504,10 +535,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           children: [
             SizedBox(
               width: 56,
-              child: Text(k, style: TextStyle(color: t.textDim, fontSize: 12, fontFamily: 'monospace')),
+              child: Text(k,
+                  style: TextStyle(
+                      color: t.textDim, fontSize: 12, fontFamily: 'monospace')),
             ),
             Expanded(
-              child: Text(v, style: TextStyle(color: t.text, fontSize: 12, fontFamily: 'monospace')),
+              child: Text(v,
+                  style: TextStyle(
+                      color: t.text, fontSize: 12, fontFamily: 'monospace')),
             ),
           ],
         ),
@@ -528,13 +563,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   /// 首屏加载：最后 [_historyPageSize] 条消息。
-  Future<void> _loadHistory(String httpBase, String cwd, String sessionId, AgentKind agent) async {
+  Future<void> _loadHistory(
+      String httpBase, String cwd, String sessionId, AgentKind agent) async {
     // 给骨架屏一个最少展示时长，避免 fetch 太快"闪一下"
     final minShowUntil = DateTime.now().add(const Duration(milliseconds: 280));
     setState(() => _loadingHistory = true);
     try {
       final page = await _fetchHistoryPage(
-        httpBase, cwd, sessionId, agent,
+        httpBase,
+        cwd,
+        sessionId,
+        agent,
         limit: _historyPageSize,
       );
       if (!mounted) return;
@@ -560,7 +599,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           if (mounted) setState(() => _stickToBottom = true);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted || !_scrollController.hasClients) return;
-            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+            _scrollController
+                .jumpTo(_scrollController.position.maxScrollExtent);
           });
         });
       } else {
@@ -583,13 +623,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final preMax = _scrollController.hasClients
         ? _scrollController.position.maxScrollExtent
         : 0.0;
-    final preOffset = _scrollController.hasClients
-        ? _scrollController.offset
-        : 0.0;
+    final preOffset =
+        _scrollController.hasClients ? _scrollController.offset : 0.0;
 
     try {
       final page = await _fetchHistoryPage(
-        conn.httpBase, session!.cwd, session.resumeId!, session.agent,
+        conn.httpBase,
+        session!.cwd,
+        session.resumeId!,
+        session.agent,
         limit: _historyPageSize,
         beforeUuid: _oldestUuid,
       );
@@ -634,8 +676,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (beforeUuid != null) 'before_uuid': beforeUuid,
       },
     );
-    final authHeaders = _serverToken != null ? {'Authorization': 'Bearer $_serverToken'} : const <String, String>{};
-    final resp = await http.get(uri, headers: authHeaders).timeout(const Duration(seconds: 10));
+    final authHeaders = _serverToken != null
+        ? {'Authorization': 'Bearer $_serverToken'}
+        : const <String, String>{};
+    final resp = await http
+        .get(uri, headers: authHeaders)
+        .timeout(const Duration(seconds: 10));
     if (resp.statusCode != 200) return null;
     final data = jsonDecode(resp.body) as Map<String, dynamic>;
     final raw = (data['messages'] as List?) ?? const [];
@@ -668,7 +714,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kLastUuidKey, uuid);
   }
-
 
   void _manualReconnect() {
     _stopObserveTimer();
@@ -797,7 +842,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
         _currentBlockKind = null;
-        _messages.add(msg); _debugTrack(msg, json);
+        _messages.add(msg);
+        _debugTrack(msg, json);
         // 如果 AI 这一轮根本没有响应（中断发生在响应之前），
         // 保留 _unrespondedUserText，让"重新编辑"条出现。
         // 否则清掉。
@@ -819,7 +865,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         });
       } else if (msg is ErrorMsg) {
         _error = msg.message;
-        _messages.add(msg); _debugTrack(msg, json);
+        _messages.add(msg);
+        _debugTrack(msg, json);
       } else if (msg is StreamBlockStart) {
         _currentBlockKind = msg.kind;
         switch (msg.kind) {
@@ -882,7 +929,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         }
         _aiRespondedThisTurn = true;
         _unrespondedUserText = null;
-        _messages.add(msg); _debugTrack(msg, json);
+        _messages.add(msg);
+        _debugTrack(msg, json);
         // 拦截 TodoWrite 工具调用 → 更新全局 todoListProvider，让顶部 chip 反映进度。
         // 注意：tool_use 块本身仍保留在 message 里（_buildToolResultIndex 还要用），
         // tool_call_card 会在渲染时识别 TodoWrite 并跳过卡片显示。
@@ -900,9 +948,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // skip
       } else if (msg is CompactBoundaryMsg) {
         // 实时也可能收到（用户在会话中触发了 /compact）。
-        _messages.add(msg); _debugTrack(msg, json);
+        _messages.add(msg);
+        _debugTrack(msg, json);
       } else {
-        _messages.add(msg); _debugTrack(msg, json);
+        _messages.add(msg);
+        _debugTrack(msg, json);
       }
     });
     _scrollToEnd();
@@ -950,12 +1000,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (!_attachmentsAllReady) return;
     final raw = _textController.text.trim();
     final attachLines = _attachments
-        .where((a) => a.status == _AttachmentStatus.ready && a.remotePath != null)
+        .where(
+            (a) => a.status == _AttachmentStatus.ready && a.remotePath != null)
         .map((a) => '`${a.remotePath!}`')
         .toList();
-    final text = attachLines.isEmpty
-        ? raw
-        : '$raw\n\n附件：\n${attachLines.join('\n')}';
+    final text =
+        attachLines.isEmpty ? raw : '$raw\n\n附件：\n${attachLines.join('\n')}';
     if (text.isEmpty) return;
     _textController.clear();
     setState(() => _attachments.clear());
@@ -988,7 +1038,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (uuid != null && _chatApi != null && config != null && session != null) {
       final model = ref.read(currentModelProvider);
       final permMode = ref.read(permissionModeProvider);
-      unawaited(_chatApi!.stream(
+      unawaited(_chatApi!
+          .stream(
         uuid: uuid,
         cwd: session.cwd,
         text: text,
@@ -997,7 +1048,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         permissionMode: permMode.wire,
         agent: session.agent,
         runtime: session.runtime,
-      ).then((_) {
+      )
+          .then((_) {
         // Turn started — connect SSE if not already connected.
         if (mounted && _sseClient == null) {
           _subscribeSse(config.httpBase, uuid, session.agent);
@@ -1106,7 +1158,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _uploadOne(UploadApi api, _AttachmentState state, String cwd) async {
+  Future<void> _uploadOne(
+      UploadApi api, _AttachmentState state, String cwd) async {
     try {
       final result = await api.upload(File(state.localPath), cwd);
       if (!mounted) return;
@@ -1135,7 +1188,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       a.status = _AttachmentStatus.uploading;
       a.errorMsg = null;
     });
-    await _uploadOne(UploadApi(config.httpBase, token: config.token), a, session.cwd);
+    await _uploadOne(
+        UploadApi(config.httpBase, token: config.token), a, session.cwd);
   }
 
   bool get _attachmentsAllReady =>
@@ -1220,6 +1274,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             ),
           ),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
+        ChatAgentBar(agent: session.agent, runtime: session.runtime),
+        Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         Expanded(
           child: Stack(
             children: [
@@ -1230,7 +1286,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                           icon: Icons.send_outlined,
                           title: _observeMode
                               ? '旁观中…'
-                              : (_connected ? s.chatStartTalking : s.chatConnecting),
+                              : (_connected
+                                  ? s.chatStartTalking
+                                  : s.chatConnecting),
                         ))
                   : Scrollbar(
                       controller: _scrollController,
@@ -1249,8 +1307,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                                 padding: EdgeInsets.symmetric(vertical: 14),
                                 child: Center(
                                   child: SizedBox(
-                                    width: 16, height: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 1.5),
                                   ),
                                 ),
                               );
@@ -1260,9 +1320,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                           }
                           final m = _messages[i - 1];
                           if (m is LocalUserInput) {
-                            return _UserMessage(text: m.text, timestamp: m.timestamp);
+                            return _UserMessage(
+                                text: m.text, timestamp: m.timestamp);
                           }
-                          if (m is StreamingAssistant) return _StreamingMessage(buffer: m);
+                          if (m is StreamingAssistant) {
+                            return _StreamingMessage(buffer: m);
+                          }
                           return MessageView(
                             message: m,
                             toolResults: toolResults,
@@ -1331,6 +1394,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onSwitchModel: _switchModel,
             onSwitchPermissionMode: _switchPermissionMode,
             chatApi: _chatApi,
+            agent: session.agent,
           ),
       ],
     );
@@ -1340,7 +1404,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 class _ObserveBanner extends StatelessWidget {
   final String holderDeviceId;
   final VoidCallback onTakeover;
-  const _ObserveBanner({required this.holderDeviceId, required this.onTakeover});
+  const _ObserveBanner(
+      {required this.holderDeviceId, required this.onTakeover});
 
   @override
   Widget build(BuildContext context) {
@@ -1376,9 +1441,7 @@ class _ObserveBanner extends StatelessWidget {
               child: Text(
                 '接管',
                 style: TextStyle(
-                    fontSize: 11,
-                    color: t.error,
-                    fontWeight: FontWeight.w600),
+                    fontSize: 11, color: t.error, fontWeight: FontWeight.w600),
               ),
             ),
           ),
@@ -1404,7 +1467,8 @@ class _JumpToBottomButton extends StatelessWidget {
         customBorder: const CircleBorder(),
         onTap: onTap,
         child: SizedBox(
-          width: 40, height: 40,
+          width: 40,
+          height: 40,
           child: Icon(Icons.arrow_downward_rounded, size: 18, color: t.text),
         ),
       ),
@@ -1442,7 +1506,8 @@ class _StatusRow extends StatelessWidget {
       child: Row(
         children: [
           Container(
-            width: 6, height: 6,
+            width: 6,
+            height: 6,
             decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
@@ -1453,7 +1518,9 @@ class _StatusRow extends StatelessWidget {
               onTap: () {
                 Clipboard.setData(ClipboardData(text: uuid!));
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('UUID copied'), duration: Duration(seconds: 1)),
+                  const SnackBar(
+                      content: Text('UUID copied'),
+                      duration: Duration(seconds: 1)),
                 );
               },
               child: Container(
@@ -1461,7 +1528,8 @@ class _StatusRow extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: AppTokens.of(context).surfaceHi,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: AppTokens.of(context).border, width: 0.5),
+                  border: Border.all(
+                      color: AppTokens.of(context).border, width: 0.5),
                 ),
                 child: Text(
                   uuid!.length >= 8 ? uuid!.substring(0, 8) : uuid!,
@@ -1488,7 +1556,10 @@ class _StatusRow extends StatelessWidget {
                     const SizedBox(width: 4),
                     Text(
                       'reconnect',
-                      style: TextStyle(fontSize: 11, color: t.accent, fontWeight: FontWeight.w500),
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: t.accent,
+                          fontWeight: FontWeight.w500),
                     ),
                   ],
                 ),
@@ -1512,6 +1583,7 @@ class _UserMessage extends ConsumerStatefulWidget {
 class _UserMessageState extends ConsumerState<_UserMessage> {
   /// 超过该字符数时折叠显示（换行符也算）。
   static const _kCollapseThreshold = 300;
+
   /// 超过该行数时折叠显示。
   static const _kCollapseLines = 6;
 
@@ -1529,9 +1601,8 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
     final ts = tsFromMillis(widget.timestamp);
     final maxW = MediaQuery.of(context).size.width * 0.78;
 
-    final bubble = _shouldCollapse
-        ? _collapsibleBubble(t, maxW)
-        : _normalBubble(t, maxW);
+    final bubble =
+        _shouldCollapse ? _collapsibleBubble(t, maxW) : _normalBubble(t, maxW);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
@@ -1544,7 +1615,8 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
               padding: const EdgeInsets.only(top: 4, right: 2),
               child: Text(
                 formatMessageTime(ts, yesterdayLabel: s.timeYesterday),
-                style: TextStyle(fontFamily: 'monospace', fontSize: 10, color: t.textDim),
+                style: TextStyle(
+                    fontFamily: 'monospace', fontSize: 10, color: t.textDim),
               ),
             ),
         ],
@@ -1570,7 +1642,8 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
     final lines = '\n'.allMatches(widget.text).length + 1;
     final chars = widget.text.length;
     final firstLine = widget.text.split('\n').first.trim();
-    final preview = firstLine.length > 60 ? '${firstLine.substring(0, 60)}…' : firstLine;
+    final preview =
+        firstLine.length > 60 ? '${firstLine.substring(0, 60)}…' : firstLine;
 
     return ConstrainedBox(
       constraints: BoxConstraints(maxWidth: maxW),
@@ -1607,18 +1680,23 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
                 ),
               ),
               // ── 分隔线 ──────────────────────────────────────────
-              Divider(height: 0.5, thickness: 0.5, color: t.accent.withValues(alpha: 0.2)),
+              Divider(
+                  height: 0.5,
+                  thickness: 0.5,
+                  color: t.accent.withValues(alpha: 0.2)),
               // ── 内容：折叠时只显示首行预览，展开后显示全文 ──────
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
                 child: _expanded
                     ? SelectableText(
                         widget.text,
-                        style: TextStyle(fontSize: 13, color: t.text, height: 1.45),
+                        style: TextStyle(
+                            fontSize: 13, color: t.text, height: 1.45),
                       )
                     : Text(
                         preview,
-                        style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.4),
+                        style: TextStyle(
+                            fontSize: 13, color: t.textMuted, height: 1.4),
                         overflow: TextOverflow.ellipsis,
                       ),
               ),
@@ -1659,6 +1737,7 @@ class _Composer extends ConsumerWidget {
   final void Function(ModelOption) onSwitchModel;
   final void Function(CcPermissionMode) onSwitchPermissionMode;
   final ChatApi? chatApi;
+  final AgentKind agent;
   const _Composer({
     required this.controller,
     required this.connected,
@@ -1674,6 +1753,7 @@ class _Composer extends ConsumerWidget {
     required this.onSwitchModel,
     required this.onSwitchPermissionMode,
     this.chatApi,
+    required this.agent,
   });
 
   @override
@@ -1686,6 +1766,11 @@ class _Composer extends ConsumerWidget {
     final canSend = connected && !busy && attachmentsAllReady;
     final canQueue = connected && busy && hasText;
     final editable = connected; // 文本框 busy 时仍可编辑（用户能预写下一条），但发送被 stop 按钮替代。
+    final agentLabel = switch (agent) {
+      AgentKind.claude => 'Claude',
+      AgentKind.codex => 'Codex',
+      AgentKind.gemini => 'Gemini',
+    };
     return SafeArea(
       top: false,
       child: Padding(
@@ -1729,7 +1814,8 @@ class _Composer extends ConsumerWidget {
                       maxLines: 6,
                       enabled: editable,
                       cursorColor: t.accent,
-                      style: TextStyle(fontSize: 14, color: t.text, height: 1.4),
+                      style:
+                          TextStyle(fontSize: 14, color: t.text, height: 1.4),
                       decoration: InputDecoration(
                         border: InputBorder.none,
                         enabledBorder: InputBorder.none,
@@ -1738,7 +1824,7 @@ class _Composer extends ConsumerWidget {
                         isDense: true,
                         filled: false,
                         contentPadding: const EdgeInsets.symmetric(vertical: 4),
-                        hintText: editable ? 'Ask Claude…' : 'Connecting…',
+                        hintText: editable ? '询问 $agentLabel…' : '正在连接…',
                         hintStyle: TextStyle(color: t.textDim, fontSize: 14),
                       ),
                       textInputAction: TextInputAction.newline,
@@ -1778,7 +1864,8 @@ class _Composer extends ConsumerWidget {
                     current: ref.watch(permissionModeProvider),
                     onPick: onSwitchPermissionMode,
                   ),
-                  _ModelPicker(current: model, onPick: onSwitchModel, chatApi: chatApi),
+                  _ModelPicker(
+                      current: model, onPick: onSwitchModel, chatApi: chatApi),
                   const Spacer(),
                 ],
               ),
@@ -1908,7 +1995,8 @@ class _ModelPicker extends StatefulWidget {
   final ModelOption current;
   final void Function(ModelOption) onPick;
   final ChatApi? chatApi;
-  const _ModelPicker({required this.current, required this.onPick, this.chatApi});
+  const _ModelPicker(
+      {required this.current, required this.onPick, this.chatApi});
 
   @override
   State<_ModelPicker> createState() => _ModelPickerState();
@@ -1916,12 +2004,12 @@ class _ModelPicker extends StatefulWidget {
 
 class _ModelPickerState extends State<_ModelPicker> {
   Future<void> _openSheet() async {
-    final t = AppTokens.of(context);
-
     // Fetch models from server first; fall back to built-in list on error
     ServerModels? serverModels;
     if (widget.chatApi != null) {
-      try { serverModels = await widget.chatApi!.fetchModels(); } catch (_) {}
+      try {
+        serverModels = await widget.chatApi!.fetchModels();
+      } catch (_) {}
     }
 
     final models = serverModels != null
@@ -1960,7 +2048,10 @@ class _ModelPickerState extends State<_ModelPicker> {
             const SizedBox(width: 4),
             Text(
               widget.current.label.split(' ').first,
-              style: TextStyle(fontSize: 11.5, color: t.textMuted, fontWeight: FontWeight.w500),
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: t.textMuted,
+                  fontWeight: FontWeight.w500),
             ),
             const SizedBox(width: 2),
             Icon(Icons.expand_more, size: 13, color: t.textDim),
@@ -1975,7 +2066,8 @@ class _ModelSheet extends StatefulWidget {
   final ModelOption current;
   final List<ModelOption> models;
   final String? providerLabel;
-  const _ModelSheet({required this.current, required this.models, this.providerLabel});
+  const _ModelSheet(
+      {required this.current, required this.models, this.providerLabel});
 
   @override
   State<_ModelSheet> createState() => _ModelSheetState();
@@ -2011,8 +2103,10 @@ class _ModelSheetState extends State<_ModelSheet> {
               padding: const EdgeInsets.only(top: 10, bottom: 4),
               child: Center(
                 child: Container(
-                  width: 36, height: 4,
-                  decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2)),
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: t.border, borderRadius: BorderRadius.circular(2)),
                 ),
               ),
             ),
@@ -2021,24 +2115,34 @@ class _ModelSheetState extends State<_ModelSheet> {
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
               child: Row(
                 children: [
-                  Icon(Icons.auto_awesome_outlined, size: 16, color: t.textMuted),
+                  Icon(Icons.auto_awesome_outlined,
+                      size: 16, color: t.textMuted),
                   const SizedBox(width: 8),
                   Text(
                     '选择模型',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.text, letterSpacing: -0.1),
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: t.text,
+                        letterSpacing: -0.1),
                   ),
                   if (widget.providerLabel != null) ...[
                     const Spacer(),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
                         color: t.accent.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: t.accent.withValues(alpha: 0.2)),
+                        border:
+                            Border.all(color: t.accent.withValues(alpha: 0.2)),
                       ),
                       child: Text(
                         widget.providerLabel!,
-                        style: TextStyle(fontSize: 10.5, color: t.accent, fontWeight: FontWeight.w600),
+                        style: TextStyle(
+                            fontSize: 10.5,
+                            color: t.accent,
+                            fontWeight: FontWeight.w600),
                       ),
                     ),
                   ],
@@ -2047,7 +2151,8 @@ class _ModelSheetState extends State<_ModelSheet> {
             ),
             // model list
             for (final m in widget.models) ...[
-              Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+              Divider(
+                  color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
               _ModelRow(
                 model: m,
                 selected: m.id == widget.current.id,
@@ -2055,7 +2160,8 @@ class _ModelSheetState extends State<_ModelSheet> {
               ),
             ],
             // custom input row
-            Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+            Divider(
+                color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
             if (!_showCustomInput)
               InkWell(
                 onTap: () => setState(() => _showCustomInput = true),
@@ -2064,7 +2170,8 @@ class _ModelSheetState extends State<_ModelSheet> {
                   child: Row(
                     children: [
                       Container(
-                        width: 18, height: 18,
+                        width: 18,
+                        height: 18,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           border: Border.all(color: t.border, width: 1.5),
@@ -2072,7 +2179,8 @@ class _ModelSheetState extends State<_ModelSheet> {
                         child: Icon(Icons.add, size: 11, color: t.textDim),
                       ),
                       const SizedBox(width: 12),
-                      Text('自定义 Model ID', style: TextStyle(color: t.textMuted, fontSize: 14)),
+                      Text('自定义 Model ID',
+                          style: TextStyle(color: t.textMuted, fontSize: 14)),
                     ],
                   ),
                 ),
@@ -2086,12 +2194,16 @@ class _ModelSheetState extends State<_ModelSheet> {
                       child: TextField(
                         controller: _customController,
                         autofocus: true,
-                        style: TextStyle(fontSize: 13, color: t.text, fontFamily: 'monospace'),
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: t.text,
+                            fontFamily: 'monospace'),
                         decoration: InputDecoration(
                           hintText: 'e.g. anthropic.claude-sonnet-4-5-...',
                           hintStyle: TextStyle(fontSize: 12, color: t.textDim),
                           isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
                             borderSide: BorderSide(color: t.border),
@@ -2107,7 +2219,9 @@ class _ModelSheetState extends State<_ModelSheet> {
                         ),
                         onSubmitted: (v) {
                           final id = v.trim();
-                          if (id.isNotEmpty) Navigator.of(context).pop(ModelOption.custom(id));
+                          if (id.isNotEmpty) {
+                            Navigator.of(context).pop(ModelOption.custom(id));
+                          }
                         },
                       ),
                     ),
@@ -2115,7 +2229,9 @@ class _ModelSheetState extends State<_ModelSheet> {
                     GestureDetector(
                       onTap: () {
                         final id = _customController.text.trim();
-                        if (id.isNotEmpty) Navigator.of(context).pop(ModelOption.custom(id));
+                        if (id.isNotEmpty) {
+                          Navigator.of(context).pop(ModelOption.custom(id));
+                        }
                       },
                       child: Container(
                         padding: const EdgeInsets.all(10),
@@ -2123,7 +2239,8 @@ class _ModelSheetState extends State<_ModelSheet> {
                           color: t.accent,
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: const Icon(Icons.check, size: 16, color: Colors.white),
+                        child: const Icon(Icons.check,
+                            size: 16, color: Colors.white),
                       ),
                     ),
                   ],
@@ -2141,7 +2258,8 @@ class _ModelRow extends StatelessWidget {
   final ModelOption model;
   final bool selected;
   final VoidCallback onTap;
-  const _ModelRow({required this.model, required this.selected, required this.onTap});
+  const _ModelRow(
+      {required this.model, required this.selected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -2153,7 +2271,8 @@ class _ModelRow extends StatelessWidget {
         child: Row(
           children: [
             Container(
-              width: 18, height: 18,
+              width: 18,
+              height: 18,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: selected ? t.accent : Colors.transparent,
@@ -2209,28 +2328,40 @@ class _PermissionModePicker extends ConsumerWidget {
   // 权限名称固定英文，不随语言设置变化
   String _label(CcPermissionMode m) {
     switch (m) {
-      case CcPermissionMode.defaultMode: return 'Default';
-      case CcPermissionMode.acceptEdits: return 'Accept Edits';
-      case CcPermissionMode.plan: return 'Plan';
-      case CcPermissionMode.bypass: return 'Bypass';
+      case CcPermissionMode.defaultMode:
+        return 'Default';
+      case CcPermissionMode.acceptEdits:
+        return 'Accept Edits';
+      case CcPermissionMode.plan:
+        return 'Plan';
+      case CcPermissionMode.bypass:
+        return 'Bypass';
     }
   }
 
   String _desc(CcPermissionMode m, Strings s) {
     switch (m) {
-      case CcPermissionMode.defaultMode: return s.permModeDefaultDesc;
-      case CcPermissionMode.acceptEdits: return s.permModeAcceptEditsDesc;
-      case CcPermissionMode.plan: return s.permModePlanDesc;
-      case CcPermissionMode.bypass: return s.permModeBypassDesc;
+      case CcPermissionMode.defaultMode:
+        return s.permModeDefaultDesc;
+      case CcPermissionMode.acceptEdits:
+        return s.permModeAcceptEditsDesc;
+      case CcPermissionMode.plan:
+        return s.permModePlanDesc;
+      case CcPermissionMode.bypass:
+        return s.permModeBypassDesc;
     }
   }
 
   (IconData, Color) _glyph(CcPermissionMode m, AppTokens t) {
     switch (m) {
-      case CcPermissionMode.defaultMode: return (Icons.front_hand_outlined, t.warning);
-      case CcPermissionMode.acceptEdits: return (Icons.edit_note_outlined, t.accent);
-      case CcPermissionMode.plan: return (Icons.checklist_outlined, t.toolRead);
-      case CcPermissionMode.bypass: return (Icons.rocket_launch_outlined, t.toolBash);
+      case CcPermissionMode.defaultMode:
+        return (Icons.front_hand_outlined, t.warning);
+      case CcPermissionMode.acceptEdits:
+        return (Icons.edit_note_outlined, t.accent);
+      case CcPermissionMode.plan:
+        return (Icons.checklist_outlined, t.toolRead);
+      case CcPermissionMode.bypass:
+        return (Icons.rocket_launch_outlined, t.toolBash);
     }
   }
 
@@ -2257,8 +2388,11 @@ class _PermissionModePicker extends ConsumerWidget {
                 padding: const EdgeInsets.only(top: 10, bottom: 4),
                 child: Center(
                   child: Container(
-                    width: 36, height: 4,
-                    decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2)),
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                        color: t.border,
+                        borderRadius: BorderRadius.circular(2)),
                   ),
                 ),
               ),
@@ -2281,7 +2415,11 @@ class _PermissionModePicker extends ConsumerWidget {
                 ),
               ),
               for (final m in CcPermissionMode.values) ...[
-                Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+                Divider(
+                    color: t.borderSubt,
+                    height: 0.5,
+                    indent: 16,
+                    endIndent: 16),
                 _PermissionModeRow(
                   mode: m,
                   label: _label(m),
@@ -2348,7 +2486,8 @@ class _PermissionModeRow extends StatelessWidget {
         child: Row(
           children: [
             Container(
-              width: 18, height: 18,
+              width: 18,
+              height: 18,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: selected ? t.accent : Colors.transparent,
@@ -2418,7 +2557,9 @@ class _AttachmentChip extends StatelessWidget {
       return Icons.image_outlined;
     }
     if (lower.endsWith('.pdf')) return Icons.picture_as_pdf_outlined;
-    if (RegExp(r'\.(ts|tsx|js|jsx|py|dart|go|rs|java|c|cpp|h|hpp|json|yaml|yml|md|sh)$').hasMatch(lower)) {
+    if (RegExp(
+            r'\.(ts|tsx|js|jsx|py|dart|go|rs|java|c|cpp|h|hpp|json|yaml|yml|md|sh)$')
+        .hasMatch(lower)) {
       return Icons.code;
     }
     return Icons.insert_drive_file_outlined;
@@ -2530,7 +2671,8 @@ class _PendingQueueBar extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(
                   '长按可优先发送',
-                  style: TextStyle(fontSize: 10, color: t.textDim.withValues(alpha: 0.6)),
+                  style: TextStyle(
+                      fontSize: 10, color: t.textDim.withValues(alpha: 0.6)),
                 ),
               ],
             ),
@@ -2600,7 +2742,8 @@ class _PendingQueueItemState extends State<_PendingQueueItem>
       animation: _shakeCtrl,
       builder: (_, child) {
         // 衰减正弦抖动：2.5 次振荡，幅度随进度衰减
-        final dx = sin(_shakeCtrl.value * pi * 5) * 6.0 * (1 - _shakeCtrl.value);
+        final dx =
+            sin(_shakeCtrl.value * pi * 5) * 6.0 * (1 - _shakeCtrl.value);
         return Transform.translate(offset: Offset(dx, 0), child: child);
       },
       child: GestureDetector(
@@ -2902,7 +3045,8 @@ class _ChatSkeletonState extends State<_ChatSkeleton>
           child: Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Container(
-              width: 8, height: 8,
+              width: 8,
+              height: 8,
               decoration: BoxDecoration(color: c, shape: BoxShape.circle),
             ),
           ),
@@ -2926,7 +3070,8 @@ class _ChatSkeletonState extends State<_ChatSkeleton>
           child: Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Container(
-              width: 8, height: 8,
+              width: 8,
+              height: 8,
               decoration: BoxDecoration(color: c, shape: BoxShape.circle),
             ),
           ),
@@ -2949,11 +3094,23 @@ class _ChatSkeletonState extends State<_ChatSkeleton>
             ),
             child: Row(
               children: [
-                Container(width: 14, height: 14, decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(3))),
+                Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                        color: c, borderRadius: BorderRadius.circular(3))),
                 const SizedBox(width: 8),
-                Container(width: 60, height: 10, decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(3))),
+                Container(
+                    width: 60,
+                    height: 10,
+                    decoration: BoxDecoration(
+                        color: c, borderRadius: BorderRadius.circular(3))),
                 const SizedBox(width: 8),
-                Expanded(child: Container(height: 10, decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(3)))),
+                Expanded(
+                    child: Container(
+                        height: 10,
+                        decoration: BoxDecoration(
+                            color: c, borderRadius: BorderRadius.circular(3)))),
               ],
             ),
           ),
@@ -2978,7 +3135,11 @@ class _EmptyState extends StatelessWidget {
         children: [
           Icon(icon, size: 40, color: t.textDim),
           const SizedBox(height: 16),
-          Text(title, style: TextStyle(fontSize: 14, color: t.textMuted, fontWeight: FontWeight.w500)),
+          Text(title,
+              style: TextStyle(
+                  fontSize: 14,
+                  color: t.textMuted,
+                  fontWeight: FontWeight.w500)),
           if (subtitle != null) ...[
             const SizedBox(height: 4),
             Text(subtitle!, style: TextStyle(fontSize: 12, color: t.textDim)),

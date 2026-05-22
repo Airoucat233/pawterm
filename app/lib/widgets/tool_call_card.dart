@@ -16,8 +16,10 @@ import 'diff_view.dart';
 ///   Output — 工具返回（文本，>4000 字符截断）
 class ToolCallCard extends StatefulWidget {
   final ToolUseBlock toolUse;
+
   /// 可选：和这次调用匹配的结果（通过 tool_use_id 配对）。null 表示尚未返回。
   final ToolResultBlock? result;
+
   /// Task 工具专用：子 Agent 流式对话消息列表（keyed by parent_tool_use_id）。
   /// 非 null 表示这是一个 Task 调用，展开后显示嵌套子 Agent 对话。
   final List<IncomingMessage>? subAgentMsgs;
@@ -36,6 +38,7 @@ class ToolCallCard extends StatefulWidget {
 class _ToolCallCardState extends State<ToolCallCard> {
   bool _expanded = false;
   bool _viewRaw = false;
+  bool _showRawPayload = false;
 
   ToolUseBlock get toolUse => widget.toolUse;
   ToolResultBlock? get result => widget.result;
@@ -49,8 +52,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final icon = _iconFor(toolUse.name);
     final hasInputBody = !_isBodyEmpty(toolUse.name);
     final hasOutput = result != null;
+    final hasRawPayload = _rawPayload().isNotEmpty;
     // Task tool: expandable as soon as sub-agent messages are being tracked
-    final canExpand = hasInputBody || hasOutput || (widget.subAgentMsgs != null);
+    final canExpand = hasInputBody ||
+        hasOutput ||
+        hasRawPayload ||
+        (widget.subAgentMsgs != null);
 
     return InkWell(
       onTap: canExpand ? () => setState(() => _expanded = !_expanded) : null,
@@ -77,12 +84,20 @@ class _ToolCallCardState extends State<ToolCallCard> {
                   children: [
                     Icon(icon, size: 14, color: color),
                     const SizedBox(width: 8),
-                    Text(
-                      _displayName(toolUse.name, toolUse.input),
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: t.text,
+                    Flexible(
+                      flex: 0,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 128),
+                        child: Text(
+                          toolUse.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: t.text,
+                          ),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -108,7 +123,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
                   if (hasInputBody) ...[
                     Row(
                       children: [
-                        _SectionLabel('Input', t),
+                        _SectionLabel('输入', t),
                         const Spacer(),
                         if (_showViewToggle(toolUse.name))
                           _SegmentedControl(
@@ -126,10 +141,26 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     _SubAgentTranscript(messages: widget.subAgentMsgs!),
                   ],
                   if (hasOutput) ...[
-                    if (hasInputBody || widget.subAgentMsgs != null) const SizedBox(height: 10),
-                    _SectionLabel('Output', t),
+                    if (hasInputBody || widget.subAgentMsgs != null)
+                      const SizedBox(height: 10),
+                    _SectionLabel('输出', t),
                     const SizedBox(height: 4),
                     _outputBody(t, result!),
+                  ],
+                  if (hasRawPayload) ...[
+                    if (hasInputBody ||
+                        hasOutput ||
+                        widget.subAgentMsgs != null)
+                      const SizedBox(height: 10),
+                    _RawPayloadToggle(
+                      expanded: _showRawPayload,
+                      onTap: () =>
+                          setState(() => _showRawPayload = !_showRawPayload),
+                    ),
+                    if (_showRawPayload) ...[
+                      const SizedBox(height: 4),
+                      _JsonBlock(value: _rawPayload()),
+                    ],
                   ],
                 ],
               ],
@@ -148,13 +179,16 @@ class _ToolCallCardState extends State<ToolCallCard> {
         child: CircularProgressIndicator(strokeWidth: 1.5, color: t.textDim),
       );
     }
-    if (result!.isError) return Icon(Icons.close_rounded, size: 14, color: t.error);
+    if (result!.isError) {
+      return Icon(Icons.close_rounded, size: 14, color: t.error);
+    }
     return Icon(Icons.check_rounded, size: 14, color: t.success);
   }
 
   Widget _outputBody(AppTokens t, ToolResultBlock r) {
     final text = _extractText(r.content);
-    final truncated = text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text;
+    final truncated =
+        text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
@@ -239,15 +273,31 @@ class _ToolCallCardState extends State<ToolCallCard> {
                   color: color,
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: color,
-                    fontWeight: FontWeight.w500,
+                Flexible(
+                  flex: 0,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 128),
+                    child: Text(
+                      toolUse.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: color,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: t.textMuted),
+                  ),
+                ),
                 Icon(
                   _expanded ? Icons.expand_less : Icons.expand_more,
                   size: 14,
@@ -294,21 +344,6 @@ class _ToolCallCardState extends State<ToolCallCard> {
         return t.accent.withValues(alpha: 0.8);
       default:
         return t.textMuted;
-    }
-  }
-
-  /// 标题行工具名。Agent 工具附加 subagent_type；Skill 工具显示 "加载 skill: xxx"。
-  String _displayName(String name, Map<String, dynamic> input) {
-    switch (name) {
-      case 'Agent':
-      case 'Task':
-        final type = (input['subagent_type'] ?? '').toString().trim();
-        return type.isNotEmpty ? '$name · $type' : name;
-      case 'Skill':
-        final skill = (input['skill'] ?? '').toString().trim();
-        return skill.isNotEmpty ? '加载 skill: $skill' : name;
-      default:
-        return name;
     }
   }
 
@@ -381,11 +416,13 @@ class _ToolCallCardState extends State<ToolCallCard> {
         text = (input['pattern'] ?? '').toString();
       case 'Agent':
       case 'Task':
-        final raw = (input['description'] ?? input['prompt'] ?? '').toString().trim();
+        final raw =
+            (input['description'] ?? input['prompt'] ?? '').toString().trim();
         text = raw.length > 60 ? '${raw.substring(0, 60)}…' : raw;
       case 'Skill':
-        // skill 名已在 _displayName 里，摘要留空
-        return const SizedBox.shrink();
+        final skill = (input['skill'] ?? '').toString().trim();
+        text = skill;
+        break;
       default:
         return const SizedBox.shrink();
     }
@@ -400,7 +437,8 @@ class _ToolCallCardState extends State<ToolCallCard> {
     );
   }
 
-  Widget _renderBody(BuildContext context, AppTokens t, String name, Map<String, dynamic> input) {
+  Widget _renderBody(BuildContext context, AppTokens t, String name,
+      Map<String, dynamic> input) {
     // raw 模式：直接显示 JSON
     if (_viewRaw) return _JsonBlock(value: input);
 
@@ -421,6 +459,17 @@ class _ToolCallCardState extends State<ToolCallCard> {
         final hasNested = input.values.any((v) => v is Map || v is List);
         return hasNested ? _JsonBlock(value: input) : _KeyValueList(map: input);
     }
+  }
+
+  Map<String, dynamic> _rawPayload() {
+    final payload = <String, dynamic>{};
+    if (toolUse.rawPayload != null) {
+      payload['tool_use'] = toolUse.rawPayload;
+    }
+    if (result?.rawPayload != null) {
+      payload['tool_result'] = result!.rawPayload;
+    }
+    return payload;
   }
 }
 
@@ -444,9 +493,17 @@ class _SegmentedControl extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _Seg(label: 'pretty', selected: !isRaw, onTap: () => onChanged(false), t: t),
+          _Seg(
+              label: 'pretty',
+              selected: !isRaw,
+              onTap: () => onChanged(false),
+              t: t),
           Container(width: 0.5, color: t.border),
-          _Seg(label: 'raw', selected: isRaw, onTap: () => onChanged(true), t: t),
+          _Seg(
+              label: 'raw',
+              selected: isRaw,
+              onTap: () => onChanged(true),
+              t: t),
         ],
       ),
     );
@@ -458,7 +515,11 @@ class _Seg extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
   final AppTokens t;
-  const _Seg({required this.label, required this.selected, required this.onTap, required this.t});
+  const _Seg(
+      {required this.label,
+      required this.selected,
+      required this.onTap,
+      required this.t});
 
   @override
   Widget build(BuildContext context) {
@@ -501,6 +562,35 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
+class _RawPayloadToggle extends StatelessWidget {
+  final bool expanded;
+  final VoidCallback onTap;
+  const _RawPayloadToggle({required this.expanded, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            _SectionLabel('原始事件', t),
+            const SizedBox(width: 6),
+            Icon(
+              expanded ? Icons.expand_less : Icons.expand_more,
+              size: 14,
+              color: t.textDim,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ── Input body widgets ────────────────────────────────────────────────
 
 class _BashLine extends StatelessWidget {
@@ -531,7 +621,8 @@ class _FilePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final truncated = content.length > 800 ? '${content.substring(0, 800)}\n…' : content;
+    final truncated =
+        content.length > 800 ? '${content.substring(0, 800)}\n…' : content;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
@@ -561,9 +652,11 @@ class _KeyValueList extends StatelessWidget {
           padding: const EdgeInsets.only(bottom: 2),
           child: RichText(
             text: TextSpan(
-              style: TextStyle(fontFamily: 'monospace', fontSize: 11, color: t.text),
+              style: TextStyle(
+                  fontFamily: 'monospace', fontSize: 11, color: t.text),
               children: [
-                TextSpan(text: '${e.key}: ', style: TextStyle(color: t.textMuted)),
+                TextSpan(
+                    text: '${e.key}: ', style: TextStyle(color: t.textMuted)),
                 TextSpan(text: e.value.toString()),
               ],
             ),
@@ -589,7 +682,8 @@ class _JsonBlock extends StatelessWidget {
     } catch (_) {
       text = value.toString();
     }
-    final truncated = text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text;
+    final truncated =
+        text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
@@ -639,11 +733,15 @@ class _TodoList extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  status == 'in_progress' && activeForm.isNotEmpty ? activeForm : content,
+                  status == 'in_progress' && activeForm.isNotEmpty
+                      ? activeForm
+                      : content,
                   style: TextStyle(
                     fontSize: 12,
                     color: status == 'completed' ? t.textDim : t.text,
-                    decoration: status == 'completed' ? TextDecoration.lineThrough : null,
+                    decoration: status == 'completed'
+                        ? TextDecoration.lineThrough
+                        : null,
                   ),
                 ),
               ),
@@ -780,9 +878,12 @@ class _SubMdRow extends StatelessWidget {
             border: Border.all(color: t.border, width: 0.5),
           ),
           codeblockPadding: const EdgeInsets.all(8),
-          h1: TextStyle(color: t.text, fontSize: 14, fontWeight: FontWeight.w600),
-          h2: TextStyle(color: t.text, fontSize: 13, fontWeight: FontWeight.w600),
-          h3: TextStyle(color: t.text, fontSize: 12, fontWeight: FontWeight.w600),
+          h1: TextStyle(
+              color: t.text, fontSize: 14, fontWeight: FontWeight.w600),
+          h2: TextStyle(
+              color: t.text, fontSize: 13, fontWeight: FontWeight.w600),
+          h3: TextStyle(
+              color: t.text, fontSize: 12, fontWeight: FontWeight.w600),
           listBullet: TextStyle(color: t.textMuted, fontSize: 12),
         ),
       ),

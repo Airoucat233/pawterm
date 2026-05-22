@@ -141,7 +141,8 @@ class StreamBlockStart extends IncomingMessage {
   final int index;
   final String kind;
   final String? parentToolUseId;
-  StreamBlockStart({required this.index, required this.kind, this.parentToolUseId});
+  StreamBlockStart(
+      {required this.index, required this.kind, this.parentToolUseId});
 }
 
 class StreamDelta extends IncomingMessage {
@@ -149,7 +150,11 @@ class StreamDelta extends IncomingMessage {
   final String kind;
   final String text;
   final String? parentToolUseId;
-  StreamDelta({required this.index, required this.kind, required this.text, this.parentToolUseId});
+  StreamDelta(
+      {required this.index,
+      required this.kind,
+      required this.text,
+      this.parentToolUseId});
 }
 
 class StreamBlockStop extends IncomingMessage {
@@ -162,6 +167,7 @@ class SessionReady extends IncomingMessage {
   final String sessionKey;
   final String cwd;
   final String permissionMode;
+
   /// 服务端 attach 已有 session 时为 true：当前有 in-flight 的流式响应，
   /// 客户端应立即恢复 spinner / streaming UI，不必等下一个事件。
   final bool busy;
@@ -180,12 +186,17 @@ class AssistantMsg extends IncomingMessage {
   /// Non-null when this message belongs to a sub-agent (Task tool).
   /// Value is the tool_use_id of the Task call that spawned the sub-agent.
   final String? parentToolUseId;
-  AssistantMsg({required this.content, this.model, this.timestamp, this.parentToolUseId});
+  AssistantMsg(
+      {required this.content,
+      this.model,
+      this.timestamp,
+      this.parentToolUseId});
 }
 
 class UserMsg extends IncomingMessage {
   final List<ContentBlock> content;
   final int? timestamp;
+
   /// Non-null when this message belongs to a sub-agent (Task tool).
   final String? parentToolUseId;
   UserMsg({required this.content, this.timestamp, this.parentToolUseId});
@@ -239,8 +250,10 @@ class UnknownMsg extends IncomingMessage {
 class TaskNotificationMsg extends IncomingMessage {
   /// 触发本通知的 task_id（Task 工具调用的 tool_use_id）。
   final String? taskId;
+
   /// 任务状态：'completed' | 'killed' | 'failed' | 'info' 等。
   final String? status;
+
   /// 人读摘要，如 "Task completed successfully"。
   final String? summary;
   TaskNotificationMsg({this.taskId, this.status, this.summary});
@@ -259,12 +272,18 @@ sealed class ContentBlock {
           id: json['id'] as String? ?? '',
           name: json['name'] as String? ?? '',
           input: Map<String, dynamic>.from(json['input'] ?? {}),
+          nativeType: json['native_type'] as String?,
+          nativeEvent: json['native_event'] as String?,
+          rawPayload: json['raw_payload'],
         );
       case 'tool_result':
         return ToolResultBlock(
           toolUseId: json['tool_use_id'] as String? ?? '',
           content: json['content'],
           isError: (json['is_error'] as bool?) ?? false,
+          nativeType: json['native_type'] as String?,
+          nativeEvent: json['native_event'] as String?,
+          rawPayload: json['raw_payload'],
         );
       default:
         return UnknownBlock(raw: json);
@@ -286,14 +305,34 @@ class ToolUseBlock extends ContentBlock {
   final String id;
   final String name;
   final Map<String, dynamic> input;
-  ToolUseBlock({required this.id, required this.name, required this.input});
+  final String? nativeType;
+  final String? nativeEvent;
+  final dynamic rawPayload;
+  ToolUseBlock({
+    required this.id,
+    required this.name,
+    required this.input,
+    this.nativeType,
+    this.nativeEvent,
+    this.rawPayload,
+  });
 }
 
 class ToolResultBlock extends ContentBlock {
   final String toolUseId;
   final dynamic content;
   final bool isError;
-  ToolResultBlock({required this.toolUseId, required this.content, required this.isError});
+  final String? nativeType;
+  final String? nativeEvent;
+  final dynamic rawPayload;
+  ToolResultBlock({
+    required this.toolUseId,
+    required this.content,
+    required this.isError,
+    this.nativeType,
+    this.nativeEvent,
+    this.rawPayload,
+  });
 }
 
 class UnknownBlock extends ContentBlock {
