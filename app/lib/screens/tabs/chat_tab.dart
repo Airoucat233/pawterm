@@ -11,6 +11,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../../api/agents_api.dart';
 import '../../api/chat_api.dart';
 import '../../api/protocol.dart';
 import '../../api/sse_client.dart';
@@ -223,7 +224,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  String _sessionKey(CurrentSession s) => '${s.cwd}|${s.resumeId ?? "new"}';
+  String _sessionKey(CurrentSession s) => '${s.agent.wire}|${s.cwd}|${s.resumeId ?? "new"}';
 
   // Throttle session-start attempts so a dead server doesn't trigger a tight loop.
   // Once api.start() failed, only the user-visible "reconnect" button will retry.
@@ -289,12 +290,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     switch (choice) {
       case _ConflictChoice.observe:
         if (session.resumeId != null && _messages.isEmpty) {
-          _loadHistory(httpBase, session.cwd, session.resumeId!);
+          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent);
         }
         _startObserveMode(httpBase, session, uuid, holderDeviceId);
       case _ConflictChoice.takeover:
         if (session.resumeId != null && _messages.isEmpty) {
-          _loadHistory(httpBase, session.cwd, session.resumeId!);
+          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent);
         }
         unawaited(_doTakeover(httpBase, session, uuid));
       case null:
@@ -358,7 +359,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       if (!mounted) return;
       // Check if the holder is still running.
       try {
-        final status = await _chatApi?.status(uuid);
+        final status = await _chatApi?.status(uuid, agent: session.agent);
         if (!mounted) return;
         if (status != null &&
             (status.state != TurnState.running ||
@@ -380,7 +381,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       // Silently refresh messages.
       try {
         final page = await _fetchHistoryPage(
-          httpBase, session.cwd, uuid,
+          httpBase, session.cwd, uuid, session.agent,
           limit: _historyPageSize,
         );
         if (!mounted || page == null) return;
@@ -446,12 +447,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
     // 先加载历史（与状态查询并行）。
     if (session.resumeId != null) {
-      _loadHistory(httpBase, session.cwd, session.resumeId!);
+      _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent);
     }
 
     TurnStatus turnStatus;
     try {
-      turnStatus = await api.status(uuid);
+      turnStatus = await api.status(uuid, agent: session.agent);
     } catch (_) {
       turnStatus = TurnStatus(TurnState.unknown);
     }
@@ -481,12 +482,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     });
 
     if (turnStatus.state == TurnState.live) {
-      _subscribeSse(httpBase, uuid);
+      _subscribeSse(httpBase, uuid, session.agent);
     }
   }
 
-  void _subscribeSse(String httpBase, String uuid) {
-    final sseUrl = ChatApi(httpBase, token: _serverToken).eventsUrl(uuid);
+  void _subscribeSse(String httpBase, String uuid, AgentKind agent) {
+    final sseUrl = ChatApi(httpBase, token: _serverToken).eventsUrl(uuid, agent: agent);
     final sse = SseClient(
       url: sseUrl,
       headers: _serverToken != null ? {'Authorization': 'Bearer $_serverToken'} : const {},
@@ -527,13 +528,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   /// 首屏加载：最后 [_historyPageSize] 条消息。
-  Future<void> _loadHistory(String httpBase, String cwd, String sessionId) async {
+  Future<void> _loadHistory(String httpBase, String cwd, String sessionId, AgentKind agent) async {
     // 给骨架屏一个最少展示时长，避免 fetch 太快"闪一下"
     final minShowUntil = DateTime.now().add(const Duration(milliseconds: 280));
     setState(() => _loadingHistory = true);
     try {
       final page = await _fetchHistoryPage(
-        httpBase, cwd, sessionId,
+        httpBase, cwd, sessionId, agent,
         limit: _historyPageSize,
       );
       if (!mounted) return;
@@ -588,7 +589,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
     try {
       final page = await _fetchHistoryPage(
-        conn.httpBase, session!.cwd, session.resumeId!,
+        conn.httpBase, session!.cwd, session.resumeId!, session.agent,
         limit: _historyPageSize,
         beforeUuid: _oldestUuid,
       );
@@ -620,7 +621,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   Future<_HistoryPage?> _fetchHistoryPage(
     String httpBase,
     String cwd,
-    String sessionId, {
+    String sessionId,
+    AgentKind agent, {
     required int limit,
     String? beforeUuid,
   }) async {
@@ -628,6 +630,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       queryParameters: {
         'cwd': cwd,
         'limit': '$limit',
+        'agent': agent.wire,
         if (beforeUuid != null) 'before_uuid': beforeUuid,
       },
     );
@@ -992,10 +995,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         deviceId: _deviceId,
         model: model.id,
         permissionMode: permMode.wire,
+        agent: session.agent,
+        runtime: session.runtime,
       ).then((_) {
         // Turn started — connect SSE if not already connected.
         if (mounted && _sseClient == null) {
-          _subscribeSse(config.httpBase, uuid);
+          _subscribeSse(config.httpBase, uuid, session.agent);
         }
       }).catchError((e) {
         if (mounted) {
@@ -1023,8 +1028,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _interrupt() {
-    if (_busy && _sessionId != null && _chatApi != null) {
-      unawaited(_chatApi!.interrupt(_sessionId!));
+    final session = ref.read(currentSessionProvider);
+    if (_busy && _sessionId != null && _chatApi != null && session != null) {
+      unawaited(_chatApi!.interrupt(_sessionId!, agent: session.agent));
     }
   }
 

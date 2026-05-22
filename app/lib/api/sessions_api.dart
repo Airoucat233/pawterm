@@ -2,7 +2,10 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'agents_api.dart';
+
 class SessionSummary {
+  final AgentKind agent;
   final String sessionId;
   final String? summary;
   final String? title;
@@ -18,6 +21,7 @@ class SessionSummary {
   final String? holderDeviceId;
 
   SessionSummary({
+    this.agent = AgentKind.claude,
     required this.sessionId,
     this.summary,
     this.title,
@@ -29,11 +33,12 @@ class SessionSummary {
     this.holderDeviceId,
   });
 
-  String get displayTitle => title ?? summary ?? '(Untitled)';
+  String get displayTitle => title ?? summary ?? '(未命名)';
 
   factory SessionSummary.fromJson(Map<String, dynamic> json) {
     final tagsRaw = json['tags'] as List? ?? const [];
     return SessionSummary(
+      agent: AgentKind.fromWire(json['agent'] as String?),
       sessionId: json['session_id'] as String,
       summary: json['summary'] as String?,
       title: json['title'] as String?,
@@ -61,8 +66,8 @@ class SessionsApi {
     return Uri.parse('$baseUrl$path').replace(queryParameters: q);
   }
 
-  Future<List<SessionSummary>> list(String cwd, {int limit = 50}) async {
-    final resp = await http.get(_u('/sessions', {'cwd': cwd, 'limit': limit}), headers: _auth);
+  Future<List<SessionSummary>> list(String cwd, {int limit = 50, String agent = 'all'}) async {
+    final resp = await http.get(_u('/sessions', {'cwd': cwd, 'limit': limit, 'agent': agent}), headers: _auth);
     if (resp.statusCode != 200) {
       throw Exception('list_sessions HTTP ${resp.statusCode}: ${resp.body}');
     }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../api/agents_api.dart';
 import '../api/chat_api.dart';
 import '../api/sessions_api.dart';
 import 'server_config.dart';
@@ -49,20 +50,56 @@ class CurrentSession {
   /// 只读模式：不开 WebSocket、只通过 HTTP 翻历史，禁用输入。
   /// 用于"该 session 正被另一个 CLI 终端持有，用户选择不抢占"的场景。
   final bool readOnly;
+  final AgentKind agent;
+  final Map<String, dynamic> runtime;
 
-  const CurrentSession({
+  factory CurrentSession({
+    required String cwd,
+    required String label,
+    String? resumeId,
+    bool readOnly = false,
+    AgentKind agent = AgentKind.claude,
+    Map<String, dynamic>? runtime,
+  }) =>
+      CurrentSession._(
+        cwd: cwd,
+        label: label,
+        resumeId: resumeId,
+        readOnly: readOnly,
+        agent: agent,
+        runtime: Map.unmodifiable(runtime ?? defaultRuntimeForAgent(agent)),
+      );
+
+  const CurrentSession._({
     required this.cwd,
     required this.label,
     this.resumeId,
     this.readOnly = false,
+    required this.agent,
+    required this.runtime,
   });
 
-  CurrentSession copyWith({String? cwd, String? resumeId, String? label, bool? readOnly}) =>
+  static Map<String, dynamic> defaultRuntimeForAgent(AgentKind agent) => switch (agent) {
+        AgentKind.claude => {'agent': 'claude', 'permission_mode': 'acceptEdits'},
+        AgentKind.codex => {'agent': 'codex', 'sandbox': 'workspace-write', 'approval_policy': 'on-request'},
+        AgentKind.gemini => {'agent': 'gemini'},
+      };
+
+  CurrentSession copyWith({
+    String? cwd,
+    String? resumeId,
+    String? label,
+    bool? readOnly,
+    AgentKind? agent,
+    Map<String, dynamic>? runtime,
+  }) =>
       CurrentSession(
         cwd: cwd ?? this.cwd,
         resumeId: resumeId ?? this.resumeId,
         label: label ?? this.label,
         readOnly: readOnly ?? this.readOnly,
+        agent: agent ?? this.agent,
+        runtime: runtime ?? this.runtime,
       );
 }
 

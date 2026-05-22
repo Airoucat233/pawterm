@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'agents_api.dart';
+
 /// Run state reported by GET /chat/status?uuid=
 enum TurnState { live, done, running, unknown }
 
@@ -55,6 +57,8 @@ class ChatApi {
     required String deviceId,
     String? model,
     String? permissionMode,
+    AgentKind agent = AgentKind.claude,
+    Map<String, dynamic>? runtime,
   }) async {
     final resp = await http.post(
       Uri.parse('$httpBase/chat/stream'),
@@ -64,6 +68,8 @@ class ChatApi {
         'cwd': cwd,
         'text': text,
         'device_id': deviceId,
+        'agent': agent.wire,
+        if (runtime != null) 'runtime': runtime,
         if (model != null) 'model': model,
         if (permissionMode != null) 'permission_mode': permissionMode,
       }),
@@ -77,13 +83,16 @@ class ChatApi {
   }
 
   /// Returns the SSE URL to pass to SseClient for the given session.
-  Uri eventsUrl(String uuid) =>
-      Uri.parse('$httpBase/chat/events').replace(queryParameters: {'uuid': uuid});
+  Uri eventsUrl(String uuid, {AgentKind agent = AgentKind.claude}) =>
+      Uri.parse('$httpBase/chat/events').replace(queryParameters: {'uuid': uuid, 'agent': agent.wire});
 
   /// Check run state: live / done / running / unknown.
-  Future<TurnStatus> status(String uuid) async {
+  Future<TurnStatus> status(String uuid, {AgentKind agent = AgentKind.claude}) async {
     final resp = await http
-        .get(Uri.parse('$httpBase/chat/status?uuid=${Uri.encodeQueryComponent(uuid)}'), headers: _auth)
+        .get(
+          Uri.parse('$httpBase/chat/status').replace(queryParameters: {'uuid': uuid, 'agent': agent.wire}),
+          headers: _auth,
+        )
         .timeout(const Duration(seconds: 4));
     if (resp.statusCode != 200) return TurnStatus(TurnState.unknown);
     return TurnStatus.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
@@ -112,12 +121,21 @@ class ChatApi {
   }
 
   /// Interrupt the active run.
-  Future<void> interrupt(String uuid) async {
+  Future<void> interrupt(String uuid, {AgentKind agent = AgentKind.claude}) async {
     await http.post(
       Uri.parse('$httpBase/chat/interrupt'),
       headers: {'Content-Type': 'application/json', ..._auth},
-      body: jsonEncode({'uuid': uuid}),
+      body: jsonEncode({'uuid': uuid, 'agent': agent.wire}),
     );
+  }
+
+  Future<void> runtime(String uuid, AgentKind agent, Map<String, dynamic> runtime) async {
+    final resp = await http.post(
+      Uri.parse('$httpBase/chat/runtime'),
+      headers: {'Content-Type': 'application/json', ..._auth},
+      body: jsonEncode({'uuid': uuid, 'agent': agent.wire, 'runtime': runtime}),
+    );
+    if (resp.statusCode != 200) throw ChatApiException(resp.statusCode, resp.body);
   }
 
   /// Change model mid-run.
