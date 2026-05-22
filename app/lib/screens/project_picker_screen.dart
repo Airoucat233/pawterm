@@ -5,12 +5,16 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
+import '../api/agents_api.dart';
 import '../api/projects_api.dart';
 import '../api/sessions_api.dart';
 import '../main.dart' show routeObserver;
+import '../state/agents_store.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
+import '../widgets/agent_badge.dart';
+import '../widgets/agent_picker_sheet.dart';
 import 'add_project_sheet.dart';
 import 'main_shell.dart';
 
@@ -173,6 +177,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
               }),
               onNewSession: _enterProject,
               onPickSession: _enterProjectWithSession,
+              onPickAgent: (p) => _showAgentPicker(context, p),
               onAdd: () => _showAddSheet(context),
               onDelete: _confirmAndDelete,
             ),
@@ -183,9 +188,10 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   }
 
   void _enterProject(Project project) {
+    final agent = ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
     ref.read(selectedProjectProvider.notifier).state = project;
     ref.read(currentSessionProvider.notifier).state =
-        CurrentSession(cwd: project.path, label: project.name);
+        CurrentSession(cwd: project.path, label: project.name, agent: agent);
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),
     );
@@ -213,6 +219,43 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     );
   }
 
+  void _showAgentPicker(BuildContext context, Project project) {
+    final agentsAsync = ref.read(agentsProvider);
+    final agents = agentsAsync.maybeWhen(
+      data: (items) => items.isEmpty ? [_fallbackClaudeAgent()] : items,
+      orElse: () => [_fallbackClaudeAgent()],
+    );
+    final selected = ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => AgentPickerSheet(
+        agents: agents,
+        selected: selected,
+        onSelected: (agent) {
+          Navigator.of(sheetContext).pop();
+          ref.read(projectDefaultAgentProvider.notifier).setDefault(project.path, agent);
+          ref.invalidate(sessionsProvider(project.path));
+        },
+      ),
+    );
+  }
+
+  AgentInfo _fallbackClaudeAgent() => const AgentInfo(
+        kind: AgentKind.claude,
+        label: 'Claude Code',
+        status: 'ready',
+        defaultRuntime: {'agent': 'claude', 'permission_mode': 'acceptEdits'},
+        capabilities: AgentCapabilities(
+          streaming: true,
+          history: true,
+          approvals: true,
+          modelSwitch: true,
+          runtimeSwitch: true,
+          rawEvents: true,
+        ),
+      );
   Future<void> _confirmAndDelete(Project project) async {
     final t = AppTokens.of(context);
     final confirmed = await showDialog<bool>(
@@ -664,6 +707,7 @@ class _ProjectList extends ConsumerWidget {
   final void Function(String path) onToggle;
   final void Function(Project) onNewSession;
   final void Function(Project, SessionSummary) onPickSession;
+  final void Function(Project) onPickAgent;
   final VoidCallback onAdd;
   final void Function(Project) onDelete;
 
@@ -673,6 +717,7 @@ class _ProjectList extends ConsumerWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
+    required this.onPickAgent,
     required this.onAdd,
     required this.onDelete,
   });
@@ -704,6 +749,7 @@ class _ProjectList extends ConsumerWidget {
             onToggle: () => onToggle(p.path),
             onNewSession: () => onNewSession(p),
             onPickSession: (s) => onPickSession(p, s),
+            onPickAgent: () => onPickAgent(p),
             onDelete: () => onDelete(p),
           ),
         const SizedBox(height: 8),
@@ -722,6 +768,7 @@ class _SlidableProjectCard extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback onNewSession;
   final void Function(SessionSummary) onPickSession;
+  final VoidCallback onPickAgent;
   final VoidCallback onDelete;
 
   const _SlidableProjectCard({
@@ -731,6 +778,7 @@ class _SlidableProjectCard extends StatelessWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
+    required this.onPickAgent,
     required this.onDelete,
   });
 
@@ -742,6 +790,7 @@ class _SlidableProjectCard extends StatelessWidget {
       onToggle: onToggle,
       onNewSession: onNewSession,
       onPickSession: onPickSession,
+      onPickAgent: onPickAgent,
       onDelete: onDelete,
     );
     if (isExpanded) return card;
@@ -773,6 +822,7 @@ class _ProjectCard extends ConsumerWidget {
   final VoidCallback onToggle;
   final VoidCallback onNewSession;
   final void Function(SessionSummary) onPickSession;
+  final VoidCallback onPickAgent;
   final VoidCallback onDelete;
 
   const _ProjectCard({
@@ -781,12 +831,14 @@ class _ProjectCard extends ConsumerWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
+    required this.onPickAgent,
     required this.onDelete,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
+    final defaultAgent = ref.watch(projectDefaultAgentProvider)[project.path] ?? AgentKind.claude;
     final sessionsAsync =
         isExpanded ? ref.watch(sessionsProvider(project.path)) : null;
 
@@ -876,6 +928,13 @@ class _ProjectCard extends ConsumerWidget {
 
           if (isExpanded) ...[
             Divider(color: t.borderSubt, height: 0.5, indent: 14, endIndent: 14),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              child: _AgentProjectCard(
+                agent: defaultAgent,
+                onTap: onPickAgent,
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
               child: Row(
@@ -1026,6 +1085,50 @@ class _SessionRow extends StatelessWidget {
               ),
             ),
             Icon(Icons.chevron_right, size: 16, color: t.textDim),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentProjectCard extends StatelessWidget {
+  final AgentKind agent;
+  final VoidCallback onTap;
+
+  const _AgentProjectCard({required this.agent, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final desc = switch (agent) {
+      AgentKind.claude => 'Claude 历史与权限模式',
+      AgentKind.codex => 'Codex sandbox 与审批流',
+      AgentKind.gemini => 'Gemini Provider 预留',
+    };
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        decoration: BoxDecoration(
+          color: t.surfaceHi,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: t.borderSubt, width: 0.5),
+        ),
+        child: Row(
+          children: [
+            AgentBadge(agent: agent, compact: true),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                desc,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: t.textMuted, fontSize: 12),
+              ),
+            ),
+            Icon(Icons.tune_rounded, size: 16, color: t.textDim),
           ],
         ),
       ),
