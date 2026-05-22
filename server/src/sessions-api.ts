@@ -39,12 +39,18 @@ export async function registerSessionsApi(app: FastifyInstance, deps?: {
       const readyAgents = infos.filter((i) => i.status === 'ready').map((i) => i.kind);
       const candidateLimit = offset + limit;
       const pages = await Promise.all(
-        readyAgents.map((kind) => registry.resolve(kind).listSessions({
-          cwd,
-          limit: candidateLimit,
-          offset: 0,
-          includeSubdirs,
-        })),
+        readyAgents.map(async (kind) => {
+          try {
+            return await registry.resolve(kind).listSessions({
+              cwd,
+              limit: candidateLimit,
+              offset: 0,
+              includeSubdirs,
+            });
+          } catch {
+            return [];
+          }
+        }),
       );
       return pages
         .flat()

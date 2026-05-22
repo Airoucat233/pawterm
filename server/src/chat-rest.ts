@@ -10,12 +10,17 @@ import { EventBuffer } from './event-buffer.js';
 import { findHolder, killHolder } from './holder-detect.js';
 import { messageToWire } from './serialize.js';
 import { ChatSession } from './session-manager.js';
+import { defaultAgentRegistry } from './agents/registry.js';
 import { parseRuntimeFromChatBody, parseRuntimePatchForAgent } from './agents/http-helpers.js';
+import { codexThreadItemToWire } from './agents/codex/serialize.js';
+import type { AgentRun } from './agents/types.js';
 
 interface RunEntry {
   agent: AgentKind;
   uuid: string;
-  session: ChatSession;
+  sessionId: string;
+  session?: ChatSession;
+  run?: AgentRun;
   buffer: EventBuffer;
   askRegistry: AskUserQuestionRegistry;
   /** Grace timer: starts when result arrives, clears run after GRACE_MS. */
@@ -29,6 +34,7 @@ interface RunEntry {
 
 /** Key = `${agent}:${uuid}`. Only present during an active turn. */
 const activeRuns = new Map<string, RunEntry>();
+const sessionAliases = new Map<string, string>();
 const GRACE_MS = 60_000;
 const HEARTBEAT_MS = 15_000;
 
@@ -72,9 +78,16 @@ function closeRun(key: string, log?: FastifyInstance['log']): void {
   cancelGrace(entry);
   entry.askRegistry.rejectAll('run closed');
   // Interrupt first so the SDK subprocess actually stops, then close input gen.
-  entry.session.interrupt().finally(() => {
-    entry.session.close();
-  });
+  if (entry.session) {
+    entry.session.interrupt().finally(() => {
+      entry.session?.close();
+    });
+  }
+  if (entry.run) {
+    entry.run.interrupt().catch(() => {}).finally(() => {
+      entry.run?.close();
+    });
+  }
   for (const w of entry.writers) {
     try { w.end(); } catch { /* */ }
   }
@@ -99,16 +112,37 @@ function maybeSetPendingToolUseId(wire: ReturnType<typeof messageToWire>, regist
   }
 }
 
-async function consumeSdk(agent: AgentKind, key: string, uuid: string, entry: RunEntry, log: FastifyInstance['log']): Promise<void> {
+function runMessagesToWire(agent: AgentKind, msg: unknown): Array<ReturnType<typeof messageToWire>> {
+  if (agent === 'claude') return [messageToWire(msg)];
+  if (agent === 'codex') {
+    const notification = msg as { method?: string; params?: any };
+    const items = Array.isArray(notification.params?.turn?.items)
+      ? notification.params.turn.items
+      : notification.params?.item
+        ? [notification.params.item]
+        : [];
+    return items
+      .map((item: unknown) => {
+        const wire = codexThreadItemToWire(item as Record<string, unknown>);
+        return wire ? { ...wire, native_event: notification.method, raw_payload: notification } : null;
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
+async function consumeRun(agent: AgentKind, key: string, uuid: string, entry: RunEntry, log: FastifyInstance['log']): Promise<void> {
   try {
-    const iter = entry.session.start();
+    const iter = entry.run?.events ?? entry.session?.start();
+    if (!iter) throw new Error('run has no event source');
     for await (const sdkMsg of iter) {
-      const wire = messageToWire(sdkMsg);
-      if (wire) {
+      const wires = runMessagesToWire(agent, sdkMsg);
+      for (const wire of wires) {
+        if (!wire) continue;
         const stamped = {
           ...wire,
           agent,
-          session_ref: { agent, id: uuid },
+          session_ref: { agent, id: entry.sessionId },
           timestamp: Date.now(),
           uuid: (sdkMsg as any).uuid ?? null,
         };
@@ -124,7 +158,7 @@ async function consumeSdk(agent: AgentKind, key: string, uuid: string, entry: Ru
     log.info({ uuid, agent }, 'run: SDK iterator exhausted');
   } catch (err) {
     log.error({ uuid, agent, err: (err as Error).message }, 'run: SDK error');
-    broadcast(entry, 'error', { type: 'error', agent, session_ref: { agent, id: uuid }, message: (err as Error).message });
+    broadcast(entry, 'error', { type: 'error', agent, session_ref: { agent, id: entry.sessionId }, message: (err as Error).message });
     entry.resultReceived = true;
     startGrace(key, entry, log);
   } finally {
@@ -186,12 +220,9 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         reply.code(400);
         return { error: (err as Error).message };
       }
-      if (runtime.agent !== 'claude') {
-        reply.code(501);
-        return { error: `${runtime.agent} chat provider is not wired yet` };
-      }
-
       const key = runKey(runtime.agent, uuid);
+      const provider = defaultAgentRegistry.resolve(runtime.agent);
+      const providerSessionId = sessionAliases.get(key) ?? uuid;
 
       if (activeRuns.has(key)) {
         const existing = activeRuns.get(key)!;
@@ -203,41 +234,77 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           existing.resultReceived = false;
           existing.holderDeviceId = deviceId;
           existing.buffer = new EventBuffer(2000);
-          existing.session.pushUserMessage(body.text);
-          return { ok: true };
+          if (existing.session) {
+            existing.session.pushUserMessage(body.text);
+            return { ok: true };
+          }
+          if (existing.run?.pushUserMessage) {
+            existing.run.pushUserMessage(body.text);
+            return { ok: true };
+          }
+          closeRun(key, req.log);
+        } else {
+          req.log.warn({ uuid, agent: runtime.agent }, 'run: 409 — run still active (not in grace)');
+          reply.code(409);
+          return { error: 'run already active for this session' };
         }
-        req.log.warn({ uuid, agent: runtime.agent }, 'run: 409 — run still active (not in grace)');
-        reply.code(409);
-        return { error: 'run already active for this session' };
       }
 
-      const sessionInfo = await getSessionInfo(uuid, { dir: cwd });
-      const askRegistry = new AskUserQuestionRegistry();
-      const claudeRuntime = runtime as ClaudeRuntime;
-      const session = new ChatSession({
-        cwd,
-        permissionMode: claudeRuntime.permission_mode,
-        ...(sessionInfo ? { resume: uuid } : { sessionId: uuid }),
-        model: claudeRuntime.model,
-        askRegistry,
-      });
+      if (runtime.agent === 'claude') {
+        const sessionInfo = await getSessionInfo(uuid, { dir: cwd });
+        const askRegistry = new AskUserQuestionRegistry();
+        const claudeRuntime = runtime as ClaudeRuntime;
+        const session = new ChatSession({
+          cwd,
+          permissionMode: claudeRuntime.permission_mode,
+          ...(sessionInfo ? { resume: uuid } : { sessionId: uuid }),
+          model: claudeRuntime.model,
+          askRegistry,
+        });
 
+        const entry: RunEntry = {
+          agent: runtime.agent,
+          uuid,
+          sessionId: uuid,
+          session,
+          buffer: new EventBuffer(2000),
+          askRegistry,
+          writers: new Set(),
+          resultReceived: false,
+          holderDeviceId: deviceId,
+        };
+        activeRuns.set(key, entry);
+        req.log.info({ uuid, agent: runtime.agent, cwd, resume: !!sessionInfo }, 'run: created');
+
+        session.pushUserMessage(body.text);
+        consumeRun(runtime.agent, key, uuid, entry, req.log).catch(() => {});
+
+        return { ok: true };
+      }
+
+      const run = await provider.startTurn({
+        cwd,
+        sessionId: providerSessionId,
+        text: body.text,
+        runtime: runtime as never,
+        deviceId,
+      });
+      const actualSessionId = run.sessionId ?? providerSessionId;
+      sessionAliases.set(key, actualSessionId);
       const entry: RunEntry = {
         agent: runtime.agent,
         uuid,
-        session,
+        sessionId: actualSessionId,
+        run,
         buffer: new EventBuffer(2000),
-        askRegistry,
+        askRegistry: new AskUserQuestionRegistry(),
         writers: new Set(),
         resultReceived: false,
         holderDeviceId: deviceId,
       };
       activeRuns.set(key, entry);
-      req.log.info({ uuid, agent: runtime.agent, cwd, resume: !!sessionInfo }, 'run: created');
-
-      session.pushUserMessage(body.text);
-      consumeSdk(runtime.agent, key, uuid, entry, req.log).catch(() => {});
-
+      req.log.info({ uuid, agent: runtime.agent, cwd }, 'run: created');
+      consumeRun(runtime.agent, key, uuid, entry, req.log).catch(() => {});
       return { ok: true };
     },
   );
@@ -352,7 +419,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
     if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
     const entry = activeRuns.get(runKey(agent, uuid));
     if (!entry) { reply.code(404); return { error: 'no active run' }; }
-    await entry.session.interrupt();
+    await (entry.run?.interrupt() ?? entry.session?.interrupt());
     return { ok: true };
   });
 
@@ -371,6 +438,11 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       const { agent, patch: runtime } = parsed;
       const entry = activeRuns.get(runKey(agent, uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
+      if (entry.run?.setRuntime) {
+        await entry.run.setRuntime(runtime);
+        return { ok: true };
+      }
+      if (!entry.session) { reply.code(400); return { error: 'runtime switch is not supported for this run' }; }
       if ('model' in runtime && runtime.model) await entry.session.setModel(runtime.model);
       if ('permission_mode' in runtime && runtime.permission_mode) {
         await entry.session.setPermissionMode(runtime.permission_mode);
@@ -388,6 +460,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!model) { reply.code(400); return { error: 'model required' }; }
       const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
+      if (!entry.session) { reply.code(400); return { error: 'model switch is only available for claude sessions' }; }
       await entry.session.setModel(model);
       return { ok: true };
     },
@@ -402,6 +475,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!mode) { reply.code(400); return { error: 'mode required' }; }
       const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
+      if (!entry.session) { reply.code(400); return { error: 'permission switch is only available for claude sessions' }; }
       await entry.session.setPermissionMode(mode);
       return { ok: true };
     },
@@ -425,7 +499,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
     // Case 1: active run held by another mobile device → interrupt + transfer ownership
     const entry = activeRuns.get(runKey('claude', uuid));
     if (entry && entry.holderDeviceId && entry.holderDeviceId !== deviceId) {
-      await entry.session.interrupt();
+      await (entry.run?.interrupt() ?? entry.session?.interrupt());
       entry.holderDeviceId = deviceId;
       entry.resultReceived = false;
       entry.buffer = new EventBuffer(2000);
@@ -456,6 +530,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
       const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
+      if (!entry.session) { reply.code(400); return { error: 'context usage is only available for claude sessions' }; }
       try {
         const usage = await entry.session.getContextUsage();
         return usage;
@@ -475,6 +550,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
       const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
+      if (!entry.session) { reply.code(400); return { error: 'answers are only available for claude sessions' }; }
       const ok = entry.session.answerQuestion(
         req.body.tool_use_id,
         req.body.answers,

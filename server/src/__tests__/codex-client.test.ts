@@ -49,6 +49,19 @@ describe('CodexJsonRpcClient', () => {
     await expect(promise).rejects.toThrow(/closed/);
   });
 
+  it('notifies close handlers when input closes', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const client = new CodexJsonRpcClient({ input, output });
+    const closes: string[] = [];
+    client.onClose((err) => closes.push(err.message));
+
+    input.destroy();
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closes).toEqual(['Codex JSON-RPC input closed']);
+  });
+
   it('rejects circular request params without leaking the request', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

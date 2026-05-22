@@ -21,6 +21,7 @@ export interface AgentHistoryPage {
 }
 
 export interface AgentRun {
+  sessionId?: string;
   events: AsyncIterable<unknown>;
   pushUserMessage?(text: string): void;
   setRuntime?(runtime: Partial<AgentRuntime>): Promise<void>;

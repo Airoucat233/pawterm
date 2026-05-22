@@ -7,11 +7,13 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 type NotificationHandler = (notification: { method: string; params?: unknown }) => void;
+type CloseHandler = (error: Error) => void;
 
 export class CodexJsonRpcClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationHandlers = new Set<NotificationHandler>();
+  private readonly closeHandlers = new Set<CloseHandler>();
   private readonly rl: Interface;
   private closed = false;
 
@@ -53,6 +55,11 @@ export class CodexJsonRpcClient {
     return () => this.notificationHandlers.delete(handler);
   }
 
+  onClose(handler: CloseHandler): () => void {
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
+  }
+
   close(error = new Error('Codex JSON-RPC client closed')): void {
     if (this.closed) return;
     this.closed = true;
@@ -61,6 +68,14 @@ export class CodexJsonRpcClient {
     }
     this.pending.clear();
     this.notificationHandlers.clear();
+    for (const handler of this.closeHandlers) {
+      try {
+        handler(error);
+      } catch {
+        // Isolate close observers from transport cleanup.
+      }
+    }
+    this.closeHandlers.clear();
   }
 
   private handleLine(line: string): void {
