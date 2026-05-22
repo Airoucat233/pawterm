@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { resolve } from 'node:path';
 import { getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 
-import type { AnswerQuestionRequest, PermissionMode } from '@pawterm/shared';
+import type { AgentKind, AgentRuntime, AnswerQuestionRequest, ClaudeRuntime, PermissionMode } from '@pawterm/shared';
 
 import { isPathAllowed, settings } from './config.js';
 import { AskUserQuestionRegistry } from './ask-user-tool.js';
@@ -10,8 +10,11 @@ import { EventBuffer } from './event-buffer.js';
 import { findHolder, killHolder } from './holder-detect.js';
 import { messageToWire } from './serialize.js';
 import { ChatSession } from './session-manager.js';
+import { parseRuntimeFromChatBody, parseRuntimePatchForAgent } from './agents/http-helpers.js';
 
 interface RunEntry {
+  agent: AgentKind;
+  uuid: string;
   session: ChatSession;
   buffer: EventBuffer;
   askRegistry: AskUserQuestionRegistry;
@@ -24,10 +27,14 @@ interface RunEntry {
   holderDeviceId: string;
 }
 
-/** Key = Claude UUID (same as jsonl filename). Only present during an active turn. */
+/** Key = `${agent}:${uuid}`. Only present during an active turn. */
 const activeRuns = new Map<string, RunEntry>();
 const GRACE_MS = 60_000;
 const HEARTBEAT_MS = 15_000;
+
+function runKey(agent: string, uuid: string): string {
+  return `${agent}:${uuid}`;
+}
 
 function broadcast(entry: RunEntry, type: string, data: unknown): void {
   const ev = entry.buffer.push(type, data);
@@ -48,20 +55,20 @@ function cancelGrace(entry: RunEntry): void {
   }
 }
 
-function startGrace(uuid: string, entry: RunEntry, log?: FastifyInstance['log']): void {
+function startGrace(key: string, entry: RunEntry, log?: FastifyInstance['log']): void {
   if (entry.graceTimer) return;
-  log?.info({ uuid, graceMs: GRACE_MS }, 'run: grace started');
+  log?.info({ uuid: entry.uuid, agent: entry.agent, graceMs: GRACE_MS }, 'run: grace started');
   // Clear holderDeviceId so sessions list no longer shows this session as "in use".
   entry.holderDeviceId = '';
   entry.graceTimer = setTimeout(() => {
-    closeRun(uuid, log);
+    closeRun(key, log);
   }, GRACE_MS);
 }
 
-function closeRun(uuid: string, log?: FastifyInstance['log']): void {
-  const entry = activeRuns.get(uuid);
+function closeRun(key: string, log?: FastifyInstance['log']): void {
+  const entry = activeRuns.get(key);
   if (!entry) return;
-  log?.info({ uuid }, 'run: closing (grace expired)');
+  log?.info({ uuid: entry.uuid, agent: entry.agent }, 'run: closing (grace expired)');
   cancelGrace(entry);
   entry.askRegistry.rejectAll('run closed');
   // Interrupt first so the SDK subprocess actually stops, then close input gen.
@@ -71,7 +78,7 @@ function closeRun(uuid: string, log?: FastifyInstance['log']): void {
   for (const w of entry.writers) {
     try { w.end(); } catch { /* */ }
   }
-  activeRuns.delete(uuid);
+  activeRuns.delete(key);
 }
 
 const ASK_TOOL_NAME = 'mcp__ask-user-question__AskUserQuestion';
@@ -92,32 +99,38 @@ function maybeSetPendingToolUseId(wire: ReturnType<typeof messageToWire>, regist
   }
 }
 
-async function consumeSdk(uuid: string, entry: RunEntry, log: FastifyInstance['log']): Promise<void> {
+async function consumeSdk(agent: AgentKind, key: string, uuid: string, entry: RunEntry, log: FastifyInstance['log']): Promise<void> {
   try {
     const iter = entry.session.start();
     for await (const sdkMsg of iter) {
       const wire = messageToWire(sdkMsg);
       if (wire) {
-        const stamped = { ...wire, timestamp: Date.now(), uuid: (sdkMsg as any).uuid ?? null };
+        const stamped = {
+          ...wire,
+          agent,
+          session_ref: { agent, id: uuid },
+          timestamp: Date.now(),
+          uuid: (sdkMsg as any).uuid ?? null,
+        };
         maybeSetPendingToolUseId(wire, entry.askRegistry);
         broadcast(entry, (wire as { type: string }).type, stamped);
         if ((wire as { type: string }).type === 'result') {
-          log.info({ uuid }, 'run: result received, starting grace');
+          log.info({ uuid, agent }, 'run: result received, starting grace');
           entry.resultReceived = true;
-          startGrace(uuid, entry, log);
+          startGrace(key, entry, log);
         }
       }
     }
-    log.info({ uuid }, 'run: SDK iterator exhausted');
+    log.info({ uuid, agent }, 'run: SDK iterator exhausted');
   } catch (err) {
-    log.error({ uuid, err: (err as Error).message }, 'run: SDK error');
-    broadcast(entry, 'error', { type: 'error', message: (err as Error).message });
+    log.error({ uuid, agent, err: (err as Error).message }, 'run: SDK error');
+    broadcast(entry, 'error', { type: 'error', agent, session_ref: { agent, id: uuid }, message: (err as Error).message });
     entry.resultReceived = true;
-    startGrace(uuid, entry, log);
+    startGrace(key, entry, log);
   } finally {
     if (!entry.resultReceived) {
       entry.resultReceived = true;
-      startGrace(uuid, entry, log);
+      startGrace(key, entry, log);
     }
   }
 }
@@ -127,7 +140,7 @@ async function consumeSdk(uuid: string, entry: RunEntry, log: FastifyInstance['l
  * Used by sessions-api to annotate session summaries.
  */
 export function getActiveRunHolder(uuid: string): string | null {
-  const entry = activeRuns.get(uuid);
+  const entry = activeRuns.get(runKey('claude', uuid));
   if (!entry || !entry.holderDeviceId) return null;
   return entry.holderDeviceId;
 }
@@ -142,7 +155,16 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
    * 409 if a run is already active for this uuid.
    */
   app.post<{
-    Body: { uuid?: string; cwd?: string; text?: string; model?: string; permission_mode?: PermissionMode; device_id?: string };
+    Body: {
+      uuid?: string;
+      cwd?: string;
+      text?: string;
+      agent?: string;
+      runtime?: AgentRuntime;
+      model?: string;
+      permission_mode?: PermissionMode;
+      device_id?: string;
+    };
   }>(
     '/chat/stream',
     async (req, reply) => {
@@ -152,19 +174,31 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
       if (!body.cwd) { reply.code(400); return { error: 'cwd required' }; }
       if (!body.text) { reply.code(400); return { error: 'text required' }; }
-      if (!body.permission_mode) { reply.code(400); return { error: 'permission_mode required' }; }
 
       const cwd = resolve(body.cwd);
       if (!isPathAllowed(cwd)) { reply.code(403); return { error: `Project not allowed: ${cwd}` }; }
 
       const deviceId = body.device_id ?? 'unknown';
+      let runtime: AgentRuntime;
+      try {
+        runtime = parseRuntimeFromChatBody(body);
+      } catch (err) {
+        reply.code(400);
+        return { error: (err as Error).message };
+      }
+      if (runtime.agent !== 'claude') {
+        reply.code(501);
+        return { error: `${runtime.agent} chat provider is not wired yet` };
+      }
 
-      if (activeRuns.has(uuid)) {
-        const existing = activeRuns.get(uuid)!;
+      const key = runKey(runtime.agent, uuid);
+
+      if (activeRuns.has(key)) {
+        const existing = activeRuns.get(key)!;
         if (existing.resultReceived) {
           // Grace period — previous turn finished, new turn arriving. Reuse the
           // SDK session (inputGen is still waiting) with a fresh event buffer.
-          req.log.info({ uuid }, 'run: new turn during grace, cancelling grace');
+          req.log.info({ uuid, agent: runtime.agent }, 'run: new turn during grace, cancelling grace');
           cancelGrace(existing);
           existing.resultReceived = false;
           existing.holderDeviceId = deviceId;
@@ -172,24 +206,25 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           existing.session.pushUserMessage(body.text);
           return { ok: true };
         }
-        req.log.warn({ uuid }, 'run: 409 — run still active (not in grace)');
+        req.log.warn({ uuid, agent: runtime.agent }, 'run: 409 — run still active (not in grace)');
         reply.code(409);
         return { error: 'run already active for this session' };
       }
 
-      const permissionMode = body.permission_mode;
-
       const sessionInfo = await getSessionInfo(uuid, { dir: cwd });
       const askRegistry = new AskUserQuestionRegistry();
+      const claudeRuntime = runtime as ClaudeRuntime;
       const session = new ChatSession({
         cwd,
-        permissionMode,
+        permissionMode: claudeRuntime.permission_mode,
         ...(sessionInfo ? { resume: uuid } : { sessionId: uuid }),
-        model: body.model,
+        model: claudeRuntime.model,
         askRegistry,
       });
 
       const entry: RunEntry = {
+        agent: runtime.agent,
+        uuid,
         session,
         buffer: new EventBuffer(2000),
         askRegistry,
@@ -197,11 +232,11 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         resultReceived: false,
         holderDeviceId: deviceId,
       };
-      activeRuns.set(uuid, entry);
-      req.log.info({ uuid, cwd, resume: !!sessionInfo }, 'run: created');
+      activeRuns.set(key, entry);
+      req.log.info({ uuid, agent: runtime.agent, cwd, resume: !!sessionInfo }, 'run: created');
 
       session.pushUserMessage(body.text);
-      consumeSdk(uuid, entry, req.log).catch(() => {});
+      consumeSdk(runtime.agent, key, uuid, entry, req.log).catch(() => {});
 
       return { ok: true };
     },
@@ -213,15 +248,16 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
    * 404 if no active run for uuid.
    * 412 if lastEventId is too old (event gap).
    */
-  app.get<{ Querystring: { uuid?: string; lastEventId?: string } }>(
+  app.get<{ Querystring: { uuid?: string; agent?: AgentKind; lastEventId?: string } }>(
     '/chat/events',
     (req, reply) => {
       const uuid = req.query.uuid;
       if (!uuid) { reply.code(400); return reply.send({ error: 'uuid required' }); }
+      const agent = req.query.agent ?? 'claude';
 
-      const entry = activeRuns.get(uuid);
+      const entry = activeRuns.get(runKey(agent, uuid));
       if (!entry) {
-        req.log.warn({ uuid }, 'sse: 404 no active run');
+        req.log.warn({ uuid, agent }, 'sse: 404 no active run');
         reply.code(404); return reply.send({ error: 'no active run' });
       }
 
@@ -230,7 +266,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (lastId > 0) {
         const probe = entry.buffer.since(lastId);
         if (probe === null) {
-          req.log.warn({ uuid, lastId }, 'sse: 412 event gap');
+          req.log.warn({ uuid, agent, lastId }, 'sse: 412 event gap');
           reply.code(412); return reply.send({ error: 'event gap, please reload' });
         }
       }
@@ -261,7 +297,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           writer.write(`id: ${e.id}\nevent: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`);
         }
       }
-      req.log.info({ uuid, lastId, replayCount, writers: entry.writers.size }, 'sse: client connected');
+      req.log.info({ uuid, agent, lastId, replayCount, writers: entry.writers.size }, 'sse: client connected');
 
       const heartbeat = setInterval(() => {
         try {
@@ -275,7 +311,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       req.raw.on('close', () => {
         clearInterval(heartbeat);
         entry.writers.delete(writer);
-        req.log.info({ uuid, writers: entry.writers.size }, 'sse: client disconnected');
+        req.log.info({ uuid, agent, writers: entry.writers.size }, 'sse: client disconnected');
       });
 
       return reply;
@@ -289,16 +325,18 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
    * 'running' → no activeRun but PID holder found (another process holds session)
    * 'unknown' → no activeRun and no holder
    */
-  app.get<{ Querystring: { uuid?: string } }>(
+  app.get<{ Querystring: { uuid?: string; agent?: AgentKind } }>(
     '/chat/status',
     async (req, reply) => {
       const uuid = req.query.uuid;
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
+      const agent = req.query.agent ?? 'claude';
 
-      const entry = activeRuns.get(uuid);
+      const entry = activeRuns.get(runKey(agent, uuid));
       if (entry) {
         return { state: entry.resultReceived ? 'done' : 'live' };
       }
+      if (agent !== 'claude') return { state: 'unknown' };
       const holder = await findHolder(uuid).catch(() => null);
       if (holder) {
         return { state: 'running', holder };
@@ -308,14 +346,38 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
   );
 
   /** POST /chat/interrupt — interrupt the active run for a session. */
-  app.post<{ Body: { uuid?: string } }>('/chat/interrupt', async (req, reply) => {
+  app.post<{ Body: { uuid?: string; agent?: AgentKind } }>('/chat/interrupt', async (req, reply) => {
     const uuid = req.body?.uuid;
+    const agent = req.body?.agent ?? 'claude';
     if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
-    const entry = activeRuns.get(uuid);
+    const entry = activeRuns.get(runKey(agent, uuid));
     if (!entry) { reply.code(404); return { error: 'no active run' }; }
     await entry.session.interrupt();
     return { ok: true };
   });
+
+  app.post<{ Body: { uuid?: string; agent?: AgentKind; runtime?: Partial<AgentRuntime> } }>(
+    '/chat/runtime',
+    async (req, reply) => {
+      const uuid = req.body?.uuid;
+      if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
+      let parsed: ReturnType<typeof parseRuntimePatchForAgent>;
+      try {
+        parsed = parseRuntimePatchForAgent(req.body?.agent, req.body?.runtime);
+      } catch (err) {
+        reply.code(400);
+        return { error: (err as Error).message };
+      }
+      const { agent, patch: runtime } = parsed;
+      const entry = activeRuns.get(runKey(agent, uuid));
+      if (!entry) { reply.code(404); return { error: 'no active run' }; }
+      if ('model' in runtime && runtime.model) await entry.session.setModel(runtime.model);
+      if ('permission_mode' in runtime && runtime.permission_mode) {
+        await entry.session.setPermissionMode(runtime.permission_mode);
+      }
+      return { ok: true };
+    },
+  );
 
   /** POST /chat/model — change model mid-run. */
   app.post<{ Body: { uuid?: string; model?: string } }>(
@@ -324,7 +386,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       const { uuid, model } = req.body ?? {};
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
       if (!model) { reply.code(400); return { error: 'model required' }; }
-      const entry = activeRuns.get(uuid);
+      const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
       await entry.session.setModel(model);
       return { ok: true };
@@ -338,7 +400,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       const { uuid, mode } = req.body ?? {};
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
       if (!mode) { reply.code(400); return { error: 'mode required' }; }
-      const entry = activeRuns.get(uuid);
+      const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
       await entry.session.setPermissionMode(mode);
       return { ok: true };
@@ -361,7 +423,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
     if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
 
     // Case 1: active run held by another mobile device → interrupt + transfer ownership
-    const entry = activeRuns.get(uuid);
+    const entry = activeRuns.get(runKey('claude', uuid));
     if (entry && entry.holderDeviceId && entry.holderDeviceId !== deviceId) {
       await entry.session.interrupt();
       entry.holderDeviceId = deviceId;
@@ -392,7 +454,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const uuid = req.query.uuid;
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
-      const entry = activeRuns.get(uuid);
+      const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
       try {
         const usage = await entry.session.getContextUsage();
@@ -411,7 +473,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const uuid = req.body?.uuid;
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
-      const entry = activeRuns.get(uuid);
+      const entry = activeRuns.get(runKey('claude', uuid));
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
       const ok = entry.session.answerQuestion(
         req.body.tool_use_id,
@@ -428,7 +490,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
 
 /** Exported for AskUserQuestion wiring. */
 export function getRunEntry(uuid: string): RunEntry | undefined {
-  return activeRuns.get(uuid);
+  return activeRuns.get(runKey('claude', uuid));
 }
 
 /** @deprecated Use getRunEntry. */
