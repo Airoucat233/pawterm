@@ -7,6 +7,73 @@
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 
+export type AgentKind = 'claude' | 'codex' | 'gemini';
+
+export type AgentStatus =
+  | 'ready'
+  | 'not_installed'
+  | 'not_logged_in'
+  | 'disabled'
+  | 'error';
+
+export interface AgentCapabilities {
+  streaming: boolean;
+  history: boolean;
+  approvals: boolean;
+  modelSwitch: boolean;
+  runtimeSwitch: boolean;
+  rawEvents: boolean;
+}
+
+export interface AgentSessionRef {
+  agent: AgentKind;
+  id: string;
+}
+
+export interface ClaudeRuntime {
+  agent: 'claude';
+  model?: string;
+  permission_mode: PermissionMode;
+}
+
+export interface CodexRuntime {
+  agent: 'codex';
+  model?: string;
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+  approval_policy: 'untrusted' | 'on-request' | 'never';
+}
+
+export interface GeminiRuntime {
+  agent: 'gemini';
+  model?: string;
+  approval_policy?: string;
+}
+
+export type AgentRuntime = ClaudeRuntime | CodexRuntime | GeminiRuntime;
+
+export interface AgentInfo {
+  kind: AgentKind;
+  label: string;
+  status: AgentStatus;
+  statusMessage?: string;
+  defaultRuntime: AgentRuntime;
+  capabilities: AgentCapabilities;
+}
+
+export interface AgentsResponse {
+  agents: AgentInfo[];
+}
+
+export interface AgentEventMeta {
+  agent?: AgentKind;
+  session_ref?: AgentSessionRef;
+  native_type?: string;
+  native_name?: string;
+  native_event?: string;
+  raw_payload?: unknown;
+}
+
 // ============== Health ==============
 
 export interface HealthResponse {
@@ -100,23 +167,39 @@ export interface ModelsResponse {
 }
 
 export type ChatServerMessage =
-  | { type: 'session_ready'; session_key: string; cwd: string; permission_mode: PermissionMode; resumed?: string | null; busy?: boolean }
-  | { type: 'assistant'; model?: string; content: ContentBlock[]; timestamp?: number }
-  | { type: 'user'; content: ContentBlock[]; timestamp?: number }
-  | { type: 'system'; subtype?: string; data?: unknown; timestamp?: number }
-  | { type: 'result'; subtype?: string; duration_ms?: number; duration_api_ms?: number; is_error: boolean; num_turns?: number; session_id?: string; total_cost_usd?: number; usage?: unknown; timestamp?: number }
-  | { type: 'stream_block_start'; index: number; kind: string }
-  | { type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string }
-  | { type: 'stream_block_stop'; index: number }
-  | { type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number }
-  | { type: 'error'; message: string }
+  | ({ type: 'session_ready'; session_key: string; cwd: string; permission_mode: PermissionMode; resumed?: string | null; busy?: boolean } & AgentEventMeta)
+  | ({ type: 'assistant'; model?: string; content: ContentBlock[]; timestamp?: number; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'user'; content: ContentBlock[]; timestamp?: number; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'system'; subtype?: string; data?: unknown; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'result'; subtype?: string; duration_ms?: number; duration_api_ms?: number; is_error: boolean; num_turns?: number; session_id?: string; total_cost_usd?: number; usage?: unknown; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'stream_block_start'; index: number; kind: string; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'stream_block_stop'; index: number; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
 
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: ToolResultContent; is_error: boolean };
+  | {
+      type: 'tool_use';
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      native_type?: string;
+      native_event?: string;
+      raw_payload?: unknown;
+    }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: ToolResultContent;
+      is_error: boolean;
+      native_type?: string;
+      native_event?: string;
+      raw_payload?: unknown;
+    };
 
 export type ToolResultContent =
   | string
