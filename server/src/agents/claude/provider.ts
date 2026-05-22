@@ -6,9 +6,15 @@ import type { AgentProvider, AgentRun } from '../types.js';
 import { ChatSession } from './session.js';
 import { ClaudeSessions } from './sessions.js';
 
+interface ClaudeAgentProviderDeps {
+  sessionHolderFor?: () => Promise<(sessionId: string) => string | null>;
+}
+
 export class ClaudeAgentProvider implements AgentProvider<'claude'> {
   readonly kind = 'claude' as const;
   readonly sessions = new ClaudeSessions();
+
+  constructor(private readonly deps: ClaudeAgentProviderDeps = {}) {}
 
   async getInfo(): Promise<AgentInfo> {
     return {
@@ -27,10 +33,11 @@ export class ClaudeAgentProvider implements AgentProvider<'claude'> {
     };
   }
 
-  listSessions(input: Parameters<AgentProvider<'claude'>['listSessions']>[0]) {
+  async listSessions(input: Parameters<AgentProvider<'claude'>['listSessions']>[0]) {
+    const holderFor = await this.deps.sessionHolderFor?.() ?? (() => null);
     return this.sessions.list({
       ...input,
-      holderFor: () => null,
+      holderFor,
     });
   }
 

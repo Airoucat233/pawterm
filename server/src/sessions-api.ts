@@ -6,7 +6,10 @@ import type { FastifyInstance } from 'fastify';
 import { isPathAllowed } from './config.js';
 import { findAllHolders } from './holder-detect.js';
 import { getActiveRunHolder } from './chat-rest.js';
+import { AgentRegistry } from './agents/registry.js';
+import { ClaudeAgentProvider } from './agents/claude/provider.js';
 import { ClaudeSessions } from './agents/claude/sessions.js';
+import { parseAgentQuery } from './agents/http-helpers.js';
 
 function requirePath(cwd: string | undefined): string {
   if (!cwd) throw new Error('missing cwd');
@@ -14,8 +17,25 @@ function requirePath(cwd: string | undefined): string {
   return cwd;
 }
 
-export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
+export async function registerSessionsApi(app: FastifyInstance, deps?: {
+  registry?: AgentRegistry;
+}): Promise<void> {
   const claudeSessions = new ClaudeSessions();
+  const registry = deps?.registry ?? new AgentRegistry([
+    new ClaudeAgentProvider({
+      sessionHolderFor: async () => {
+        // 一次性扫描 ~/.claude/sessions/ 获取所有 PC CLI 持有者。
+        // 优先用 activeRun 的 holderDeviceId（移动端持有），其次才看 pid.json（PC CLI）。
+        const allHolders = await findAllHolders();
+        return (sessionId) => {
+          const activeHolder = getActiveRunHolder(sessionId);
+          if (activeHolder) return activeHolder;
+          if (allHolders.has(sessionId)) return 'server';
+          return null;
+        };
+      },
+    }),
+  ]);
 
   /**
    * List sessions for a given working directory.
@@ -23,28 +43,33 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
    * filter strictly to sessions whose cwd matches the requested path.
    */
   app.get<{
-    Querystring: { cwd: string; limit?: string; offset?: string; include_subdirs?: string };
+    Querystring: { cwd: string; limit?: string; offset?: string; include_subdirs?: string; agent?: string };
   }>('/sessions', async (req) => {
     const cwd = requirePath(req.query.cwd);
     const limit = req.query.limit ? Number(req.query.limit) : 200;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
     const includeSubdirs = req.query.include_subdirs === 'true';
+    const agent = parseAgentQuery(req.query.agent, { allowAll: true });
 
-    // 一次性扫描 ~/.claude/sessions/ 获取所有 PC CLI 持有者。
-    // 优先用 activeRun 的 holderDeviceId（移动端持有），其次才看 pid.json（PC CLI）。
-    const allHolders = await findAllHolders();
-    return claudeSessions.list({
-      cwd,
-      limit,
-      offset,
-      includeSubdirs,
-      holderFor: (sessionId) => {
-        const activeHolder = getActiveRunHolder(sessionId);
-        if (activeHolder) return activeHolder;
-        if (allHolders.has(sessionId)) return 'server';
-        return null;
-      },
-    });
+    if (agent === 'all') {
+      const infos = await registry.listInfos();
+      const readyAgents = infos.filter((i) => i.status === 'ready').map((i) => i.kind);
+      const candidateLimit = offset + limit;
+      const pages = await Promise.all(
+        readyAgents.map((kind) => registry.resolve(kind).listSessions({
+          cwd,
+          limit: candidateLimit,
+          offset: 0,
+          includeSubdirs,
+        })),
+      );
+      return pages
+        .flat()
+        .sort((a, b) => (b.last_modified ?? 0) - (a.last_modified ?? 0))
+        .slice(offset, offset + limit);
+    }
+
+    return registry.resolve(agent).listSessions({ cwd, limit, offset, includeSubdirs });
   });
 
   app.get<{ Params: { id: string }; Querystring: { cwd: string } }>(
@@ -78,13 +103,14 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
    */
   app.get<{
     Params: { id: string };
-    Querystring: { cwd: string; limit?: string; before_uuid?: string };
+    Querystring: { cwd: string; limit?: string; before_uuid?: string; agent?: string };
   }>('/sessions/:id/messages', async (req) => {
     const cwd = requirePath(req.query.cwd);
     const limit = req.query.limit ? Math.max(1, Math.min(500, Number(req.query.limit))) : 50;
     const beforeUuid = req.query.before_uuid;
+    const agent = parseAgentQuery(req.query.agent);
 
-    return claudeSessions.messages({ cwd, sessionId: req.params.id, limit, beforeUuid });
+    return registry.resolve(agent).getSessionMessages({ cwd, sessionId: req.params.id, limit, beforeUuid });
   });
 
   app.post<{
@@ -133,11 +159,17 @@ export async function registerSessionsApi(app: FastifyInstance): Promise<void> {
    */
   app.get<{
     Params: { id: string };
-    Querystring: { cwd: string; limit?: string; before_uuid?: string };
+    Querystring: { cwd: string; limit?: string; before_uuid?: string; agent?: string };
   }>('/sessions/:id/raw-history', async (req, reply) => {
     const cwd = requirePath(req.query.cwd);
     const limit = req.query.limit ? Math.max(1, Math.min(500, Number(req.query.limit))) : 50;
     const beforeUuid = req.query.before_uuid;
+    const agent = parseAgentQuery(req.query.agent);
+
+    if (agent !== 'claude') {
+      reply.code(400);
+      return { error: 'raw-history is only available for claude sessions' };
+    }
 
     try {
       return await claudeSessions.rawHistory({ cwd, sessionId: req.params.id, limit, beforeUuid });
