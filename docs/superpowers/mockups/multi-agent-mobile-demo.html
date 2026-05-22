@@ -1,0 +1,950 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PawTerm 多 Agent 手机端演示</title>
+  <style>
+    :root {
+      --bg: #0b1210;
+      --surface: #141b18;
+      --surface-hi: #1a221e;
+      --surface-pop: #202a25;
+      --border: #2a332e;
+      --border-subt: #1e2622;
+      --text: #e6e6e6;
+      --muted: #9ba39e;
+      --dim: #6b746f;
+      --accent: #10b981;
+      --accent-soft: rgba(16, 185, 129, 0.14);
+      --violet: #a78bfa;
+      --blue: #3b82f6;
+      --cyan: #06b6d4;
+      --yellow: #eab308;
+      --danger: #ef4444;
+      --shadow: rgba(0, 0, 0, 0.34);
+      --radius: 8px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 20% 12%, rgba(16, 185, 129, 0.13), transparent 28%),
+        radial-gradient(circle at 82% 24%, rgba(59, 130, 246, 0.11), transparent 24%),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      letter-spacing: 0;
+    }
+
+    .stage {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(320px, 390px) minmax(320px, 520px);
+      gap: 32px;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+    }
+
+    .phone {
+      width: min(390px, calc(100vw - 32px));
+      height: 844px;
+      max-height: calc(100vh - 64px);
+      min-height: 720px;
+      border: 1px solid rgba(230, 230, 230, 0.10);
+      border-radius: 36px;
+      padding: 12px;
+      background: linear-gradient(180deg, #0e1513, #080d0c);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+      position: relative;
+    }
+
+    .screen {
+      height: 100%;
+      border-radius: 26px;
+      background: var(--bg);
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .screen-pane {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .status {
+      height: 28px;
+      padding: 8px 18px 0;
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+    }
+
+    .topbar {
+      min-height: 56px;
+      padding: 8px 16px 10px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--border-subt);
+    }
+
+    .back, .icon-button {
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--border-subt);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 18px;
+    }
+
+    .top-title { min-width: 0; flex: 1; }
+    .title {
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .content {
+      flex: 1;
+      overflow: auto;
+      padding: 16px;
+      scrollbar-width: none;
+    }
+    .content::-webkit-scrollbar { display: none; }
+
+    .section-label {
+      margin: 18px 0 8px;
+      color: var(--dim);
+      font-size: 10px;
+      font-family: var(--mono);
+      text-transform: uppercase;
+    }
+
+    .agent-card, .session-row, .tool-card, .message, .settings-card {
+      border: 1px solid var(--border-subt);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .agent-card {
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+    .agent-card:hover {
+      transform: translateY(-1px);
+      border-color: rgba(16, 185, 129, 0.55);
+      background: var(--surface-hi);
+    }
+
+    .agent-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 15px;
+      color: white;
+      flex: 0 0 auto;
+    }
+    .agent-codex { background: linear-gradient(135deg, #10b981, #0f766e); }
+    .agent-claude { background: linear-gradient(135deg, #a78bfa, #7c3aed); }
+    .agent-gemini { background: linear-gradient(135deg, #3b82f6, #06b6d4); }
+
+    .agent-copy { min-width: 0; flex: 1; }
+    .agent-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .agent-desc {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .chev { color: var(--dim); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      color: var(--muted);
+      background: var(--surface-hi);
+      border: 1px solid var(--border-subt);
+      white-space: nowrap;
+    }
+    .badge.active {
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-color: rgba(16, 185, 129, 0.35);
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      padding: 4px;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border-subt);
+      margin-bottom: 10px;
+    }
+    .segment {
+      min-height: 36px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .segment.active {
+      background: var(--surface-pop);
+      color: var(--text);
+    }
+
+    .session-row {
+      padding: 12px;
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .session-title {
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+    .session-meta {
+      margin-top: 4px;
+      color: var(--dim);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .session-agent {
+      align-self: start;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--accent);
+    }
+    .session-row[data-provider="claude"] .session-agent { color: var(--violet); }
+    .session-row[data-provider="gemini"] .session-agent { color: var(--blue); }
+
+    .fab {
+      position: absolute;
+      right: 18px;
+      bottom: 22px;
+      height: 48px;
+      border: 0;
+      border-radius: 8px;
+      padding: 0 18px;
+      color: white;
+      background: var(--accent);
+      font-weight: 700;
+      box-shadow: 0 14px 30px rgba(16, 185, 129, 0.24), inset 0 1px rgba(255, 255, 255, 0.22);
+      cursor: pointer;
+    }
+
+    .tabbar {
+      height: 58px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--border-subt);
+      background: rgba(20, 27, 24, 0.96);
+    }
+    .tab {
+      border: 0;
+      background: transparent;
+      color: var(--dim);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .tab.active { color: var(--accent); }
+    .tab span {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+      margin-bottom: 2px;
+    }
+
+    .message {
+      padding: 12px;
+      margin-bottom: 12px;
+      line-height: 1.45;
+      font-size: 13px;
+    }
+    .message.user {
+      margin-left: 44px;
+      background: rgba(16, 185, 129, 0.10);
+      border-color: rgba(16, 185, 129, 0.22);
+    }
+    .message.agent {
+      margin-right: 22px;
+      background: var(--surface);
+    }
+    .msg-label {
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: 10px;
+      margin-bottom: 6px;
+    }
+
+    .tool-card {
+      padding: 12px;
+      margin: 10px 0;
+      display: grid;
+      gap: 8px;
+      border-left: 3px solid var(--cyan);
+      background: linear-gradient(90deg, rgba(6, 182, 212, 0.08), var(--surface) 38%);
+    }
+    .tool-card.command { border-left-color: var(--violet); background: linear-gradient(90deg, rgba(167, 139, 250, 0.09), var(--surface) 38%); }
+    .tool-card.file { border-left-color: var(--accent); background: linear-gradient(90deg, rgba(16, 185, 129, 0.09), var(--surface) 38%); }
+    .tool-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .tool-body {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      font-family: var(--mono);
+      overflow-wrap: anywhere;
+    }
+    .tool-foot {
+      color: var(--dim);
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+
+    .composer {
+      padding: 10px 12px 12px;
+      border-top: 1px solid var(--border-subt);
+      background: var(--bg);
+    }
+    .input {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-hi);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--dim);
+      font-size: 13px;
+      padding: 0 12px;
+    }
+
+    .sheet-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.42);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease;
+      z-index: 20;
+    }
+    .sheet-backdrop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .sheet {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 10px 16px 18px;
+      background: #111815;
+      border-top: 1px solid var(--border);
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -18px 48px var(--shadow);
+      transform: translateY(110%);
+      transition: transform 220ms ease;
+      z-index: 30;
+    }
+    .sheet.show { transform: translateY(0); }
+    .grabber {
+      width: 42px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--border);
+      margin: 0 auto 16px;
+    }
+    .sheet-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .sheet-title h2 {
+      margin: 0;
+      font-size: 17px;
+      line-height: 1.2;
+    }
+    .close {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 20px;
+      cursor: pointer;
+    }
+
+    .agent-option {
+      display: flex;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subt);
+      background: var(--surface);
+      margin-bottom: 8px;
+      cursor: pointer;
+    }
+    .agent-option.selected {
+      border-color: rgba(16, 185, 129, 0.45);
+      background: rgba(16, 185, 129, 0.08);
+    }
+    .agent-option.disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .option-copy { flex: 1; min-width: 0; }
+    .option-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .option-desc {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .actions {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .primary, .secondary, .danger {
+      min-height: 44px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .primary {
+      border: 0;
+      color: white;
+      background: var(--accent);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.22);
+    }
+    .secondary {
+      border: 1px solid rgba(16, 185, 129, 0.18);
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .danger {
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.08);
+    }
+
+    .side {
+      max-width: 520px;
+    }
+    .eyebrow {
+      color: var(--accent);
+      font-size: 11px;
+      font-family: var(--mono);
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .side h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 48px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    .side p {
+      color: var(--muted);
+      line-height: 1.65;
+      font-size: 15px;
+      margin: 16px 0 0;
+    }
+    .notes {
+      display: grid;
+      gap: 10px;
+      margin-top: 24px;
+    }
+    .note {
+      padding: 12px 14px;
+      border: 1px solid var(--border-subt);
+      background: rgba(20, 27, 24, 0.72);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .note strong { color: var(--text); }
+    .demo-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 24px;
+    }
+    .demo-controls button {
+      min-height: 40px;
+      border-radius: 8px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+    }
+
+    [data-screen] { display: none; }
+    [data-screen].active { display: flex; }
+
+    .approval-summary {
+      padding: 12px;
+      border: 1px solid rgba(234, 179, 8, 0.26);
+      background: rgba(234, 179, 8, 0.08);
+      border-radius: 8px;
+      margin: 10px 0;
+    }
+    .approval-summary .tool-body { color: #d6d3c5; }
+
+    @media (max-width: 860px) {
+      .stage {
+        grid-template-columns: 1fr;
+        padding: 16px;
+        gap: 20px;
+      }
+      .phone {
+        margin: 0 auto;
+        max-height: none;
+      }
+      .side {
+        order: -1;
+        max-width: min(390px, calc(100vw - 32px));
+        margin: 0 auto;
+      }
+      .side h1 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <section class="phone" aria-label="手机预览">
+      <div class="screen">
+        <div class="status">
+          <span>9:41</span>
+          <span>局域网 100%</span>
+        </div>
+
+        <section class="screen-pane active" data-screen="project">
+          <div class="topbar">
+            <button class="back" type="button" aria-label="返回">‹</button>
+            <div class="top-title">
+              <div class="title">claude-companion</div>
+              <div class="subtitle">Mac Studio · /workspace/shulex/claude-companion</div>
+            </div>
+            <button class="icon-button" type="button" aria-label="更多">⋯</button>
+          </div>
+          <div class="content">
+            <div class="section-label">当前 Agent</div>
+            <div class="agent-card" id="agentCard" role="button" tabindex="0">
+              <div class="agent-mark agent-codex" id="currentAgentMark">CX</div>
+              <div class="agent-copy">
+                <div class="agent-name">
+                  <span id="currentAgentName">Codex</span>
+                  <span class="badge active" id="currentAgentStatus">可用</span>
+                </div>
+                <div class="agent-desc" id="currentAgentDesc">GPT-5.4 · workspace-write · 高风险命令前询问</div>
+              </div>
+              <div class="chev">›</div>
+            </div>
+
+            <div class="section-label">会话</div>
+            <div class="segmented" role="tablist" aria-label="会话筛选">
+              <button class="segment active" data-filter="all" type="button">全部</button>
+              <button class="segment" data-filter="claude" type="button">Claude</button>
+              <button class="segment" data-filter="codex" type="button">Codex</button>
+            </div>
+
+            <div class="session-row" data-provider="codex" id="openChatRow">
+              <div>
+                <div class="session-title">接入多 Agent 聊天界面</div>
+                <div class="session-meta">12 分钟前 · 7 轮 · workspace-write</div>
+              </div>
+              <div class="session-agent">Codex</div>
+            </div>
+            <div class="session-row" data-provider="claude">
+              <div>
+                <div class="session-title">打磨聊天视图交互</div>
+                <div class="session-meta">昨天 · 24 轮 · acceptEdits</div>
+              </div>
+              <div class="session-agent">Claude</div>
+            </div>
+            <div class="session-row" data-provider="codex">
+              <div>
+                <div class="session-title">检查服务端 Provider 边界</div>
+                <div class="session-meta">周一 · 5 轮 · read-only</div>
+              </div>
+              <div class="session-agent">Codex</div>
+            </div>
+            <div class="session-row" data-provider="claude">
+              <div>
+                <div class="session-title">零配置引导流程</div>
+                <div class="session-meta">5 月 19 日 · 18 轮 · plan</div>
+              </div>
+              <div class="session-agent">Claude</div>
+            </div>
+          </div>
+          <button class="fab" id="newChatBtn" type="button">新会话</button>
+        </section>
+
+        <section class="screen-pane" data-screen="chat">
+          <div class="topbar">
+            <button class="back" id="backToProject" type="button" aria-label="返回">‹</button>
+            <div class="top-title">
+              <div class="title" id="chatTitle">Codex · GPT-5.4</div>
+              <div class="subtitle" id="chatSubtitle">workspace-write · 按需审批</div>
+            </div>
+            <button class="icon-button" id="chatMore" type="button" aria-label="更多">⋯</button>
+          </div>
+          <div class="content">
+            <div class="message user">
+              <div class="msg-label">你</div>
+              做完整多 Agent 支持。先接 Codex，但要保留以后扩展 Gemini 的空间。
+            </div>
+            <div class="message agent">
+              <div class="msg-label" id="agentMessageLabel">Codex</div>
+              我先检查服务端边界，再把 Codex 的 thread 事件映射到 PawTerm 现有聊天协议。
+            </div>
+            <div class="tool-card command">
+              <div class="tool-head">
+                <span>命令</span>
+                <span class="badge">已完成</span>
+              </div>
+              <div class="tool-body">rg "ChatSession|messageToWire|sessions" server packages app</div>
+              <div class="tool-foot">0.4s · /claude-companion</div>
+            </div>
+            <div class="tool-card file">
+              <div class="tool-head">
+                <span>文件变更</span>
+                <span class="badge active">预览</span>
+              </div>
+              <div class="tool-body">server/src/agents/provider.ts<br />server/src/agents/codex-session.ts</div>
+              <div class="tool-foot">+128 -0 · 尚未应用</div>
+            </div>
+            <div class="approval-summary" id="approvalCard">
+              <div class="tool-head">
+                <span>审批</span>
+                <span class="badge">等待中</span>
+              </div>
+              <div class="tool-body">Codex 想运行：pnpm test --filter @cc/server</div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="input">
+              <span id="composerText">给 Codex 发消息...</span>
+              <span>↵</span>
+            </div>
+          </div>
+          <div class="tabbar">
+            <button class="tab active" type="button"><span>●</span>聊天</button>
+            <button class="tab" type="button"><span>▣</span>终端</button>
+            <button class="tab" type="button"><span>□</span>文件</button>
+          </div>
+        </section>
+
+        <div class="sheet-backdrop" id="backdrop"></div>
+
+        <aside class="sheet" id="agentSheet" aria-label="选择 Agent">
+          <div class="grabber"></div>
+          <div class="sheet-title">
+            <h2>选择 Agent</h2>
+            <button class="close" type="button" data-close>×</button>
+          </div>
+          <div class="agent-option" data-agent="claude">
+            <div class="agent-mark agent-claude">CL</div>
+            <div class="option-copy">
+              <div class="option-title">
+                <span>Claude Code</span>
+                <span class="badge">Sonnet 4.6</span>
+              </div>
+              <div class="option-desc">适合继续使用 Claude 历史会话、AskUserQuestion 和 Claude 权限模式。</div>
+            </div>
+          </div>
+          <div class="agent-option selected" data-agent="codex">
+            <div class="agent-mark agent-codex">CX</div>
+            <div class="option-copy">
+              <div class="option-title">
+                <span>Codex</span>
+                <span class="badge active">默认</span>
+              </div>
+              <div class="option-desc">OpenAI 编程 Agent，支持 sandbox、审批流、代码审查和 thread 历史。</div>
+            </div>
+          </div>
+          <div class="agent-option disabled" data-agent="gemini">
+            <div class="agent-mark agent-gemini">GM</div>
+            <div class="option-copy">
+              <div class="option-title">
+                <span>Gemini CLI</span>
+                <span class="badge">稍后</span>
+              </div>
+              <div class="option-desc">预留 Provider 位置。后续可复用同一套 Agent 合约接入。</div>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="primary" id="useAgentBtn" type="button">设为本项目默认</button>
+          </div>
+        </aside>
+
+        <aside class="sheet" id="newChatSheet" aria-label="新会话">
+          <div class="grabber"></div>
+          <div class="sheet-title">
+            <h2>开始新会话</h2>
+            <button class="close" type="button" data-close>×</button>
+          </div>
+          <div class="settings-card" style="padding: 12px;">
+            <div class="section-label" style="margin-top: 0;">Agent</div>
+            <div class="agent-name"><span id="newChatAgent">Codex</span><span class="badge active">项目默认</span></div>
+            <div class="agent-desc" id="newChatDesc">GPT-5.4 · workspace-write · 高风险命令前询问</div>
+          </div>
+          <div class="settings-card" style="padding: 12px; margin-top: 8px;">
+            <div class="section-label" style="margin-top: 0;">运行参数</div>
+            <div class="agent-desc">模型和权限归属于当前 Agent，不放进一个全局混合模型列表。</div>
+          </div>
+          <div class="actions">
+            <button class="primary" id="startChatBtn" type="button">用当前 Agent 开始</button>
+            <button class="secondary" id="chooseDifferentBtn" type="button">换一个 Agent</button>
+          </div>
+        </aside>
+
+        <aside class="sheet" id="approvalSheet" aria-label="审批请求">
+          <div class="grabber"></div>
+          <div class="sheet-title">
+            <h2>Codex 需要审批</h2>
+            <button class="close" type="button" data-close>×</button>
+          </div>
+          <div class="settings-card" style="padding: 12px;">
+            <div class="section-label" style="margin-top: 0;">运行命令</div>
+            <div class="tool-body">pnpm test --filter @cc/server</div>
+            <div class="section-label">工作目录</div>
+            <div class="tool-body">/Users/airoucat/workspace/shulex/claude-companion</div>
+          </div>
+          <div class="actions">
+            <button class="primary" type="button" data-close>仅允许这次</button>
+            <button class="secondary" type="button" data-close>允许类似命令</button>
+            <button class="danger" type="button" data-close>拒绝</button>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="eyebrow">PawTerm 交互提案</div>
+      <h1>先选项目，再选 Agent，最后进入会话。</h1>
+      <p>
+        这个原型把 Claude、Codex，以及未来的 Gemini 都当成 Agent。
+        用户在项目边界选择执行者，每条会话保留自己的 Provider、模型、权限、工具和历史语义。
+      </p>
+      <div class="notes">
+        <div class="note"><strong>点“当前 Agent”</strong> 打开 Agent 选择器。Provider 差异集中在这个面板里，不散落到各处设置。</div>
+        <div class="note"><strong>点“新会话”</strong> 查看启动流程。默认使用项目 Agent，但仍然可以临时换一个。</div>
+        <div class="note"><strong>点第一条会话</strong> 进入聊天页。工具调用统一成命令、文件变更、审批等用户能理解的卡片。</div>
+      </div>
+      <div class="demo-controls">
+        <button type="button" data-demo="project">项目页</button>
+        <button type="button" data-demo="agent">Agent 面板</button>
+        <button type="button" data-demo="new">新会话</button>
+        <button type="button" data-demo="chat">聊天页</button>
+        <button type="button" data-demo="approval">审批弹层</button>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const state = {
+      agent: 'codex',
+      selectedAgent: 'codex',
+      filter: 'all'
+    };
+
+    const agents = {
+      claude: {
+        short: 'CL',
+        name: 'Claude Code',
+        label: 'Claude',
+        markClass: 'agent-claude',
+        desc: 'Sonnet 4.6 · acceptEdits · 支持 AskUserQuestion',
+        chatTitle: 'Claude Code · Sonnet 4.6',
+        chatSubtitle: 'acceptEdits · Claude 权限模式'
+      },
+      codex: {
+        short: 'CX',
+        name: 'Codex',
+        label: 'Codex',
+        markClass: 'agent-codex',
+        desc: 'GPT-5.4 · workspace-write · 高风险命令前询问',
+        chatTitle: 'Codex · GPT-5.4',
+        chatSubtitle: 'workspace-write · 按需审批'
+      },
+      gemini: {
+        short: 'GM',
+        name: 'Gemini CLI',
+        label: 'Gemini',
+        markClass: 'agent-gemini',
+        desc: '尚未配置',
+        chatTitle: 'Gemini CLI',
+        chatSubtitle: '尚未配置'
+      }
+    };
+
+    const backdrop = document.getElementById('backdrop');
+    const sheets = Array.from(document.querySelectorAll('.sheet'));
+
+    function openSheet(id) {
+      sheets.forEach(sheet => sheet.classList.remove('show'));
+      backdrop.classList.add('show');
+      document.getElementById(id).classList.add('show');
+    }
+
+    function closeSheets() {
+      backdrop.classList.remove('show');
+      sheets.forEach(sheet => sheet.classList.remove('show'));
+    }
+
+    function showScreen(name) {
+      document.querySelectorAll('[data-screen]').forEach(screen => {
+        screen.classList.toggle('active', screen.dataset.screen === name);
+      });
+      closeSheets();
+    }
+
+    function renderAgent() {
+      const agent = agents[state.agent];
+      const mark = document.getElementById('currentAgentMark');
+      mark.className = `agent-mark ${agent.markClass}`;
+      mark.textContent = agent.short;
+      document.getElementById('currentAgentName').textContent = agent.name;
+      document.getElementById('currentAgentDesc').textContent = agent.desc;
+      document.getElementById('newChatAgent').textContent = agent.name;
+      document.getElementById('newChatDesc').textContent = agent.desc;
+      document.getElementById('chatTitle').textContent = agent.chatTitle;
+      document.getElementById('chatSubtitle').textContent = agent.chatSubtitle;
+      document.getElementById('agentMessageLabel').textContent = agent.label;
+      document.getElementById('composerText').textContent = `给 ${agent.label} 发消息...`;
+      document.querySelectorAll('.agent-option').forEach(option => {
+        option.classList.toggle('selected', option.dataset.agent === state.agent);
+      });
+    }
+
+    function renderFilter() {
+      document.querySelectorAll('.segment').forEach(button => {
+        button.classList.toggle('active', button.dataset.filter === state.filter);
+      });
+      document.querySelectorAll('.session-row').forEach(row => {
+        const show = state.filter === 'all' || row.dataset.provider === state.filter;
+        row.style.display = show ? 'grid' : 'none';
+      });
+    }
+
+    document.getElementById('agentCard').addEventListener('click', () => openSheet('agentSheet'));
+    document.getElementById('newChatBtn').addEventListener('click', () => openSheet('newChatSheet'));
+    document.getElementById('chooseDifferentBtn').addEventListener('click', () => openSheet('agentSheet'));
+    document.getElementById('openChatRow').addEventListener('click', () => showScreen('chat'));
+    document.getElementById('startChatBtn').addEventListener('click', () => showScreen('chat'));
+    document.getElementById('backToProject').addEventListener('click', () => showScreen('project'));
+    document.getElementById('approvalCard').addEventListener('click', () => openSheet('approvalSheet'));
+    document.getElementById('chatMore').addEventListener('click', () => openSheet('newChatSheet'));
+    backdrop.addEventListener('click', closeSheets);
+    document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', closeSheets));
+
+    document.querySelectorAll('.segment').forEach(button => {
+      button.addEventListener('click', () => {
+        state.filter = button.dataset.filter;
+        renderFilter();
+      });
+    });
+
+    document.querySelectorAll('.agent-option:not(.disabled)').forEach(option => {
+      option.addEventListener('click', () => {
+        state.agent = option.dataset.agent;
+        renderAgent();
+      });
+    });
+
+    document.getElementById('useAgentBtn').addEventListener('click', closeSheets);
+
+    document.querySelectorAll('[data-demo]').forEach(button => {
+      button.addEventListener('click', () => {
+        const demo = button.dataset.demo;
+        if (demo === 'project') showScreen('project');
+        if (demo === 'chat') showScreen('chat');
+        if (demo === 'agent') openSheet('agentSheet');
+        if (demo === 'new') openSheet('newChatSheet');
+        if (demo === 'approval') {
+          showScreen('chat');
+          setTimeout(() => openSheet('approvalSheet'), 80);
+        }
+      });
+    });
+
+    renderAgent();
+    renderFilter();
+  </script>
+</body>
+</html>
