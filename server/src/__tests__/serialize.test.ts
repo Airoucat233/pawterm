@@ -70,3 +70,25 @@ describe('normalizeToolResultContent (via messageToWire user msg)', () => {
     expect(wireToolResultContent(undefined)).toBeNull();
   });
 });
+
+describe('Claude native tool metadata', () => {
+  it('keeps Claude tool_use name unchanged and adds raw payload', () => {
+    const raw = {
+      type: 'assistant',
+      message: {
+        model: 'claude-sonnet-4-6',
+        content: [
+          { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'pnpm test' } },
+        ],
+      },
+    };
+    const wire = messageToWire(raw);
+    expect(wire.content[0]).toMatchObject({
+      type: 'tool_use',
+      id: 'toolu_1',
+      name: 'Bash',
+      native_type: 'tool_use',
+    });
+    expect(wire.content[0].raw_payload).toEqual(raw.message.content[0]);
+  });
+});
