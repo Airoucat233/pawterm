@@ -11,8 +11,9 @@ import QRCode from 'qrcode';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-import type { HealthResponse, Project, PairedDevice, ModelsResponse, ModelInfo, ModelProvider } from '@pawterm/shared';
+import type { AgentsResponse, HealthResponse, Project, PairedDevice, ModelsResponse, ModelInfo, ModelProvider } from '@pawterm/shared';
 
+import { defaultAgentRegistry } from './agents/registry.js';
 import { registerChatRest } from './chat-rest.js';
 import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices } from './config.js';
 import { adminEventBus } from './event-bus.js';
@@ -238,6 +239,10 @@ async function main(): Promise<void> {
     pairingOpen: pairingManager.getState() === 'open',
   }));
 
+  app.get('/agents', async (): Promise<AgentsResponse> => ({
+    agents: await defaultAgentRegistry.listInfos(),
+  }));
+
   // REST: models — reads ~/.claude/settings.json to detect provider + available models
   app.get('/models', async (): Promise<ModelsResponse> => {
     const claudeSettings = (() => {
@@ -460,7 +465,7 @@ async function main(): Promise<void> {
   });
 
   // REST: sessions
-  await registerSessionsApi(app);
+  await registerSessionsApi(app, { registry: defaultAgentRegistry });
 
   // REST + SSE: chat
   await registerChatRest(app);

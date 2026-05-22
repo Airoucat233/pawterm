@@ -1,4 +1,6 @@
 import type { AgentInfo, AgentKind } from '@pawterm/shared';
+import { ClaudeAgentProvider } from './claude/provider.js';
+import { CodexAgentProvider } from './codex/provider.js';
 import type { AgentProvider } from './types.js';
 import { UnknownAgentError } from './types.js';
 
@@ -26,3 +28,22 @@ export class AgentRegistry {
     return infos;
   }
 }
+
+export const defaultAgentRegistry = new AgentRegistry([
+  new ClaudeAgentProvider({
+    sessionHolderFor: async () => {
+      const [{ findAllHolders }, { getActiveRunHolder }] = await Promise.all([
+        import('../holder-detect.js'),
+        import('../chat-rest.js'),
+      ]);
+      const allHolders = await findAllHolders();
+      return (sessionId) => {
+        const activeHolder = getActiveRunHolder(sessionId);
+        if (activeHolder) return activeHolder;
+        if (allHolders.has(sessionId)) return 'server';
+        return null;
+      };
+    },
+  }),
+  new CodexAgentProvider(),
+]);

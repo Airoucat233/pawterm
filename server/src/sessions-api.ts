@@ -4,10 +4,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 
 import { isPathAllowed } from './config.js';
-import { findAllHolders } from './holder-detect.js';
-import { getActiveRunHolder } from './chat-rest.js';
-import { AgentRegistry } from './agents/registry.js';
-import { ClaudeAgentProvider } from './agents/claude/provider.js';
+import { AgentRegistry, defaultAgentRegistry } from './agents/registry.js';
 import { ClaudeSessions } from './agents/claude/sessions.js';
 import { parseAgentQuery } from './agents/http-helpers.js';
 
@@ -21,21 +18,7 @@ export async function registerSessionsApi(app: FastifyInstance, deps?: {
   registry?: AgentRegistry;
 }): Promise<void> {
   const claudeSessions = new ClaudeSessions();
-  const registry = deps?.registry ?? new AgentRegistry([
-    new ClaudeAgentProvider({
-      sessionHolderFor: async () => {
-        // 一次性扫描 ~/.claude/sessions/ 获取所有 PC CLI 持有者。
-        // 优先用 activeRun 的 holderDeviceId（移动端持有），其次才看 pid.json（PC CLI）。
-        const allHolders = await findAllHolders();
-        return (sessionId) => {
-          const activeHolder = getActiveRunHolder(sessionId);
-          if (activeHolder) return activeHolder;
-          if (allHolders.has(sessionId)) return 'server';
-          return null;
-        };
-      },
-    }),
-  ]);
+  const registry = deps?.registry ?? defaultAgentRegistry;
 
   /**
    * List sessions for a given working directory.
