@@ -6,12 +6,15 @@ import type {
   SessionSummary,
 } from '@pawterm/shared';
 
+export type AgentRuntimeFor<K extends AgentKind> = Extract<AgentRuntime, { agent: K }>;
+export type RawAgentHistoryMessage = Record<string, unknown>;
+
 export interface AgentHistoryPage {
   messages: Array<{
     uuid: string | null;
     parent_uuid: string | null;
     timestamp: number | null;
-    message: ChatServerMessage | unknown;
+    message: ChatServerMessage | RawAgentHistoryMessage;
   }>;
   has_more: boolean;
   total: number;
@@ -25,8 +28,8 @@ export interface AgentRun {
   close(): void;
 }
 
-export interface AgentProvider {
-  readonly kind: AgentKind;
+export interface AgentProvider<K extends AgentKind = AgentKind> {
+  readonly kind: K;
   getInfo(): Promise<AgentInfo>;
   listSessions(input: {
     cwd: string;
@@ -44,13 +47,13 @@ export interface AgentProvider {
     cwd: string;
     sessionId: string;
     text: string;
-    runtime: AgentRuntime;
+    runtime: AgentRuntimeFor<K>;
     deviceId: string;
   }): Promise<AgentRun>;
   interrupt(input: { sessionId: string }): Promise<void>;
   setRuntime?(input: {
     sessionId: string;
-    runtime: Partial<AgentRuntime>;
+    runtime: Partial<AgentRuntimeFor<K>>;
   }): Promise<void>;
 }
 

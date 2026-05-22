@@ -45,7 +45,15 @@ describe('AgentRegistry', () => {
 
   it('throws a 400-shaped error for an unknown provider', () => {
     const registry = new AgentRegistry([fakeProvider('claude')]);
-    expect(() => registry.resolve('missing')).toThrow(/Unknown agent: missing/);
+    try {
+      registry.resolve('missing');
+      throw new Error('expected resolve() to throw');
+    } catch (err) {
+      expect(err).toMatchObject({
+        message: 'Unknown agent: missing',
+        statusCode: 400,
+      });
+    }
   });
 
   it('lists provider info in registration order', async () => {
