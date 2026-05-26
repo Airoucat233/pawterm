@@ -27,6 +27,12 @@ val hasReleaseSigning = listOf(
     releaseKeyAlias,
     releaseKeyPassword,
 ).all { !it.isNullOrBlank() }
+val pawtermAbiFilters = providers.gradleProperty("pawtermAbiFilter")
+    .orNull
+    ?.split(",")
+    ?.map { it.trim() }
+    ?.filter { it.isNotEmpty() }
+    ?: emptyList()
 
 fun resolveStoreFile(path: String): File =
     if (File(path).isAbsolute) file(path) else rootProject.file(path)
@@ -52,6 +58,11 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        if (pawtermAbiFilters.isNotEmpty()) {
+            ndk {
+                abiFilters += pawtermAbiFilters
+            }
+        }
     }
 
     signingConfigs {

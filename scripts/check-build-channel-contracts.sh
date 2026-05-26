@@ -19,7 +19,13 @@ grep -q 'prerelease-v' scripts/release.sh || fail "release script must use prere
 
 grep -q -- '--dev' app/scripts/build-apk.sh || fail "APK build script must expose --dev for local dev APKs"
 grep -q -- '--prod' app/scripts/build-apk.sh || fail "APK build script must expose --prod"
+grep -q -- '--all-abi' app/scripts/build-apk.sh || fail "APK build script must allow full-ABI dev builds explicitly"
 grep -q -- '--flavor "$FLAVOR"' app/scripts/build-apk.sh || fail "APK build script must pass the selected flavor to Flutter"
+grep -q 'SPLIT_PER_ABI=0' app/scripts/build-apk.sh || fail "dev APK builds must default to arm64 only"
+grep -q 'pawtermAbiFilter=arm64-v8a' app/scripts/build-apk.sh || fail "single-ABI APK builds must filter transitive native libraries"
+grep -q 'find "$VERSION_DIR" -maxdepth 1 -type f -name "${NAME_PREFIX}-${VERSION}-\*.apk" -delete' app/scripts/build-apk.sh || fail "versioned APK output must remove stale artifacts for the current flavor"
+grep -q 'if \[\[ "$FLAVOR" == "prod" \]\]; then' app/scripts/build-apk.sh || fail "only prod APKs should copy to dist"
+grep -q 'pawtermAbiFilter' app/android/app/build.gradle.kts || fail "Android Gradle build must support ABI filtering for single-ABI APKs"
 
 grep -q 'CI=true bash app/scripts/build-apk.sh --prod' .github/workflows/release.yml || fail "stable release workflow must build prod APKs"
 grep -q 'CI=true bash app/scripts/build-apk.sh --prod' .github/workflows/prerelease.yml || fail "prerelease workflow must build prod APKs"

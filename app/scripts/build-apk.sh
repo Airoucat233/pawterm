@@ -9,7 +9,8 @@
 # Usage:
 #   ./scripts/build-apk.sh           # prod release build (split-per-abi)
 #   ./scripts/build-apk.sh --prod    # prod release build (split-per-abi)
-#   ./scripts/build-apk.sh --dev     # local dev release build, app id com.airoucat.pawterm.dev
+#   ./scripts/build-apk.sh --dev     # local dev release build, arm64 only, app id com.airoucat.pawterm.dev
+#   ./scripts/build-apk.sh --dev --all-abi # local dev release build, split-per-abi
 #   ./scripts/build-apk.sh --debug   # debug build (arm64 only)
 
 set -euo pipefail
@@ -27,14 +28,21 @@ DIST_DIR="$REPO_ROOT/dist"
 DEBUG=0
 FLAVOR="prod"
 NAME_PREFIX="pawterm"
+ALL_ABI=0
 for arg in "$@"; do
   case "$arg" in
     --debug|-d) DEBUG=1 ;;
     --prod) FLAVOR="prod"; NAME_PREFIX="pawterm" ;;
     --dev) FLAVOR="dev"; NAME_PREFIX="pawterm-dev" ;;
+    --all-abi) ALL_ABI=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
+
+SPLIT_PER_ABI=1
+if [[ "$FLAVOR" == "dev" && $ALL_ABI -eq 0 ]]; then
+  SPLIT_PER_ABI=0
+fi
 
 # -------- Read version --------
 
@@ -49,8 +57,8 @@ echo "  flavor : \033[36m$FLAVOR\033[0m"
 
 if [[ $DEBUG -eq 1 ]]; then
   echo
-  echo "▶ flutter build apk --debug --flavor $FLAVOR --target-platform android-arm64"
-  flutter build apk --debug --flavor "$FLAVOR" --target-platform android-arm64
+  echo "▶ flutter build apk --debug --flavor $FLAVOR --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a"
+  flutter build apk --debug --flavor "$FLAVOR" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
   echo
   echo "\033[32m✓ debug build done\033[0m  →  $OUT_DIR"
   exit 0
@@ -112,26 +120,41 @@ echo "▶ flutter pub get"
 flutter pub get
 
 echo
-echo "▶ flutter build apk --release --flavor $FLAVOR --split-per-abi"
-flutter build apk --release --flavor "$FLAVOR" --split-per-abi
+if [[ $SPLIT_PER_ABI -eq 1 ]]; then
+  echo "▶ flutter build apk --release --flavor $FLAVOR --split-per-abi"
+  flutter build apk --release --flavor "$FLAVOR" --split-per-abi
+else
+  echo "▶ flutter build apk --release --flavor $FLAVOR --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a"
+  flutter build apk --release --flavor "$FLAVOR" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
+fi
 
 # -------- Organize into versioned dir --------
 
 VERSION_DIR="$RELEASES_DIR/$VERSION"
 mkdir -p "$VERSION_DIR"
+find "$VERSION_DIR" -maxdepth 1 -type f -name "${NAME_PREFIX}-${VERSION}-*.apk" -delete 2>/dev/null || true
 
 ARM64=""
-while IFS= read -r f; do
+if [[ $SPLIT_PER_ABI -eq 1 ]]; then
+  while IFS= read -r f; do
+    TARGET="$VERSION_DIR/${NAME_PREFIX}-${VERSION}-arm64-v8a.apk"
+    /bin/cp "$f" "$TARGET"
+    ARM64="$TARGET"
+  done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*arm64*-release.apk")
+  while IFS= read -r f; do
+    /bin/cp "$f" "$VERSION_DIR/${NAME_PREFIX}-${VERSION}-armeabi-v7a.apk"
+  done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*armeabi*-release.apk")
+  while IFS= read -r f; do
+    /bin/cp "$f" "$VERSION_DIR/${NAME_PREFIX}-${VERSION}-x86_64.apk"
+  done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*x86_64*-release.apk")
+else
+  RELEASE_APK="$OUT_DIR/app-${FLAVOR}-release.apk"
+  [[ -f "$RELEASE_APK" ]] || RELEASE_APK="$OUT_DIR/app-release.apk"
+  [[ -f "$RELEASE_APK" ]] || RELEASE_APK="$(find "$OUT_DIR" -maxdepth 1 -type f -name "*release.apk" | head -n 1)"
   TARGET="$VERSION_DIR/${NAME_PREFIX}-${VERSION}-arm64-v8a.apk"
-  /bin/cp "$f" "$TARGET"
+  /bin/cp "$RELEASE_APK" "$TARGET"
   ARM64="$TARGET"
-done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*arm64*-release.apk")
-while IFS= read -r f; do
-  /bin/cp "$f" "$VERSION_DIR/${NAME_PREFIX}-${VERSION}-armeabi-v7a.apk"
-done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*armeabi*-release.apk")
-while IFS= read -r f; do
-  /bin/cp "$f" "$VERSION_DIR/${NAME_PREFIX}-${VERSION}-x86_64.apk"
-done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*x86_64*-release.apk")
+fi
 
 find "$OUT_DIR" -maxdepth 1 -name "*release.apk" -delete 2>/dev/null || true
 
@@ -146,9 +169,11 @@ fi
 # -------- Copy to dist/ --------
 
 mkdir -p "$DIST_DIR"
-while IFS= read -r f; do
-  /bin/cp "$f" "$DIST_DIR/"
-done < <(find "$VERSION_DIR" -maxdepth 1 -type f -name "${NAME_PREFIX}-${VERSION}-*.apk")
+if [[ "$FLAVOR" == "prod" ]]; then
+  while IFS= read -r f; do
+    /bin/cp "$f" "$DIST_DIR/"
+  done < <(find "$VERSION_DIR" -maxdepth 1 -type f -name "${NAME_PREFIX}-${VERSION}-*.apk")
+fi
 
 # -------- Report --------
 
@@ -156,6 +181,8 @@ echo
 echo "\033[32m✓ build done\033[0m"
 echo "  version : $VERSION"
 echo "  flavor  : $FLAVOR"
+echo "  abi     : $([[ $SPLIT_PER_ABI -eq 1 ]] && echo split || echo arm64)"
 echo "  releases: $VERSION_DIR"
 /bin/ls -1 "$VERSION_DIR" | /usr/bin/sed 's/^/    /'
 echo "  latest  : $LATEST"
+[[ "$FLAVOR" == "dev" ]] && echo "  dist    : skipped for local dev build"
