@@ -13,6 +13,9 @@
     <!-- LAN scan / mDNS：CHANGE_WIFI_MULTICAST_STATE 让 nsd 拿 multicast lock；
          ACCESS_WIFI_STATE + ACCESS_NETWORK_STATE 让子网兜底能拿到本机 IP -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <application

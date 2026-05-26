@@ -39,6 +39,7 @@ dev_dependencies:
   flutter_lints: ^4.0.0
 
 flutter:
+  default-flavor: prod
   uses-material-design: true
 
   assets:

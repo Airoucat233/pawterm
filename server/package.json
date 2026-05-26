@@ -21,6 +21,7 @@
     "test-server:logs": "./scripts/test-server.sh logs",
     "build": "tsup && node scripts/copy-web-dist.cjs",
     "start": "node dist/index.js",
+    "smoke:packaged": "node scripts/smoke-packaged.cjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

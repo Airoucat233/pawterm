@@ -89,10 +89,14 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
       final conn = _connByServerId[result.serverId];
       if (conn != null) {
         final freshUrl = result.httpBase;
+        var updated = conn;
         if (freshUrl != conn.url) {
-          await ref.read(connectionsProvider.notifier).updateUrl(conn.id, freshUrl);
+          updated = await ref
+                  .read(connectionsProvider.notifier)
+                  .updateUrl(conn.id, freshUrl) ??
+              conn;
         }
-        if (mounted) Navigator.of(context).pop(conn);
+        if (mounted) Navigator.of(context).pop(updated);
       } else {
         if (mounted) Navigator.of(context).pop();
       }
@@ -168,8 +172,8 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
                             const SizedBox(width: 6),
                           ],
                           Text(subtitle,
-                              style: TextStyle(
-                                  fontSize: 12, color: t.textMuted)),
+                              style:
+                                  TextStyle(fontSize: 12, color: t.textMuted)),
                         ],
                       ),
                     ],
@@ -178,7 +182,8 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
                 // Port chip — 编辑后回车/失焦触发重扫；subnet sweep 用这个端口。
                 Container(
                   margin: const EdgeInsets.only(left: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: t.surfaceHi,
                     border: Border.all(color: t.border),
@@ -231,8 +236,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
                   TextButton(
                     onPressed: _startScan,
                     child: Text(s.lanScanRetry,
-                        style:
-                            TextStyle(fontSize: 13, color: t.accent)),
+                        style: TextStyle(fontSize: 13, color: t.accent)),
                   ),
               ],
             ),
@@ -244,8 +248,7 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
                     child: Padding(
                       padding: const EdgeInsets.all(32),
                       child: Text(s.lanScanNoResults,
-                          style:
-                              TextStyle(color: t.textMuted, fontSize: 14)),
+                          style: TextStyle(color: t.textMuted, fontSize: 14)),
                     ),
                   )
                 : ListView.builder(
@@ -255,7 +258,9 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
                       final r = _results[i];
                       return _ServerTile(
                         result: r,
-                        pairedConn: r.alreadyPaired ? _connByServerId[r.serverId] : null,
+                        pairedConn: r.alreadyPaired
+                            ? _connByServerId[r.serverId]
+                            : null,
                         onTap: _onTapResult,
                         t: t,
                         s: s,
@@ -310,9 +315,7 @@ class _ServerTile extends StatelessWidget {
             child: Text(
               displayName,
               style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: t.text),
+                  fontSize: 14, fontWeight: FontWeight.w600, color: t.text),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -355,9 +358,7 @@ class _ServerTile extends StatelessWidget {
               if (result.version.isNotEmpty) 'v${result.version}',
             ].join('  ·  '),
             style: TextStyle(
-                fontSize: 11.5,
-                fontFamily: 'monospace',
-                color: t.textMuted),
+                fontSize: 11.5, fontFamily: 'monospace', color: t.textMuted),
           ),
         ],
       ),
@@ -390,10 +391,8 @@ class _Badge extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w600,
-            color: color),
+        style:
+            TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: color),
       ),
     );
   }

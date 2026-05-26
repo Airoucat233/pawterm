@@ -224,6 +224,11 @@ else
   pnpm build
 
   echo
+  echo "▶ pnpm --filter pawterm-server run smoke:packaged"
+  cd "$REPO_ROOT"
+  pnpm --filter pawterm-server run smoke:packaged
+
+  echo
   if [[ $PRERELEASE -eq 1 ]]; then
     echo "▶ npm publish --tag prerelease --registry https://registry.npmjs.org"
     npm publish --tag prerelease --registry https://registry.npmjs.org

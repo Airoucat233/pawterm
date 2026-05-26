@@ -13,6 +13,12 @@ grep -q 'productFlavors' app/android/app/build.gradle.kts || fail "Android build
 grep -q 'applicationId = "com.airoucat.pawterm.dev"' app/android/app/build.gradle.kts || fail "dev flavor must use com.airoucat.pawterm.dev"
 grep -q 'resValue("string", "app_name", "PawTerm Dev")' app/android/app/build.gradle.kts || fail "dev flavor must set PawTerm Dev app name"
 grep -q 'android:label="@string/app_name"' app/android/app/src/main/AndroidManifest.xml || fail "Android label must come from app_name resource"
+grep -q 'android.permission.NEARBY_WIFI_DEVICES' app/android/app/src/main/AndroidManifest.xml || fail "Android LAN discovery must declare NEARBY_WIFI_DEVICES"
+grep -q 'Permission.nearbyWifiDevices' app/lib/state/lan_scanner.dart || fail "Android LAN discovery must request nearby Wi-Fi permission before scanning"
+grep -q 'default-flavor: prod' app/pubspec.yaml || fail "Flutter project must default local runs to the prod flavor"
+grep -q 'flutter run' CLAUDE.md || fail "developer docs must document Flutter local debug"
+grep -q 'defaults to prod flavor' README.md || fail "README must document default Flutter prod flavor for local debug"
+grep -q '默认 flavor=prod' app/README.md || fail "app README must document default Flutter prod flavor for local debug"
 
 grep -q 'prerelease-v' scripts/release.sh || fail "release script must use prerelease-v tags"
 ! grep -q 'dev-v' scripts/release.sh || fail "release script must not use dev-v release tags"
@@ -42,6 +48,9 @@ grep -q 'serverPackage = appUpdateChannel == .prerelease ? "pawterm-server@prere
 grep -q 'Prerelease channel' mac/Sources/PawTerm/MenuBarContent.swift || fail "Mac menu must expose a prerelease channel toggle"
 grep -q 'official updates are disabled' mac/Sources/PawTerm/MenuBarContent.swift || fail "Mac dev builds must explain that official updates are disabled"
 
+! grep -q "import { Bonjour" server/src/mdns.ts || fail "bonjour-service is CommonJS; use default import compatibility in mdns"
+grep -q '"smoke:packaged": "node scripts/smoke-packaged.cjs"' server/package.json || fail "server package must expose packaged smoke tests"
+grep -q 'pnpm --filter pawterm-server run smoke:packaged' server/scripts/publish.sh || fail "server publish must smoke-test packaged output before npm publish"
 grep -q -- '--prerelease' server/scripts/publish.sh || fail "server publish script must expose --prerelease"
 grep -q 'prerelease-server-v' server/scripts/publish.sh || fail "server publish git tags must use prerelease-server-v"
 grep -q 'npm publish --tag prerelease' server/scripts/publish.sh || fail "server prereleases must publish to npm prerelease dist-tag"

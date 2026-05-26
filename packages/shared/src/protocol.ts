@@ -82,6 +82,10 @@ export interface HealthResponse {
   hostname: string;
   serverId?: string;
   pairingOpen?: boolean;
+  advertisedAddress?: {
+    name: string;
+    address: string;
+  };
 }
 
 // ============== Pairing ==============

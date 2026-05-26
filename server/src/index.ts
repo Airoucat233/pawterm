@@ -4,7 +4,7 @@ import websocketPlugin from '@fastify/websocket';
 import Fastify from 'fastify';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
-import { hostname, homedir, networkInterfaces } from 'node:os';
+import { hostname, homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
@@ -21,6 +21,7 @@ import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError,
 import { adminEventBus } from './event-bus.js';
 import { buildLoggerOptions, SILENT_PATHS } from './logger.js';
 import { startMdns } from './mdns.js';
+import { createNetworkAddressService, type AdvertisedAddress } from './network-address.js';
 import { pairingManager } from './pair.js';
 import { registerSessionsApi } from './sessions-api.js';
 import { registerUpload } from './upload.js';
@@ -39,16 +40,6 @@ function _modelLabel(id: string, fallback: string): string {
   const m = id.match(/claude-(opus|sonnet|haiku)[-.](\d+[-.]?\d*)/i);
   if (m) return `${m[1].charAt(0).toUpperCase()}${m[1].slice(1)} ${m[2].replace(/-/g, '.')}`;
   return fallback;
-}
-
-function getLanIp(): string {
-  const ifaces = networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    for (const iface of (ifaces[name] ?? [])) {
-      if (!iface.internal && iface.family === 'IPv4') return iface.address;
-    }
-  }
-  return 'localhost';
 }
 
 function isValidPassword(pw: string): boolean {
@@ -159,6 +150,49 @@ async function firstRunSetup(): Promise<void> {
 
 async function main(): Promise<void> {
   const app = Fastify({ logger: buildLoggerOptions(), disableRequestLogging: true });
+  let stopMdns: (() => void) | null = null;
+  const mdnsOptions = () => ({
+    port: settings.port,
+    serverId: settings.serverId,
+    hostname: hostname(),
+    version: VERSION,
+    getPairingState: () => pairingManager.getState(),
+  });
+  const formatAddress = (address: AdvertisedAddress | null): string =>
+    address ? `${address.address} (${address.name})` : 'none';
+  const restartMdns = (reason: string): void => {
+    if (!stopMdns) return;
+    try {
+      stopMdns();
+      stopMdns = startMdns(mdnsOptions());
+      app.log.info(`mDNS advertisement restarted: ${reason}`);
+    } catch (err) {
+      app.log.warn({ err }, `Failed to restart mDNS advertisement: ${reason}`);
+    }
+  };
+  const networkAddressService = createNetworkAddressService({
+    onChange: (current, previous) => {
+      app.log.info(
+        `LAN address changed: ${formatAddress(previous)} -> ${formatAddress(current)}`,
+      );
+      restartMdns('LAN address changed');
+    },
+  });
+  const advertisedHost = () => networkAddressService.getCurrent()?.address ?? 'localhost';
+  const unsubscribePairRequestLog = adminEventBus.subscribe((event) => {
+    if (event.type !== 'pair_request') return;
+    app.log.info(
+      [
+        '',
+        '┌─ Pairing request',
+        `│  device : ${event.deviceName}`,
+        `│  ip     : ${event.ip}`,
+        `│  approve: http://${advertisedHost()}:${settings.port}/admin`,
+        '│  PIN    : run `cd server && PAWTERM_CONFIG=$(pwd)/config.json pnpm exec tsx src/index.ts pair`',
+        '└─ waiting for approval',
+      ].join('\n'),
+    );
+  });
 
   await app.register(cors, { origin: true });
   await app.register(websocketPlugin);
@@ -256,13 +290,19 @@ async function main(): Promise<void> {
   });
 
   // REST: health (no auth)
-  app.get('/health', async (): Promise<HealthResponse> => ({
-    status: 'ok',
-    version: VERSION,
-    hostname: hostname(),
-    serverId: settings.serverId,
-    pairingOpen: pairingManager.getState() === 'open',
-  }));
+  app.get('/health', async (): Promise<HealthResponse> => {
+    const advertisedAddress = networkAddressService.getCurrent();
+    return {
+      status: 'ok',
+      version: VERSION,
+      hostname: hostname(),
+      serverId: settings.serverId,
+      pairingOpen: pairingManager.getState() === 'open',
+      advertisedAddress: advertisedAddress
+        ? { name: advertisedAddress.name, address: advertisedAddress.address }
+        : undefined,
+    };
+  });
 
   app.get('/agents', async (): Promise<AgentsResponse> => ({
     agents: await defaultAgentRegistry.listInfos(),
@@ -643,9 +683,8 @@ async function main(): Promise<void> {
   // GET /admin/qr — adminToken required.
   // 生成一次性 QR claim code，5min 过期，扫码端用 POST /pair/qr-claim 兑换 deviceToken。
   app.get('/admin/qr', async (_req, _reply) => {
-    const lanIp = getLanIp();
     const { code, expiresAt } = pairingManager.createQrClaim();
-    const content = `pawterm://${lanIp}:${settings.port}?claim=${code}`;
+    const content = `pawterm://${advertisedHost()}:${settings.port}?claim=${code}`;
     const svg = await QRCode.toString(content, { type: 'svg' });
     return { content, svg, expiresAt };
   });
@@ -820,8 +859,10 @@ async function main(): Promise<void> {
   // ==========================================
 
   await app.listen({ host: settings.host, port: settings.port });
+  networkAddressService.start();
 
-  const lanIp = getLanIp();
+  const advertisedAddress = networkAddressService.getCurrent();
+  const lanIp = advertisedHost();
   app.log.info(
     [
       '',
@@ -829,6 +870,7 @@ async function main(): Promise<void> {
       `│  node     : ${process.version}`,
       `│  listen   : http://${settings.host}:${settings.port}`,
       `│  web admin: http://${lanIp}:${settings.port}/admin`,
+      `│  address  : ${formatAddress(advertisedAddress)}`,
       `│  config   : ${configPath}`,
       `│  serverId : ${settings.serverId}`,
       `│  log      : ${settings.logFormat} / ${settings.logLevel}${settings.logFile ? ` → ${settings.logFile}` : ''}`,
@@ -840,18 +882,14 @@ async function main(): Promise<void> {
   );
 
   // Start mDNS advertisement
-  const stopMdns = startMdns({
-    port: settings.port,
-    serverId: settings.serverId,
-    hostname: hostname(),
-    version: VERSION,
-    getPairingState: () => pairingManager.getState(),
-  });
+  stopMdns = startMdns(mdnsOptions());
 
   // Cleanup on shutdown
   const shutdown = async () => {
     console.log('\n[pawterm] shutting down…');
-    stopMdns();
+    unsubscribePairRequestLog();
+    networkAddressService.stop();
+    stopMdns?.();
     try { await app.close(); } catch {}
     console.log('[pawterm] bye');
     process.exit(0);

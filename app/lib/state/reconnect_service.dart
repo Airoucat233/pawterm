@@ -10,7 +10,7 @@ enum ReconnectStatus { idle, scanning, found, notFound }
 
 class ReconnectState {
   final ReconnectStatus status;
-  final String? updatedConnectionId;   // Connection.id (was: updatedServerId)
+  final String? updatedConnectionId; // Connection.id (was: updatedServerId)
 
   const ReconnectState({
     this.status = ReconnectStatus.idle,
@@ -64,11 +64,13 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
     String? foundId;
     try {
       try {
-        await for (final snapshot in LanScanner.scan(ports: sweepPorts)) {
+        await for (final snapshot in LanScanner.scan(
+          ports: sweepPorts,
+          requestNearbyWifiPermission: false,
+        )) {
           for (final found in snapshot) {
-            final match = paired
-                .where((c) => c.serverId == found.serverId)
-                .firstOrNull;
+            final match =
+                paired.where((c) => c.serverId == found.serverId).firstOrNull;
             if (match != null) {
               await _ref
                   .read(connectionsProvider.notifier)

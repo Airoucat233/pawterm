@@ -18,9 +18,10 @@ flutter pub get
 ## 运行
 
 ```bash
-flutter run                       # 当前设备
-flutter run -d ios                # 指定 iOS 模拟器
-flutter run -d android            # 指定 Android 模拟器
+flutter run                   # Android 当前设备，默认 flavor=prod
+flutter run --flavor dev      # Android dev 包
+flutter run -d ios            # 指定 iOS 模拟器
+flutter run -d android        # 指定 Android 模拟器，默认 flavor=prod
 ```
 
 启动后输入服务端地址（同 WiFi 用电脑局域网 IP，例如 `http://192.168.1.42:8765`）。

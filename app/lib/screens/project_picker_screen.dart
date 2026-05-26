@@ -22,7 +22,8 @@ class ProjectPickerScreen extends ConsumerStatefulWidget {
   const ProjectPickerScreen({super.key});
 
   @override
-  ConsumerState<ProjectPickerScreen> createState() => _ProjectPickerScreenState();
+  ConsumerState<ProjectPickerScreen> createState() =>
+      _ProjectPickerScreenState();
 }
 
 enum _PhaseStatus { connecting, ready, failed }
@@ -87,7 +88,10 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       }
       if (!mounted) return;
       if (resp.statusCode == 200) {
-        setState(() { _phase = _PhaseStatus.ready; _needsRepair = false; });
+        setState(() {
+          _phase = _PhaseStatus.ready;
+          _needsRepair = false;
+        });
       } else if (resp.statusCode == 401) {
         if (!mounted) return;
         setState(() {
@@ -145,6 +149,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
 
   Widget _readyView(BuildContext context, Connection conn, AppTokens t) {
     final projectsAsync = ref.watch(projectsProvider);
+    ref.watch(agentsProvider);
     return Column(
       key: const ValueKey('ready'),
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -153,14 +158,17 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
           conn: conn,
           onRefresh: () {
             ref.invalidate(projectsProvider);
-            for (final p in _expanded) { ref.invalidate(sessionsProvider(p)); }
+            for (final p in _expanded) {
+              ref.invalidate(sessionsProvider(p));
+            }
           },
           onAdd: () => _showAddSheet(context),
         ),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         Expanded(
           child: projectsAsync.when(
-            loading: () => const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            loading: () =>
+                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
             error: (e, _) => _ErrorState(
               message: e.toString(),
               onRetry: () => ref.invalidate(projectsProvider),
@@ -188,7 +196,8 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   }
 
   void _enterProject(Project project) {
-    final agent = ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
+    final agent =
+        ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
     ref.read(selectedProjectProvider.notifier).state = project;
     ref.read(currentSessionProvider.notifier).state =
         CurrentSession(cwd: project.path, label: project.name, agent: agent);
@@ -215,17 +224,34 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => AddProjectSheet(onAdded: () => ref.invalidate(projectsProvider)),
+      builder: (_) =>
+          AddProjectSheet(onAdded: () => ref.invalidate(projectsProvider)),
     );
   }
 
   void _showAgentPicker(BuildContext context, Project project) {
     final agentsAsync = ref.read(agentsProvider);
-    final agents = agentsAsync.maybeWhen(
-      data: (items) => items.isEmpty ? [_fallbackClaudeAgent()] : items,
-      orElse: () => [_fallbackClaudeAgent()],
-    );
-    final selected = ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
+    if (agentsAsync.isLoading && !agentsAsync.hasValue) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Agent 列表加载中，稍后再试')),
+      );
+      return;
+    }
+    if (agentsAsync.hasError && !agentsAsync.hasValue) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Agent 列表加载失败：${agentsAsync.error}')),
+      );
+      return;
+    }
+    final agents = (agentsAsync.value ?? const <AgentInfo>[]);
+    if (agents.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('服务端没有返回可用 Agent')),
+      );
+      return;
+    }
+    final selected =
+        ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -235,27 +261,15 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
         selected: selected,
         onSelected: (agent) {
           Navigator.of(sheetContext).pop();
-          ref.read(projectDefaultAgentProvider.notifier).setDefault(project.path, agent);
+          ref
+              .read(projectDefaultAgentProvider.notifier)
+              .setDefault(project.path, agent);
           ref.invalidate(sessionsProvider(project.path));
         },
       ),
     );
   }
 
-  AgentInfo _fallbackClaudeAgent() => const AgentInfo(
-        kind: AgentKind.claude,
-        label: 'Claude Code',
-        status: 'ready',
-        defaultRuntime: {'agent': 'claude', 'permission_mode': 'acceptEdits'},
-        capabilities: AgentCapabilities(
-          streaming: true,
-          history: true,
-          approvals: true,
-          modelSwitch: true,
-          runtimeSwitch: true,
-          rawEvents: true,
-        ),
-      );
   Future<void> _confirmAndDelete(Project project) async {
     final t = AppTokens.of(context);
     final confirmed = await showDialog<bool>(
@@ -284,11 +298,17 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(project.name,
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: t.text)),
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: t.text)),
                   const SizedBox(height: 2),
                   Text(
                     project.path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~'),
-                    style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: t.textDim),
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        color: t.textDim),
                   ),
                 ],
               ),
@@ -308,7 +328,8 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
                   Expanded(
                     child: Text(
                       '会话历史不会删除，仍保存在服务端。',
-                      style: TextStyle(fontSize: 11, color: t.accent, height: 1.4),
+                      style:
+                          TextStyle(fontSize: 11, color: t.accent, height: 1.4),
                     ),
                   ),
                 ],
@@ -334,7 +355,8 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     final conn = ref.read(activeConnectionProvider);
     if (conn == null) return;
     try {
-      await ProjectsApi(conn.httpBase, token: conn.token).removeProject(project.path);
+      await ProjectsApi(conn.httpBase, token: conn.token)
+          .removeProject(project.path);
       ref.invalidate(projectsProvider);
       // 如果当前会话用的就是这个项目，清理一下
       final current = ref.read(currentSessionProvider);
@@ -397,8 +419,7 @@ class _ConnectingViewState extends State<_ConnectingView>
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final isError = widget.error != null;
-    final cleanUrl =
-        widget.conn.url.replaceFirst(RegExp(r'^https?://'), '');
+    final cleanUrl = widget.conn.url.replaceFirst(RegExp(r'^https?://'), '');
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -409,7 +430,8 @@ class _ConnectingViewState extends State<_ConnectingView>
           child: Row(
             children: [
               IconButton(
-                icon: Icon(Icons.arrow_back_ios_new, size: 18, color: t.textMuted),
+                icon: Icon(Icons.arrow_back_ios_new,
+                    size: 18, color: t.textMuted),
                 onPressed: widget.onBack,
                 tooltip: '返回',
               ),
@@ -445,7 +467,9 @@ class _ConnectingViewState extends State<_ConnectingView>
                           width: 72,
                           height: 72,
                           decoration: BoxDecoration(
-                            color: isError ? t.error.withValues(alpha: 0.08) : t.accentSubt,
+                            color: isError
+                                ? t.error.withValues(alpha: 0.08)
+                                : t.accentSubt,
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
                               color: isError
@@ -454,7 +478,8 @@ class _ConnectingViewState extends State<_ConnectingView>
                             ),
                           ),
                           child: Center(
-                            child: Text(widget.conn.emoji, style: const TextStyle(fontSize: 36)),
+                            child: Text(widget.conn.emoji,
+                                style: const TextStyle(fontSize: 36)),
                           ),
                         ),
                         if (isError)
@@ -462,13 +487,15 @@ class _ConnectingViewState extends State<_ConnectingView>
                             right: 14,
                             bottom: 14,
                             child: Container(
-                              width: 22, height: 22,
+                              width: 22,
+                              height: 22,
                               decoration: BoxDecoration(
                                 color: t.error,
                                 shape: BoxShape.circle,
                                 border: Border.all(color: t.bg, width: 2),
                               ),
-                              child: const Icon(Icons.close, size: 13, color: Colors.white),
+                              child: const Icon(Icons.close,
+                                  size: 13, color: Colors.white),
                             ),
                           ),
                       ],
@@ -519,10 +546,12 @@ class _ConnectingViewState extends State<_ConnectingView>
                   if (isError) ...[
                     const SizedBox(height: 14),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
                         color: t.error.withValues(alpha: 0.08),
-                        border: Border.all(color: t.error.withValues(alpha: 0.25)),
+                        border:
+                            Border.all(color: t.error.withValues(alpha: 0.25)),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
@@ -537,10 +566,12 @@ class _ConnectingViewState extends State<_ConnectingView>
                         OutlinedButton(
                           onPressed: widget.onBack,
                           style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 22, vertical: 12),
                             side: BorderSide(color: t.border),
                             foregroundColor: t.textMuted,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
                           ),
                           child: const Text('返回'),
                         ),
@@ -550,8 +581,10 @@ class _ConnectingViewState extends State<_ConnectingView>
                           icon: const Icon(Icons.refresh, size: 16),
                           label: const Text('重试'),
                           style: FilledButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 22, vertical: 12),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
                           ),
                         ),
                       ],
@@ -565,8 +598,10 @@ class _ConnectingViewState extends State<_ConnectingView>
                         style: FilledButton.styleFrom(
                           backgroundColor: const Color(0xFFF59E0B),
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 12),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
                         ),
                       ),
                     ],
@@ -624,7 +659,8 @@ class _TopBar extends StatelessWidget {
   final Connection conn;
   final VoidCallback onRefresh;
   final VoidCallback onAdd;
-  const _TopBar({required this.conn, required this.onRefresh, required this.onAdd});
+  const _TopBar(
+      {required this.conn, required this.onRefresh, required this.onAdd});
 
   @override
   Widget build(BuildContext context) {
@@ -668,7 +704,8 @@ class _TopBar extends StatelessWidget {
                 ),
                 Text(
                   conn.url.replaceFirst(RegExp(r'^https?://'), ''),
-                  style: TextStyle(fontSize: 10, color: t.textDim, fontFamily: 'monospace'),
+                  style: TextStyle(
+                      fontSize: 10, color: t.textDim, fontFamily: 'monospace'),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -838,7 +875,8 @@ class _ProjectCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
-    final defaultAgent = ref.watch(projectDefaultAgentProvider)[project.path] ?? AgentKind.claude;
+    final defaultAgent = ref.watch(projectDefaultAgentProvider)[project.path] ??
+        AgentKind.claude;
     final sessionsAsync =
         isExpanded ? ref.watch(sessionsProvider(project.path)) : null;
 
@@ -918,16 +956,17 @@ class _ProjectCard extends ConsumerWidget {
                     turns: isExpanded ? 0.5 : 0,
                     child: Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Icon(Icons.expand_more, size: 20, color: t.textMuted),
+                      child:
+                          Icon(Icons.expand_more, size: 20, color: t.textMuted),
                     ),
                   ),
                 ],
               ),
             ),
           ),
-
           if (isExpanded) ...[
-            Divider(color: t.borderSubt, height: 0.5, indent: 14, endIndent: 14),
+            Divider(
+                color: t.borderSubt, height: 0.5, indent: 14, endIndent: 14),
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
               child: _AgentProjectCard(
@@ -1000,7 +1039,8 @@ class _ProjectCard extends ConsumerWidget {
                             ),
                           ),
                           for (final s in sessions)
-                            _SessionRow(session: s, onTap: () => onPickSession(s)),
+                            _SessionRow(
+                                session: s, onTap: () => onPickSession(s)),
                           const SizedBox(height: 6),
                         ],
                       ),
@@ -1057,18 +1097,23 @@ class _SessionRow extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 13,
-                            color: session.holderDeviceId != null ? t.textMuted : t.text,
+                            color: session.holderDeviceId != null
+                                ? t.textMuted
+                                : t.text,
                           ),
                         ),
                       ),
                       if (session.holderDeviceId != null) ...[
                         const SizedBox(width: 6),
                         Container(
-                          width: 6, height: 6,
-                          decoration: BoxDecoration(color: t.warning, shape: BoxShape.circle),
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                              color: t.warning, shape: BoxShape.circle),
                         ),
                         const SizedBox(width: 3),
-                        Text('占用中', style: TextStyle(fontSize: 10, color: t.warning)),
+                        Text('占用中',
+                            style: TextStyle(fontSize: 10, color: t.warning)),
                       ],
                     ],
                   ),
@@ -1235,7 +1280,8 @@ class _AddCard extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.create_new_folder_outlined, size: 18, color: t.textDim),
+              Icon(Icons.create_new_folder_outlined,
+                  size: 18, color: t.textDim),
               const SizedBox(width: 8),
               Text(
                 '添加项目目录',
@@ -1279,7 +1325,9 @@ class _DashedBorderPainter extends CustomPainter {
       bool draw = true;
       while (dist < metric.length) {
         final len = draw ? 6.0 : 4.0;
-        if (draw) dest.addPath(metric.extractPath(dist, dist + len), Offset.zero);
+        if (draw) {
+          dest.addPath(metric.extractPath(dist, dist + len), Offset.zero);
+        }
         dist += len;
         draw = !draw;
       }
@@ -1314,8 +1362,8 @@ class _EmptyState extends StatelessWidget {
                 border: Border.all(color: t.border),
                 borderRadius: BorderRadius.circular(20),
               ),
-              child:
-                  const Center(child: Text('📁', style: TextStyle(fontSize: 32))),
+              child: const Center(
+                  child: Text('📁', style: TextStyle(fontSize: 32))),
             ),
             const SizedBox(height: 20),
             Text(

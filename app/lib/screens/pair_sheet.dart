@@ -29,10 +29,10 @@ class PairSheet extends ConsumerStatefulWidget {
 
 enum _PairPhase {
   autoWaiting, // spinner — waiting for auto-pair approval
-  autoDenied,  // denied — show "Use PIN instead" button
-  pinInput,    // 6-box OTP input
-  pinLoading,  // spinner while submitting PIN
-  success,     // green check + name edit + Done button
+  autoDenied, // denied — show "Use PIN instead" button
+  pinInput, // 6-box OTP input
+  pinLoading, // spinner while submitting PIN
+  success, // green check + name edit + Done button
 }
 
 class _PairSheetState extends ConsumerState<PairSheet> {
@@ -125,9 +125,8 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       _pollClient = http.Client();
       try {
         final req = http.Request('GET', Uri.parse(pollUrl));
-        final streamedResp = await _pollClient!
-            .send(req)
-            .timeout(const Duration(seconds: 35));
+        final streamedResp =
+            await _pollClient!.send(req).timeout(const Duration(seconds: 35));
 
         final bodyBytes = await streamedResp.stream.toBytes();
         if (!mounted || _cancelled) return;
@@ -137,8 +136,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
           return;
         }
 
-        final body =
-            jsonDecode(utf8.decode(bodyBytes)) as Map<String, dynamic>;
+        final body = jsonDecode(utf8.decode(bodyBytes)) as Map<String, dynamic>;
         final status = body['status'] as String?;
 
         switch (status) {
@@ -188,18 +186,20 @@ class _PairSheetState extends ConsumerState<PairSheet> {
     final url = 'http://${widget.server.host}:${widget.server.port}';
 
     // Check for existing Connection with same serverId (re-pair case)
-    final existing = ref.read(connectionsProvider)
+    final existing = ref
+        .read(connectionsProvider)
         .where((c) => c.serverId == serverId)
         .firstOrNull;
 
     late final Connection conn;
     if (existing != null) {
-      conn = existing.copyWith(
+      final notifier = ref.read(connectionsProvider.notifier);
+      final updated = await notifier.updateUrl(existing.id, url) ?? existing;
+      conn = updated.copyWith(
         token: deviceToken,
-        url: url,
         lastSeen: DateTime.now(),
       );
-      await ref.read(connectionsProvider.notifier).update(conn);
+      await notifier.update(conn);
     } else {
       conn = Connection(
         id: ConnectionsNotifier.newId(),
@@ -260,8 +260,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       final body = jsonDecode(resp.body) as Map<String, dynamic>;
       if (resp.statusCode == 200 && body['ok'] == true) {
         final deviceToken = body['deviceToken'] as String;
-        final serverId =
-            body['serverId'] as String? ?? widget.server.serverId;
+        final serverId = body['serverId'] as String? ?? widget.server.serverId;
         await _saveImmediately(serverId, deviceToken);
       } else {
         final error = body['error'] as String? ?? 'unknown';
@@ -305,8 +304,8 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       padding:
           EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
-        constraints:
-            BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.75),
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.75),
         decoration: BoxDecoration(
           color: t.surface,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
@@ -445,8 +444,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
             ),
             child: Text(
               s.pairSheetUsePinInstead,
-              style:
-                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
           ),
         ),
@@ -497,8 +495,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
             ),
             child: Text(
               s.pairSheetPairBtn,
-              style:
-                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
           ),
         ),
@@ -545,9 +542,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
               Text(
                 s.pairSheetSuccess,
                 style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: t.text),
+                    fontSize: 20, fontWeight: FontWeight.w700, color: t.text),
               ),
               const SizedBox(height: 4),
               Text(
@@ -564,9 +559,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
           child: Text(
             s.pairSheetNameLabel,
             style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: t.textMuted),
+                fontSize: 12, fontWeight: FontWeight.w500, color: t.textMuted),
           ),
         ),
         TextField(
@@ -587,8 +580,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
             ),
             child: Text(
               s.pairSheetDone,
-              style:
-                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
           ),
         ),

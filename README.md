@@ -175,7 +175,7 @@ pnpm dev:server
 
 # Phone app
 cd app && flutter pub get
-flutter run                  # debug on connected device
+flutter run                  # Android debug on connected device, defaults to prod flavor
 bash scripts/build-apk.sh --prod  # versioned release APK
 
 # Mac app
