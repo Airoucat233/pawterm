@@ -3,10 +3,10 @@
   "private": true,
   "description": "Mobile + Web control surface for AI coding assistants",
   "scripts": {
-    "dev": "pnpm -r --parallel --filter=@cc/server --filter=@cc/web run dev",
-    "dev:server": "pnpm --filter @cc/server run dev",
-    "dev:web": "pnpm --filter @cc/web run dev",
-    "build": "pnpm -r run build",
+    "dev": "pnpm -r --parallel --filter=pawterm-server --filter=@pawterm/web run dev",
+    "dev:server": "pnpm --filter pawterm-server run dev",
+    "dev:web": "pnpm --filter @pawterm/web run dev",
+    "build": "pnpm --filter @pawterm/web run build && pnpm --filter pawterm-server run build",
     "typecheck": "pnpm -r run typecheck"
   },
   "devDependencies": {

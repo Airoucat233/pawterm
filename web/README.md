@@ -1,4 +1,4 @@
-# @cc/web
+# @pawterm/web
 
 PC 管理后台。Vite + React + Tailwind + react-query + zustand。
 

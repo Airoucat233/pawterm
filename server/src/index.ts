@@ -2,7 +2,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import websocketPlugin from '@fastify/websocket';
 import Fastify from 'fastify';
-import { createReadStream, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { hostname, homedir, networkInterfaces } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -13,6 +13,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import type { AgentsResponse, HealthResponse, Project, PairedDevice, ModelsResponse, ModelInfo, ModelProvider } from '@pawterm/shared';
 
+import { adminAccessManager } from './admin-auth.js';
+import { verifyAdminPassword } from './admin-password.js';
 import { defaultAgentRegistry } from './agents/registry.js';
 import { registerChatRest } from './chat-rest.js';
 import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices } from './config.js';
@@ -101,12 +103,12 @@ async function runPasswordCommand(): Promise<void> {
     console.log('Usage: pawterm-server password <set|clear|show>');
     console.log('  set [password]  Set a memorable password (prompts if omitted)');
     console.log('  clear           Remove the password');
-    console.log('  show            Show the current password / token');
+    console.log('  show            Show password status / token');
     process.exit(0);
   }
   if (action === 'show') {
-    if (settings.password) {
-      console.log(`Password : ${settings.password}`);
+    if (settings.adminPasswordHash || settings.password) {
+      console.log(`Password : set (${settings.adminPasswordHash ? 'hashed' : 'legacy plaintext'})`);
     } else {
       console.log('No password set. Auth uses the random token only.');
     }
@@ -166,12 +168,19 @@ async function main(): Promise<void> {
   const BODY_LIMIT = 512;
   const truncate = (s: string) =>
     s.length <= BODY_LIMIT ? s : `${s.slice(0, BODY_LIMIT)} …(+${s.length - BODY_LIMIT} bytes)`;
+  const redactUrl = (url: string) =>
+    url.replace(/([?&]admin_login_code=)[^&\s]+/g, '$1<redacted>');
+  const redactSecrets = (text: string) =>
+    text
+      .replace(/("(?:admin_login_code|admin_access_token|access_token|deviceToken|device_token|token)"\s*:\s*")[^"]+/g, '$1<redacted>')
+      .replace(/("(?:password|admin_password)"\s*:\s*")[^"]+/g, '$1<redacted>')
+      .replace(/(Bearer\s+)(?:sk|aat|alc|dt)-[0-9a-f]+/g, '$1<redacted>');
 
   app.addHook('preHandler', async (req) => {
     const path = req.url.split('?')[0];
     if (SILENT_PATHS.has(path)) return;
-    const body = req.body != null ? ` ${truncate(JSON.stringify(req.body))}` : '';
-    req.log.info(`→ ${req.method} ${req.url}${body}`);
+    const body = req.body != null ? ` ${redactSecrets(truncate(JSON.stringify(req.body)))}` : '';
+    req.log.info(`→ ${req.method} ${redactUrl(req.url)}${body}`);
   });
 
   app.addHook('onSend', async (req, reply, payload) => {
@@ -180,9 +189,9 @@ async function main(): Promise<void> {
     const ms = Math.round(reply.elapsedTime);
     const isStream = typeof (payload as { pipe?: unknown })?.pipe === 'function';
     const bodyStr = (!isStream && typeof payload === 'string')
-      ? ` ${truncate(payload)}`
+      ? ` ${redactSecrets(truncate(payload))}`
       : '';
-    req.log.info(`← ${reply.statusCode} ${req.method} ${req.url}  ${ms}ms${bodyStr}`);
+    req.log.info(`← ${reply.statusCode} ${req.method} ${redactUrl(req.url)}  ${ms}ms${bodyStr}`);
     return payload;
   });
 
@@ -191,23 +200,34 @@ async function main(): Promise<void> {
   // /pair/start (PIN is the credential), /pair/qr-claim (claim code is the credential)
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
+    const isPublicAdminAsset =
+      url === '/admin' ||
+      url.startsWith('/assets/') ||
+      /^\/admin\/(?:assets\/)?[^/]+\.(?:js|css|svg|png|ico|woff2?)$/.test(url);
     if (
       url === '/health' ||
       url === '/ws/shell' ||
       url === '/pair/start' ||
       url === '/pair/request' ||
       url === '/pair/qr-claim' ||
+      url === '/admin/access-token' ||
+      isPublicAdminAsset ||
       url.startsWith('/pair/poll/')
     ) {
       return;
     }
 
     const auth = req.headers['authorization'];
-    // Also accept ?token= query param for SSE connections (EventSource can't set headers)
-    const queryToken = (req.query as Record<string, string | undefined>)['token'];
-    const token = (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null) ?? queryToken ?? null;
+    const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
 
-    const isAdmin = token === settings.adminToken || (!!settings.password && token === settings.password);
+    const isPasswordAdmin =
+      !!token &&
+      (
+        verifyAdminPassword(token, settings.adminPasswordHash) ||
+        (!!settings.password && token === settings.password)
+      );
+    const isRootAdmin = token === settings.adminToken || isPasswordAdmin;
+    const isAdmin = isRootAdmin || (!!token && adminAccessManager.isAdminAccessToken(token));
     const matchedDevice = token
       ? settings.pairedDevices.find((d) => d.deviceToken === token)
       : undefined;
@@ -218,8 +238,13 @@ async function main(): Promise<void> {
     }
 
     // Admin-only routes
+    if (url === '/admin/login-codes' && !isRootAdmin) {
+      reply.code(403).send({ error: 'root admin token required' });
+      return;
+    }
+
     if (url.startsWith('/admin/') && !isAdmin) {
-      reply.code(403).send({ error: 'admin token required' });
+      reply.code(403).send({ error: 'admin access token required' });
       return;
     }
 
@@ -478,6 +503,74 @@ async function main(): Promise<void> {
     handleShellSocket(socket, req);
   });
 
+  // ============ Admin access endpoints ============
+
+  // POST /admin/login-codes — root admin token/password required.
+  // Used by local trusted entry points (CLI / Mac app) to open Web Admin
+  // without placing the root admin token in the browser URL.
+  app.post('/admin/login-codes', async () => {
+    const login = adminAccessManager.createLoginCode();
+    return {
+      admin_login_code: login.loginCode,
+      expires_at: login.expiresAt,
+    };
+  });
+
+  // POST /admin/access-token — public exchange endpoint; the one-time
+  // admin_login_code is the credential and is consumed whether exchange succeeds.
+  app.post<{ Body: { admin_login_code?: string } }>('/admin/access-token', async (req, reply) => {
+    const code = req.body?.admin_login_code;
+    if (!code) {
+      reply.code(400);
+      return { error: 'admin_login_code required' };
+    }
+    const access = adminAccessManager.redeemLoginCode(code);
+    if (!access) {
+      reply.code(403);
+      return { error: 'invalid or expired admin_login_code' };
+    }
+    return {
+      admin_access_token: access.accessToken,
+      expires_at: access.expiresAt,
+    };
+  });
+
+  // POST /admin/access-token/renew — admin access token required.
+  // Rotates the Bearer token before expiry; the old token is revoked.
+  app.post('/admin/access-token/renew', async (req, reply) => {
+    const auth = req.headers['authorization'];
+    const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token) {
+      reply.code(401);
+      return { error: 'admin access token required' };
+    }
+    const access = adminAccessManager.renewAccessToken(token);
+    if (!access) {
+      reply.code(403);
+      return { error: 'admin access token expired' };
+    }
+    return {
+      admin_access_token: access.accessToken,
+      expires_at: access.expiresAt,
+    };
+  });
+
+  // POST /admin/password — admin auth required.
+  app.post<{ Body: { password?: string } }>('/admin/password', async (req, reply) => {
+    const password = req.body?.password ?? '';
+    if (!isValidPassword(password)) {
+      reply.code(400);
+      return { error: 'Password must be >=8 characters and contain both letters and digits.' };
+    }
+    await setPassword(password);
+    return { ok: true, admin_password_set_at: settings.adminPasswordSetAt ?? Date.now() };
+  });
+
+  app.delete('/admin/password', async () => {
+    await clearPassword();
+    return { ok: true };
+  });
+
   // ============ Pairing endpoints ============
 
   // POST /admin/pair-window — adminToken required (checked by middleware)
@@ -639,7 +732,7 @@ async function main(): Promise<void> {
     },
   );
 
-  // GET /admin/events — SSE stream; adminToken via Bearer header OR ?token= query
+  // GET /admin/events — SSE stream; admin auth via Bearer header.
   app.get('/admin/events', async (req, reply) => {
     reply
       .raw.writeHead(200, {
@@ -681,7 +774,9 @@ async function main(): Promise<void> {
   });
 
   // GET /admin — serve built web admin SPA; fallback placeholder when not built
-  const webDist = resolve(__dirname, '..', '..', 'web', 'dist');
+  const packagedWebDist = resolve(__dirname, '..', 'dist-web');
+  const repoWebDist = resolve(__dirname, '..', '..', 'web', 'dist');
+  const webDist = existsSync(packagedWebDist) ? packagedWebDist : repoWebDist;
   const contentType = (p: string): string => {
     if (p.endsWith('.js')) return 'application/javascript; charset=utf-8';
     if (p.endsWith('.css')) return 'text/css; charset=utf-8';
@@ -704,7 +799,6 @@ async function main(): Promise<void> {
   };
 
   app.get('/admin', async (_req, reply) => {
-    const { existsSync } = await import('node:fs');
     if (existsSync(resolve(webDist, 'admin.html'))) {
       await serveStatic('admin.html', reply);
       return;
@@ -715,7 +809,7 @@ async function main(): Promise<void> {
         '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PawTerm Web Admin</title></head>' +
         '<body style="font-family:monospace;padding:2rem;background:#111;color:#eee">' +
         '<h2>🐾 PawTerm Web Admin</h2>' +
-        '<p>Web admin not built yet — run <code>pnpm --filter @cc/web build</code>.</p>' +
+        '<p>Web admin not built yet — run <code>pnpm --filter @pawterm/web build</code>.</p>' +
         '</body></html>',
       );
   });
@@ -727,12 +821,14 @@ async function main(): Promise<void> {
 
   await app.listen({ host: settings.host, port: settings.port });
 
+  const lanIp = getLanIp();
   app.log.info(
     [
       '',
       `┌─ PawTerm Server v${VERSION}`,
       `│  node     : ${process.version}`,
       `│  listen   : http://${settings.host}:${settings.port}`,
+      `│  web admin: http://${lanIp}:${settings.port}/admin`,
       `│  config   : ${configPath}`,
       `│  serverId : ${settings.serverId}`,
       `│  log      : ${settings.logFormat} / ${settings.logLevel}${settings.logFile ? ` → ${settings.logFile}` : ''}`,
@@ -742,11 +838,6 @@ async function main(): Promise<void> {
       `└─ ready`,
     ].join('\n'),
   );
-
-  const lanIp = getLanIp();
-  const qrContent = `pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`;
-  app.log.info(`  pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`);
-
 
   // Start mDNS advertisement
   const stopMdns = startMdns({
@@ -777,6 +868,9 @@ if (subcommand === '--version' || subcommand === '-v') {
   process.exit(0);
 } else if (subcommand === 'password') {
   await runPasswordCommand();
+} else if (subcommand === 'admin') {
+  const { runAdminCli } = await import('./admin-cli.js');
+  await runAdminCli();
 } else if (subcommand === 'pair') {
   const { runPairCli } = await import('./pair-cli.js');
   await runPairCli();
@@ -784,7 +878,7 @@ if (subcommand === '--version' || subcommand === '-v') {
   const { runServiceCommand } = await import('./service.js');
   runServiceCommand(subcommand, process.argv.slice(3));
 } else {
-  if (isFirstRun) await firstRunSetup();
+  if (isFirstRun && process.stdin.isTTY && process.stdout.isTTY) await firstRunSetup();
   main().catch((err) => {
     console.error(err);
     process.exit(1);

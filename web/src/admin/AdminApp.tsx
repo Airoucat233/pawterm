@@ -1,289 +1,504 @@
-/**
- * PawTerm Admin — Developer Debug Center
- * Aesthetic: Terminal-industrial precision. Signal grid. Live data.
- */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import clsx from 'clsx';
+import {
+  Activity,
+  Braces,
+  ChevronDown,
+  CircleDot,
+  Cpu,
+  Database,
+  FileCode,
+  GitBranch,
+  KeyRound,
+  Play,
+  RefreshCw,
+  Search,
+  Server,
+  Settings,
+  ShieldCheck,
+  Smartphone,
+  Terminal,
+  X,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import type { AdminEvent, PairedDevice } from '@pawterm/shared';
 import { useAdminStore } from './store';
-import { useHealthPing, useDevicesPoll, useAdminSSE } from './useAdminData';
-import { revokeDevice, approvePair, denyPair, openPairWindow } from './api';
-import type { AdminEvent } from '@pawterm/shared';
+import {
+  approvePair,
+  createAdminLoginCode,
+  denyPair,
+  exchangeAdminLoginCode,
+  fetchQr,
+  openPairWindow,
+  revokeDevice,
+  setAdminPassword,
+} from './api';
+import { useAdminAccessRenew, useAdminSSE, useDevicesPoll, useHealthPing } from './useAdminData';
 
-// ─── Token gate ──────────────────────────────────────────────────────────────
+type ThemeMode = 'dark' | 'light';
 
-function TokenGate({ children }: { children: React.ReactNode }) {
+function TokenGate({ children }: { children: ReactNode }) {
   const token = useAdminStore((s) => s.token);
   const setToken = useAdminStore((s) => s.setToken);
   const [input, setInput] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const t = params.get('token');
-    if (t && !token) setToken(t);
+    const code = params.get('admin_login_code');
+    if (!code || token) return;
+
+    let alive = true;
+    setLoading(true);
+    setError(null);
+    exchangeAdminLoginCode(code)
+      .then((access) => {
+        if (!alive) return;
+        setToken(access.token, access.expiresAt);
+        window.history.replaceState(null, '', window.location.pathname || '/admin');
+      })
+      .catch(() => {
+        if (!alive) return;
+        setError('登录码已失效，请从 Mac App 或 pawterm-server admin 重新打开。');
+        window.history.replaceState(null, '', window.location.pathname || '/admin');
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, [token, setToken]);
 
   if (token) return <>{children}</>;
 
+  const connect = async () => {
+    const rootToken = input.trim();
+    if (!rootToken || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const code = await createAdminLoginCode(rootToken);
+      const access = await exchangeAdminLoginCode(code);
+      setToken(access.token, access.expiresAt);
+    } catch {
+      setError('认证失败，请检查 admin token 或管理密码。');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#0B1210] flex items-center justify-center font-mono">
-      <div className="border border-[#2A332E] bg-[#141B18] p-8 w-96">
-        <div className="text-[#10B981] text-xs tracking-[0.3em] uppercase mb-6">
-          PawTerm Admin
+    <main className="admin-railway min-h-screen grid place-items-center p-6">
+      <section className="admin-token-card">
+        <div className="admin-brand compact">
+          <div className="admin-mark">P</div>
+          <div>
+            <h1>PawTerm Admin</h1>
+            <p>Agent Control Plane</p>
+          </div>
         </div>
-        <p className="text-[#4D6358] text-xs mb-4">
-          Enter your admin token to continue.
+        <p className="admin-token-copy">
+          输入 admin token 或管理密码进入控制台。浏览器只保存临时 admin access token，
+          不保存 config 里的 root token。
         </p>
         <input
           type="password"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && input && setToken(input)}
+          onKeyDown={(e) => e.key === 'Enter' && void connect()}
           placeholder="sk-..."
-          className="w-full bg-[#0B1210] border border-[#2A332E] text-[#E6E6E6] text-xs px-3 py-2 outline-none focus:border-[#10B981] font-mono mb-3"
+          className="admin-input"
           autoFocus
         />
+        {error && <div className="admin-token-error">{error}</div>}
         <button
-          onClick={() => input && setToken(input)}
-          className="w-full bg-[#10B981] text-[#0B1210] text-xs font-bold py-2 tracking-widest hover:bg-[#0ea573] transition-colors"
+          type="button"
+          onClick={() => void connect()}
+          disabled={loading || !input.trim()}
+          className="admin-button primary w-full"
         >
-          CONNECT
+          <KeyRound size={14} />
+          {loading ? '连接中...' : '连接'}
         </button>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
 
-// ─── Status dot ──────────────────────────────────────────────────────────────
-
-function StatusDot({ online }: { online: boolean }) {
+function StatusPill({ online }: { online: boolean }) {
   return (
-    <span className="relative inline-flex h-2 w-2 mr-2">
-      {online && (
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-75" />
-      )}
-      <span
-        className={clsx(
-          'relative inline-flex rounded-full h-2 w-2',
-          online ? 'bg-[#10B981]' : 'bg-[#EF4444]'
-        )}
-      />
+    <span className={clsx('admin-badge', online ? 'green' : 'red')}>
+      <span className="admin-dot" />
+      {online ? 'online' : 'offline'}
     </span>
   );
 }
 
-// ─── Top status bar ───────────────────────────────────────────────────────────
-
-function StatusBar() {
+function Shell({ theme, setTheme }: { theme: ThemeMode; setTheme: (mode: ThemeMode) => void }) {
   const online = useAdminStore((s) => s.serverOnline);
   const hostname = useAdminStore((s) => s.hostname);
   const serverId = useAdminStore((s) => s.serverId);
   const port = useAdminStore((s) => s.port);
-  const token = useAdminStore((s) => s.token);
+  const devices = useAdminStore((s) => s.devices);
+  const events = useAdminStore((s) => s.events);
   const clearToken = useAdminStore((s) => s.clearToken);
 
+  const displayHost = (hostname ?? window.location.hostname) || 'localhost';
+  const displayPort = (port ?? Number(window.location.port)) || 8765;
   const shortId = serverId ? serverId.slice(-8) : '--------';
-  const displayHost = hostname ?? 'localhost';
-  const displayPort = port ?? 8765;
 
   return (
-    <header className="flex items-center gap-4 px-4 py-2 bg-[#141B18] border-b border-[#2A332E] font-mono text-xs">
-      <div className="flex items-center">
-        <StatusDot online={online} />
-        <span className={online ? 'text-[#10B981]' : 'text-[#EF4444]'}>
-          {online ? 'ONLINE' : 'OFFLINE'}
-        </span>
+    <div className={clsx('admin-railway', theme === 'light' && 'light')}>
+      <div className="admin-layout">
+        <aside className="admin-sidebar">
+          <div className="admin-brand">
+            <div className="admin-mark">P</div>
+            <div>
+              <h1>PawTerm</h1>
+              <p>Agent Control Plane</p>
+            </div>
+          </div>
+
+          <button className="admin-switcher" type="button">
+            <span>active server</span>
+            <strong>
+              {displayHost}
+              <ChevronDown size={14} />
+            </strong>
+          </button>
+
+          <NavGroup
+            title="Workspace"
+            items={[
+              ['Overview', Activity, true],
+              ['Projects', Database, false],
+              ['Agents', Cpu, false],
+              ['Runs', GitBranch, false],
+            ]}
+          />
+          <NavGroup
+            title="Operations"
+            items={[
+              ['Devices', Smartphone, false],
+              ['Logs', Terminal, false],
+              ['Config', FileCode, false],
+              ['Settings', Settings, false],
+            ]}
+          />
+        </aside>
+
+        <main className="admin-main">
+          <header className="admin-topbar">
+            <div className="admin-crumb">
+              PawTerm / <strong>claude-companion</strong> / production
+            </div>
+            <div className="admin-search">
+              <Search size={14} />
+              搜索 project、session、tool event
+              <kbd>⌘ K</kbd>
+            </div>
+            <div className="admin-theme-toggle" aria-label="主题切换">
+              <button
+                type="button"
+                className={clsx(theme === 'dark' && 'active')}
+                onClick={() => setTheme('dark')}
+              >
+                暗色
+              </button>
+              <button
+                type="button"
+                className={clsx(theme === 'light' && 'active')}
+                onClick={() => setTheme('light')}
+              >
+                日间
+              </button>
+            </div>
+          </header>
+
+          <section className="admin-hero-grid">
+            <div className="admin-service-hero">
+              <div className="admin-hero-head">
+                <div>
+                  <div className="admin-eyebrow">
+                    <span className="admin-pulse" />
+                    server running
+                  </div>
+                  <h2>本地 Agent 服务正在运行</h2>
+                  <p>
+                    当前连接到 <strong>{displayHost}:{displayPort}</strong>，Web Admin 统一管理配对、
+                    项目白名单、Agent runtime 与原始事件流。
+                  </p>
+                </div>
+                <StatusPill online={online} />
+              </div>
+              <div className="admin-actions">
+                <button className="admin-button primary" type="button">
+                  <Play size={14} />
+                  打开配对窗口
+                </button>
+                <button className="admin-button" type="button">
+                  <Terminal size={14} />
+                  查看运行日志
+                </button>
+                <button className="admin-button" type="button">
+                  <Braces size={14} />
+                  编辑 config.json
+                </button>
+              </div>
+            </div>
+            <ActivityCard />
+          </section>
+
+          <section className="admin-metrics">
+            <Metric label="Active runs" value="3" foot="2 Claude · 1 Codex" />
+            <Metric label="Projects" value="4" foot="全部在 allow-list 内" />
+            <Metric label="Paired devices" value={String(devices.length)} foot="设备连接与撤销" />
+            <Metric label="Raw events" value={String(events.length)} foot="保留原生事件名" />
+          </section>
+
+          <section className="admin-content-grid">
+            <ResourcePanel />
+            <EventPanel />
+          </section>
+
+          <section className="admin-lower-grid">
+            <PairingPanel />
+            <DevicesPanel />
+          </section>
+        </main>
+
+        <aside className="admin-inspector">
+          <div className="admin-inspector-head">
+            <h2>Claude Code</h2>
+            <p>当前选中的 Agent service。这里像 Railway 的 service inspector，展示 runtime、能力、最近事件和原始 payload。</p>
+          </div>
+          <KeyValues
+            rows={[
+              ['Status', <StatusPill key="status" online={online} />],
+              ['Runtime', 'acceptEdits'],
+              ['Model', 'claude-sonnet-4-6'],
+              ['Server ID', shortId],
+              ['Devices', String(devices.length)],
+            ]}
+          />
+          <AdminPasswordPanel />
+          <RawPreview />
+          <div className="admin-inspector-actions">
+            <button className="admin-button" type="button" onClick={clearToken}>
+              <X size={14} />
+              Disconnect admin
+            </button>
+          </div>
+        </aside>
       </div>
-      <span className="text-[#4D6358]">/</span>
-      <span className="text-[#E6E6E6]">
-        {displayHost}:{displayPort}
-      </span>
-      <span className="text-[#4D6358]">/</span>
-      <span className="text-[#4D6358]">
-        id:<span className="text-[#9BA39E]">{shortId}</span>
-      </span>
-      <span className="flex-1" />
-      <span className="text-[#4D6358] text-[10px]">
-        token: <span className="text-[#9BA39E]">{token ? `${token.slice(0, 8)}…` : '—'}</span>
-      </span>
-      <button
-        onClick={clearToken}
-        className="text-[#4D6358] hover:text-[#EF4444] transition-colors text-[10px] tracking-widest ml-2"
-      >
-        [DISCONNECT]
-      </button>
-    </header>
+      <PairRequestModal />
+    </div>
   );
 }
 
-// ─── QR Card ─────────────────────────────────────────────────────────────────
+function NavGroup({
+  title,
+  items,
+}: {
+  title: string;
+  items: Array<[string, LucideIcon, boolean]>;
+}) {
+  return (
+    <div className="admin-nav-group">
+      <div className="admin-nav-title">{title}</div>
+      {items.map(([label, Icon, active]) => (
+        <button key={label} className={clsx('admin-nav-item', active && 'active')} type="button">
+          <span>
+            <Icon size={13} />
+          </span>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
-function QrCard() {
+function ActivityCard() {
+  const heights = [22, 42, 36, 58, 76, 48, 66, 81, 57, 33, 69, 92, 51, 28, 45, 73, 61, 39];
+  return (
+    <div className="admin-card admin-activity-card">
+      <div className="admin-card-title">过去 30 分钟</div>
+      <div className="admin-card-sub">turns / tool calls / device events</div>
+      <div className="admin-activity-bars">
+        {heights.map((height, index) => (
+          <div key={index} className="admin-bar" style={{ height: `${height}%` }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value, foot }: { label: string; value: string; foot: string }) {
+  return (
+    <div className="admin-card admin-metric">
+      <div className="admin-metric-label">{label}</div>
+      <div className="admin-metric-value">{value}</div>
+      <div className="admin-metric-foot">{foot}</div>
+    </div>
+  );
+}
+
+const resources = [
+  ['CL', 'Claude Code', 'permission_mode=acceptEdits · model=claude-sonnet-4-6', 'ready', 'green', 'claude'],
+  ['CX', 'Codex', 'sandbox=workspace-write · approval_policy=on-request', 'ready', 'green', 'codex'],
+  ['GM', 'Gemini', 'provider slot reserved · runtime schema ready', 'disabled', '', 'gemini'],
+  ['PT', 'claude-companion', '/Users/airoucat/workspace/shulex/claude-companion', '4 sessions', 'blue', 'project'],
+] as const;
+
+function ResourcePanel() {
+  return (
+    <div className="admin-card">
+      <div className="admin-card-head">
+        <div>
+          <div className="admin-card-title">服务资源</div>
+          <div className="admin-card-sub">像 Railway service 一样管理 project 与 agent runtime</div>
+        </div>
+        <div className="admin-tabs">
+          <button className="active" type="button">Agents</button>
+          <button type="button">Projects</button>
+          <button type="button">Devices</button>
+        </div>
+      </div>
+      <div className="admin-resource-list">
+        {resources.map(([abbr, title, subtitle, badge, badgeTone, tone], index) => (
+          <div key={title} className={clsx('admin-resource', index === 0 && 'selected')}>
+            <div className={clsx('admin-resource-icon', tone)}>{abbr}</div>
+            <div className="min-w-0">
+              <h3>{title}</h3>
+              <p>{subtitle}</p>
+            </div>
+            <span className={clsx('admin-badge', badgeTone)}>{badge}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EventPanel() {
+  const liveEvents = [
+    ['green', 'Claude · Bash', 'pnpm --filter pawterm-server run typecheck', '12s'],
+    ['blue', 'Codex · commandExecution', 'flutter analyze · app/lib/screens/tabs/chat_tab.dart', '1m'],
+    ['yellow', 'Codex · fileChange', 'server/src/config.ts · RawServerConfig', '4m'],
+    ['red', 'Claude · TodoWrite', 'Task 13 · Flutter Chat Agent Runtime', '9m'],
+  ] as const;
+  return (
+    <div className="admin-card">
+      <div className="admin-card-head">
+        <div>
+          <div className="admin-card-title">运行时间线</div>
+          <div className="admin-card-sub">展示原生 tool/event 名称，不做通用重命名</div>
+        </div>
+        <span className="admin-badge green">live</span>
+      </div>
+      <div className="admin-timeline">
+        {liveEvents.map(([tone, title, meta, time]) => (
+          <div key={title} className="admin-event-row">
+            <span className={clsx('admin-event-dot', tone)} />
+            <div className="min-w-0">
+              <p>{title}</p>
+              <small>{meta}</small>
+            </div>
+            <time>{time}</time>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PairingPanel() {
   const token = useAdminStore((s) => s.token);
   const [qrSvg, setQrSvg] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [pin, setPin] = useState<string | null>(null);
-  const [pinLoading, setPinLoading] = useState(false);
-  const [qrLoading, setQrLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadQr = useCallback(() => {
+  const loadQr = useCallback(async () => {
     if (!token) return;
-    setQrLoading(true);
+    setLoading(true);
     setError(null);
-    fetch('/admin/qr', { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.json())
-      .then((d) => {
-        setQrSvg(d.svg);
-        setExpiresAt(typeof d.expiresAt === 'number' ? d.expiresAt : null);
-      })
-      .catch(() => setError('QR unavailable'))
-      .finally(() => setQrLoading(false));
+    try {
+      const data = await fetchQr(token);
+      setQrSvg(data.svg);
+      setExpiresAt(data.expiresAt ?? null);
+    } catch {
+      setError('QR unavailable');
+    } finally {
+      setLoading(false);
+    }
   }, [token]);
 
   useEffect(() => {
-    loadQr();
+    void loadQr();
   }, [loadQr]);
 
-  // 一旦过期自动刷新一次。QR claim 是 single-use + 5min TTL，避免用户看到死码。
   useEffect(() => {
     if (!expiresAt) return;
     const ms = expiresAt - Date.now();
-    if (ms <= 0) {
-      loadQr();
-      return;
-    }
-    const timer = window.setTimeout(loadQr, ms + 500);
+    const timer = window.setTimeout(() => void loadQr(), Math.max(ms + 500, 1000));
     return () => window.clearTimeout(timer);
   }, [expiresAt, loadQr]);
 
-  async function handleShowPin() {
+  async function showPin() {
     if (!token) return;
-    setPinLoading(true);
+    setLoading(true);
     try {
-      const { pin: p } = await openPairWindow(token);
-      setPin(p);
+      const data = await openPairWindow(token);
+      setPin(data.pin);
+      setError(null);
     } catch {
-      setPin(null);
       setError('Could not open pairing window');
     } finally {
-      setPinLoading(false);
+      setLoading(false);
     }
   }
 
   return (
-    <div className="bg-[#141B18] border border-[#2A332E] p-4 flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <div className="text-[#4D6358] text-[10px] tracking-[0.3em] uppercase">
-          Scan to pair
+    <div className="admin-card admin-pairing-card">
+      <div className="admin-card-head">
+        <div>
+          <div className="admin-card-title">配对入口</div>
+          <div className="admin-card-sub">短期 claim / PIN，不暴露永久 token</div>
         </div>
-        <button
-          onClick={loadQr}
-          disabled={qrLoading}
-          className="text-[#4D6358] text-[10px] hover:text-[#10B981] transition-colors disabled:opacity-50"
-          title="新生成一个一次性 claim code"
-        >
-          {qrLoading ? '…' : '↻ refresh'}
+        <button className="admin-icon-button" type="button" onClick={() => void loadQr()} disabled={loading}>
+          <RefreshCw size={14} />
         </button>
       </div>
-
-      <div className="flex items-center justify-center bg-[#0B1210] border border-[#2A332E] p-3 min-h-[200px]">
+      <div className="admin-qr-box">
         {error ? (
-          <span className="text-[#EF4444] text-xs">{error}</span>
+          <span className="admin-error">{error}</span>
         ) : qrSvg ? (
-          <div
-            className="w-full max-w-[200px] aspect-square [&>svg]:w-full [&>svg]:h-full"
-            dangerouslySetInnerHTML={{ __html: qrSvg }}
-          />
+          <div dangerouslySetInnerHTML={{ __html: qrSvg }} />
         ) : (
-          <span className="text-[#4D6358] text-xs animate-pulse">loading…</span>
+          <span className="admin-muted">loading...</span>
         )}
       </div>
-
       {pin ? (
-        <div className="border border-[#10B981]/30 bg-[#10B981]/5 p-3 text-center">
-          <div className="text-[#4D6358] text-[10px] mb-1">6-digit PIN</div>
-          <div className="text-[#10B981] text-2xl font-mono tracking-[0.4em] font-bold">
-            {pin}
-          </div>
-          <div className="text-[#4D6358] text-[10px] mt-1">valid 5 min</div>
+        <div className="admin-pin">
+          <span>6-digit PIN</span>
+          <strong>{pin}</strong>
+          <small>valid 5 min</small>
         </div>
       ) : (
-        <button
-          onClick={handleShowPin}
-          disabled={pinLoading}
-          className="text-[#4D6358] text-xs hover:text-[#10B981] transition-colors text-center disabled:opacity-50"
-        >
-          {pinLoading ? 'opening…' : '↳ or use 6-digit PIN'}
+        <button className="admin-link-button" type="button" onClick={() => void showPin()} disabled={loading}>
+          或使用 6 位 PIN
         </button>
       )}
     </div>
   );
 }
 
-// ─── Status Card ──────────────────────────────────────────────────────────────
-
-function StatusCard() {
-  const serverId = useAdminStore((s) => s.serverId);
-  const hostname = useAdminStore((s) => s.hostname);
-  const port = useAdminStore((s) => s.port);
-  const devices = useAdminStore((s) => s.devices);
-  const [lanIp, setLanIp] = useState<string | null>(null);
-
-  useEffect(() => {
-    // Try to detect LAN IP via RTCPeerConnection (no server needed)
-    try {
-      const pc = new RTCPeerConnection({ iceServers: [] });
-      pc.createDataChannel('');
-      pc.createOffer().then((o) => pc.setLocalDescription(o));
-      pc.onicecandidate = (e) => {
-        if (!e.candidate) return;
-        const m = e.candidate.candidate.match(/(\d+\.\d+\.\d+\.\d+)/);
-        if (m && !m[1].startsWith('127.')) {
-          setLanIp(m[1]);
-          pc.close();
-        }
-      };
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const rows: [string, React.ReactNode][] = [
-    ['port', <span className="text-[#E6E6E6]">{port ?? '—'}</span>],
-    [
-      'serverId',
-      <span className="text-[#E6E6E6] break-all text-[10px]">{serverId ?? '—'}</span>,
-    ],
-    [
-      'devices',
-      <span className="text-[#10B981] font-bold">{devices.length}</span>,
-    ],
-    ['LAN IP', <span className="text-[#E6E6E6]">{lanIp ?? 'detecting…'}</span>],
-    ['hostname', <span className="text-[#E6E6E6]">{hostname ?? '—'}</span>],
-  ];
-
-  return (
-    <div className="bg-[#141B18] border border-[#2A332E] p-4 flex flex-col gap-3">
-      <div className="text-[#4D6358] text-[10px] tracking-[0.3em] uppercase">
-        Server info
-      </div>
-      <table className="w-full text-xs font-mono">
-        <tbody>
-          {rows.map(([k, v]) => (
-            <tr key={k} className="border-b border-[#1A221E] last:border-0">
-              <td className="text-[#4D6358] py-1.5 pr-3 whitespace-nowrap align-top">{k}</td>
-              <td className="py-1.5 align-top">{v}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ─── Devices Table ────────────────────────────────────────────────────────────
-
-function DevicesTable() {
+function DevicesPanel() {
   const token = useAdminStore((s) => s.token);
   const devices = useAdminStore((s) => s.devices);
   const removeDevice = useAdminStore((s) => s.removeDevice);
@@ -295,279 +510,226 @@ function DevicesTable() {
     try {
       await revokeDevice(token, deviceId);
       removeDevice(deviceId);
-    } catch {
-      // silent
     } finally {
       setRevoking(null);
     }
   }
 
-  function fmt(ms: number | null) {
-    if (ms === null) return '—';
-    return new Date(ms).toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
   return (
-    <div className="bg-[#141B18] border border-[#2A332E] p-4 flex flex-col gap-3">
-      <div className="text-[#4D6358] text-[10px] tracking-[0.3em] uppercase flex items-center gap-2">
-        Paired devices
-        <span className="bg-[#10B981]/10 text-[#10B981] px-1.5 py-0.5 text-[10px]">
-          {devices.length}
-        </span>
+    <div className="admin-card">
+      <div className="admin-card-head">
+        <div>
+          <div className="admin-card-title">已配对设备</div>
+          <div className="admin-card-sub">last seen、撤销与配对事件</div>
+        </div>
+        <span className="admin-badge">{devices.length}</span>
       </div>
-
       {devices.length === 0 ? (
-        <p className="text-[#4D6358] text-xs text-center py-4">no paired devices</p>
+        <div className="admin-empty">暂无已配对设备</div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs font-mono">
-            <thead>
-              <tr className="border-b border-[#2A332E]">
-                {['device', 'paired', 'last seen', ''].map((h) => (
-                  <th key={h} className="text-[#4D6358] text-left pb-2 pr-4 font-normal text-[10px] tracking-widest uppercase">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {devices.map((d) => (
-                <tr key={d.deviceId} className="border-b border-[#1A221E] last:border-0 hover:bg-[#1A221E] transition-colors">
-                  <td className="py-2 pr-4 text-[#E6E6E6] font-semibold">{d.name}</td>
-                  <td className="py-2 pr-4 text-[#9BA39E]">{fmt(d.pairedAt)}</td>
-                  <td className="py-2 pr-4 text-[#9BA39E]">{fmt(d.lastSeen)}</td>
-                  <td className="py-2">
-                    <button
-                      onClick={() => handleRevoke(d.deviceId)}
-                      disabled={revoking === d.deviceId}
-                      className="text-[#4D6358] hover:text-[#EF4444] transition-colors text-[10px] tracking-widest disabled:opacity-40"
-                    >
-                      {revoking === d.deviceId ? 'revoking…' : '[REVOKE]'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="admin-device-list">
+          {devices.map((device) => (
+            <DeviceRow
+              key={device.deviceId}
+              device={device}
+              revoking={revoking === device.deviceId}
+              onRevoke={() => void handleRevoke(device.deviceId)}
+            />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-// ─── Event log ───────────────────────────────────────────────────────────────
-
-const EVENT_META: Record<string, { icon: string; color: string; label: (e: AdminEvent) => string }> = {
-  pair_request: {
-    icon: '📱',
-    color: 'text-[#F59E0B]',
-    label: (e) => `pair_request from ${(e as Extract<AdminEvent, { type: 'pair_request' }>).deviceName}`,
-  },
-  device_paired: {
-    icon: '✓',
-    color: 'text-[#10B981]',
-    label: (e) => `device_paired: ${(e as Extract<AdminEvent, { type: 'device_paired' }>).name}`,
-  },
-  device_revoked: {
-    icon: '✗',
-    color: 'text-[#EF4444]',
-    label: (e) => `device_revoked: ${(e as Extract<AdminEvent, { type: 'device_revoked' }>).deviceId.slice(-8)}`,
-  },
-  device_connected: {
-    icon: '→',
-    color: 'text-[#10B981]',
-    label: (e) => `device_connected: ${(e as Extract<AdminEvent, { type: 'device_connected' }>).deviceId.slice(-8)}`,
-  },
-  device_disconnected: {
-    icon: '←',
-    color: 'text-[#9BA39E]',
-    label: (e) => `device_disconnected: ${(e as Extract<AdminEvent, { type: 'device_disconnected' }>).deviceId.slice(-8)}`,
-  },
-  server_status: {
-    icon: '•',
-    color: 'text-[#4D6358]',
-    label: (e) => {
-      const s = e as Extract<AdminEvent, { type: 'server_status' }>;
-      return `server_status: paired=${s.pairedDevices} active=${s.activeDevices}`;
-    },
-  },
-};
-
-function EventLog() {
-  const events = useAdminStore((s) => s.events);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  // Don't auto-scroll; newest is on top
-
+function DeviceRow({
+  device,
+  revoking,
+  onRevoke,
+}: {
+  device: PairedDevice;
+  revoking: boolean;
+  onRevoke: () => void;
+}) {
   return (
-    <div className="bg-[#141B18] border border-[#2A332E] p-4 flex flex-col gap-3 flex-1 min-h-0">
-      <div className="text-[#4D6358] text-[10px] tracking-[0.3em] uppercase flex items-center gap-2">
-        Live events
-        <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-pulse" />
+    <div className="admin-device-row">
+      <Smartphone size={15} />
+      <div className="min-w-0">
+        <strong>{device.name}</strong>
+        <span>{formatDate(device.lastSeen) || 'never seen'}</span>
       </div>
-
-      <div className="flex-1 overflow-y-auto font-mono text-[11px] space-y-0.5 min-h-0 max-h-48">
-        {events.length === 0 ? (
-          <p className="text-[#4D6358] text-xs py-2">waiting for events…</p>
-        ) : (
-          events.map(({ id, event, receivedAt }) => {
-            const meta = EVENT_META[event.type] ?? {
-              icon: '?',
-              color: 'text-[#9BA39E]',
-              label: () => event.type,
-            };
-            const ts = new Date(receivedAt).toLocaleTimeString(undefined, {
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-            });
-            return (
-              <div
-                key={id}
-                className="flex items-start gap-2 py-0.5 border-b border-[#1A221E] last:border-0 animate-[fadeInDown_0.2s_ease]"
-              >
-                <span className="text-[#4D6358] shrink-0 w-20">{ts}</span>
-                <span className={clsx('shrink-0 w-4 text-center', meta.color)}>
-                  {meta.icon}
-                </span>
-                <span className={clsx(meta.color)}>{meta.label(event)}</span>
-              </div>
-            );
-          })
-        )}
-        <div ref={bottomRef} />
-      </div>
+      <button type="button" onClick={onRevoke} disabled={revoking}>
+        {revoking ? 'revoking...' : 'revoke'}
+      </button>
     </div>
   );
 }
 
-// ─── Pair request Modal ───────────────────────────────────────────────────────
+function KeyValues({ rows }: { rows: Array<[string, React.ReactNode]> }) {
+  return (
+    <div className="admin-kv-list">
+      {rows.map(([key, value]) => (
+        <div className="admin-kv" key={key}>
+          <span>{key}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminPasswordPanel() {
+  const token = useAdminStore((s) => s.token);
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [status, setStatus] = useState<string | null>(null);
+  const [statusKind, setStatusKind] = useState<'ok' | 'error'>('ok');
+  const [saving, setSaving] = useState(false);
+
+  const canSave = password.length >= 8 && /[a-zA-Z]/.test(password) && /[0-9]/.test(password) && password === confirm;
+
+  async function save() {
+    if (!token || !canSave || saving) return;
+    setSaving(true);
+    setStatus(null);
+    try {
+      await setAdminPassword(token, password);
+      setPassword('');
+      setConfirm('');
+      setStatusKind('ok');
+      setStatus('管理密码已更新');
+    } catch {
+      setStatusKind('error');
+      setStatus('设置失败，请确认当前 admin 会话仍有效');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="admin-password-panel">
+      <div className="admin-card-title">管理密码</div>
+      <div className="admin-card-sub">保存在 config.json 中的是 scrypt hash，不写明文密码。</div>
+      <input
+        type="password"
+        className="admin-input"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="至少 8 位，包含字母和数字"
+      />
+      <input
+        type="password"
+        className="admin-input"
+        value={confirm}
+        onChange={(e) => setConfirm(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && void save()}
+        placeholder="再次输入"
+      />
+      {status && <div className={statusKind === 'ok' ? 'admin-token-note' : 'admin-token-error'}>{status}</div>}
+      <button className="admin-button primary w-full" type="button" disabled={!canSave || saving} onClick={() => void save()}>
+        <KeyRound size={14} />
+        {saving ? '保存中...' : '设置密码'}
+      </button>
+    </div>
+  );
+}
+
+function RawPreview() {
+  return (
+    <div className="admin-logbox">
+      <div className="admin-logbar">
+        <span>raw event preview</span>
+        <span>JSON</span>
+      </div>
+      <pre>{`{
+  "agent": "claude",
+  "type": "assistant",
+  "content": [{
+    "type": "tool_use",
+    "name": "Bash",
+    "input": {
+      "command": "pnpm dev"
+    },
+    "raw_payload": "{...}"
+  }]
+}`}</pre>
+    </div>
+  );
+}
 
 function PairRequestModal() {
   const token = useAdminStore((s) => s.token);
   const pairQueue = useAdminStore((s) => s.pairQueue);
   const dequeuePairRequest = useAdminStore((s) => s.dequeuePairRequest);
   const [acting, setActing] = useState(false);
-
   const current = pairQueue[0];
+
   if (!current) return null;
 
   async function handle(action: 'approve' | 'deny') {
-    if (!token) return;
+    if (!token || !current) return;
     setActing(true);
     try {
       if (action === 'approve') await approvePair(token, current.requestId);
       else await denyPair(token, current.requestId);
-    } catch {
-      // ignore — dequeue regardless
     } finally {
       setActing(false);
       dequeuePairRequest();
     }
   }
 
-  const ago = Math.round((Date.now() - current.createdAt) / 1000);
-  const agoStr = ago < 5 ? 'just now' : `${ago}s ago`;
-
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm">
-      <div className="bg-[#141B18] border border-[#F59E0B] w-80 p-6 font-mono shadow-2xl">
-        <div className="text-[#F59E0B] text-[10px] tracking-[0.3em] uppercase mb-4">
-          Pair request
+    <div className="admin-modal-backdrop">
+      <section className="admin-modal">
+        <div className="admin-eyebrow yellow">
+          <CircleDot size={13} />
+          pair request
         </div>
-
-        <div className="space-y-2 mb-6 text-xs">
-          <div className="flex gap-3">
-            <span className="text-[#4D6358] w-16">device</span>
-            <span className="text-[#E6E6E6] font-semibold">{current.deviceName}</span>
-          </div>
-          <div className="flex gap-3">
-            <span className="text-[#4D6358] w-16">IP</span>
-            <span className="text-[#9BA39E]">{current.ip}</span>
-          </div>
-          <div className="flex gap-3">
-            <span className="text-[#4D6358] w-16">time</span>
-            <span className="text-[#9BA39E]">{agoStr}</span>
-          </div>
-        </div>
-
-        {pairQueue.length > 1 && (
-          <div className="text-[#4D6358] text-[10px] mb-4">
-            +{pairQueue.length - 1} more pending
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <button
-            onClick={() => handle('approve')}
-            disabled={acting}
-            className="flex-1 bg-[#10B981] text-[#0B1210] text-xs font-bold py-2.5 tracking-widest hover:bg-[#0ea573] transition-colors disabled:opacity-40"
-          >
-            ✓ APPROVE
+        <h2>{current.deviceName}</h2>
+        <KeyValues
+          rows={[
+            ['IP', current.ip],
+            ['Device', current.deviceId.slice(-10)],
+            ['Queued', `${Math.max(1, Math.round((Date.now() - current.createdAt) / 1000))}s ago`],
+          ]}
+        />
+        <div className="admin-modal-actions">
+          <button className="admin-button primary" disabled={acting} onClick={() => void handle('approve')}>
+            Approve
           </button>
-          <button
-            onClick={() => handle('deny')}
-            disabled={acting}
-            className="flex-1 border border-[#EF4444] text-[#EF4444] text-xs font-bold py-2.5 tracking-widest hover:bg-[#EF4444]/10 transition-colors disabled:opacity-40"
-          >
-            ✗ DENY
+          <button className="admin-button danger" disabled={acting} onClick={() => void handle('deny')}>
+            Deny
           </button>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
 
-// ─── Root ─────────────────────────────────────────────────────────────────────
+function formatDate(ms: number | null): string {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
-function AdminDashboard() {
+export default function AdminApp() {
+  const [theme, setTheme] = useState<ThemeMode>('dark');
+  useAdminAccessRenew();
   useHealthPing();
   useDevicesPoll();
   useAdminSSE();
 
-  return (
-    <div className="min-h-screen bg-[#0B1210] text-[#E6E6E6] flex flex-col font-mono overflow-hidden">
-      {/* Subtle scanline overlay */}
-      <div
-        className="pointer-events-none fixed inset-0 z-10 opacity-[0.02]"
-        style={{
-          backgroundImage:
-            'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.3) 2px, rgba(255,255,255,0.3) 3px)',
-        }}
-      />
+  const bodyClass = useMemo(() => (theme === 'light' ? 'light' : ''), [theme]);
 
-      <StatusBar />
-
-      <main className="flex-1 p-4 grid grid-cols-[1fr_1fr] grid-rows-[auto_auto_1fr] gap-3 min-h-0">
-        {/* Top row: QR left, Status right */}
-        <QrCard />
-        <StatusCard />
-
-        {/* Middle: devices full width */}
-        <div className="col-span-2">
-          <DevicesTable />
-        </div>
-
-        {/* Bottom: event log full width */}
-        <div className="col-span-2 flex flex-col min-h-0">
-          <EventLog />
-        </div>
-      </main>
-
-      <PairRequestModal />
-    </div>
-  );
-}
-
-export default function AdminApp() {
   return (
     <TokenGate>
-      <AdminDashboard />
+      <div className={bodyClass}>
+        <Shell theme={theme} setTheme={setTheme} />
+      </div>
     </TokenGate>
   );
 }

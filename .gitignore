@@ -1,6 +1,7 @@
 # ───── Node / pnpm ─────
 node_modules/
 dist/
+server/dist-web/
 .turbo/
 *.tsbuildinfo
 *.log

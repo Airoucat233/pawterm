@@ -2,7 +2,7 @@
 
 ## Build output
 
-`pnpm --filter @cc/web build` produces:
+`pnpm --filter @pawterm/web build` produces:
 
 ```
 web/dist/
@@ -39,8 +39,18 @@ fastify.register(import('@fastify/static'), {
 });
 ```
 
-Then the server's auto-open already points to `http://localhost:<port>/admin?token=<adminToken>` — it will just work.
+`pawterm-server admin` and the Mac app open Web Admin by first asking the
+server for an `admin_login_code`, then opening:
+
+```
+http://localhost:<port>/admin?admin_login_code=<alc-...>
+```
+
+The SPA exchanges that one-time code for an `admin_access_token` and uses it
+as `Authorization: Bearer <aat-...>` for admin APIs. The SPA schedules
+`POST /admin/access-token/renew` 10 minutes before expiry and replaces the
+stored token when renewal succeeds.
 
 ## Dev proxy
 
-During development (`pnpm --filter @cc/web dev`), Vite proxies `/admin/*`, `/health`, and `/pair/*` to `localhost:8765` — so you can run `pnpm dev:server` + `pnpm --filter @cc/web dev` and open `http://localhost:5173/admin.html?token=<adminToken>` directly.
+During development (`pnpm --filter @pawterm/web dev`), Vite proxies `/admin/*`, `/health`, and `/pair/*` to `localhost:8765`. You can run `pnpm dev:server` + `pnpm --filter @pawterm/web dev`, open `/admin`, and enter the local admin token or password in the login screen.

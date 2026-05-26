@@ -10,8 +10,18 @@ import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
+const CONFIG_DIR = resolve(homedir(), '.config', 'pawterm');
 const DEFAULT_CONFIG_PATH = resolve(homedir(), '.config', 'pawterm', 'config.json');
-const configPath = process.env.PAWTERM_CONFIG ?? process.env.CC_CONFIG ?? DEFAULT_CONFIG_PATH;
+const ACTIVE_CONFIG_PTR = resolve(CONFIG_DIR, 'active-config');
+
+const configPath = (() => {
+  if (process.env.PAWTERM_CONFIG) return process.env.PAWTERM_CONFIG;
+  if (existsSync(ACTIVE_CONFIG_PTR)) {
+    const ptr = readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim();
+    if (ptr) return resolve(ptr.replace(/^~/, homedir()));
+  }
+  return DEFAULT_CONFIG_PATH;
+})();
 
 interface RawConfig {
   token?: string;

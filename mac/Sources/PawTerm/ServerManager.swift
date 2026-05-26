@@ -319,6 +319,21 @@ class ServerManager: ObservableObject {
         return (pin, expiresAt)
     }
 
+    func requestAdminLoginCode() async -> String? {
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://localhost:\(config.port)/admin/login-codes") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "{}".data(using: .utf8)
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let code = json["admin_login_code"] as? String,
+              !code.isEmpty else { return nil }
+        return code
+    }
+
     // MARK: - Node Installation
 
     func installNodeViaHomebrew() async {
@@ -438,9 +453,11 @@ class ServerManager: ObservableObject {
 
     private func runSSE() async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/events?token=\(token)") else { return }
+              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/events") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 86400
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         guard let (bytes, _) = try? await URLSession.shared.bytes(for: request) else { return }
 
         var eventType = ""

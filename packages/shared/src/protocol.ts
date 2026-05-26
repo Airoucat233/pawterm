@@ -96,11 +96,11 @@ export type PairStartResponse =
   | { ok: true; deviceToken: string; serverId: string }
   | { ok: false; error: 'bad_pin' | 'pairing_closed' | 'rate_limited' };
 
-// POST /pair/qr-claim — requires adminToken
+// POST /pair/qr-claim — no auth; QR claim is the credential
 export interface PairQrClaimRequest { deviceId: string; deviceName: string }
 export interface PairQrClaimResponse { deviceToken: string; serverId: string }
 
-// GET /admin/devices — list; DELETE /admin/devices/:id — revoke; requires adminToken
+// GET /admin/devices — list; DELETE /admin/devices/:id — revoke; requires admin auth
 export interface PairedDevice {
   deviceId: string;
   name: string;
@@ -108,8 +108,12 @@ export interface PairedDevice {
   lastSeen: number | null;
 }
 
-// GET /admin/qr — requires adminToken
-export interface QrResponse { content: string; svg: string }
+export interface AdminLoginCodeResponse { admin_login_code: string; expires_at: number }
+export interface AdminAccessTokenResponse { admin_access_token: string; expires_at: number }
+export interface AdminPasswordRequest { password: string }
+
+// GET /admin/qr — requires admin auth
+export interface QrResponse { content: string; svg: string; expiresAt?: number }
 
 // POST /pair/request — no auth
 export interface PairRequestRequest { deviceId: string; deviceName: string }
@@ -121,7 +125,7 @@ export type PairPollResponse =
   | { status: 'approved'; deviceToken: string; serverId: string }
   | { status: 'denied' | 'expired' };
 
-// GET /admin/events — SSE stream, requires adminToken
+// GET /admin/events — SSE stream, requires admin Bearer auth
 export type AdminEvent =
   | { type: 'pair_request'; requestId: string; deviceId: string; deviceName: string; ip: string; createdAt: number }
   | { type: 'device_paired'; deviceId: string; name: string }

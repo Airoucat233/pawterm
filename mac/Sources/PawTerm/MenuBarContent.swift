@@ -229,24 +229,25 @@ struct MenuBarContent: View {
     // MARK: - Admin actions
 
     private func openAdmin() {
-        guard let token = token, let url = AdminURL.adminURL(port: serverManager.port, token: token) else { return }
-        NSWorkspace.shared.open(url)
+        Task {
+            guard let code = await serverManager.requestAdminLoginCode(),
+                  let url = AdminURL.adminURL(port: serverManager.port, loginCode: code) else {
+                Alerts.info("无法打开 Admin", "Server 未响应或认证失败。")
+                return
+            }
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func openAdminQR() {
-        guard let token = token,
-              let base = AdminURL.adminURL(port: serverManager.port, token: token),
-              var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return }
-        comps.fragment = "qr"
-        if let url = comps.url { NSWorkspace.shared.open(url) }
-    }
-
-    private var token: String? {
-        // Read fresh from config file so token changes after restart are picked up
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: serverManager.configPath)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let t = json["token"] as? String, !t.isEmpty else { return nil }
-        return t
+        Task {
+            guard let code = await serverManager.requestAdminLoginCode(),
+                  let url = AdminURL.adminURL(port: serverManager.port, loginCode: code, view: "qr") else {
+                Alerts.info("无法打开 QR", "Server 未响应或认证失败。")
+                return
+            }
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func showPin() {

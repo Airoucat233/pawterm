@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import type { Project, PermissionMode } from '@pawterm/shared';
+import { hashAdminPassword } from './admin-password.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +23,39 @@ export interface StoredDevice {
   lastSeen: number | null;
 }
 
+export interface RawProjectConfig {
+  name?: string;
+  path: string;
+}
+
+export interface RawStoredDeviceConfig {
+  device_id: string;
+  name: string;
+  device_token: string;
+  paired_at: number;
+  last_seen: number | null;
+}
+
+/** JSON shape stored in config.json. Keys use snake_case on disk. */
+export interface RawServerConfig {
+  host?: string;
+  port?: number;
+  projects?: RawProjectConfig[];
+  log_level?: string;
+  log_format?: LogFormat;
+  log_file?: string | null;
+  /** Admin pairing token. Generated automatically when omitted. */
+  token?: string;
+  /** Optional password gate for older/manual connection flows. */
+  password?: string;
+  /** Hashed admin password, written as `scrypt$<salt>$<hash>`. */
+  admin_password_hash?: string;
+  admin_password_set_at?: number;
+  /** Stable server identity. Generated automatically when omitted. */
+  server_id?: string;
+  paired_devices?: RawStoredDeviceConfig[];
+}
+
 export interface ServerSettings {
   host: string;
   port: number;
@@ -33,6 +67,9 @@ export interface ServerSettings {
   adminToken: string;
   serverId: string;
   pairedDevices: StoredDevice[];
+  adminPasswordHash?: string;
+  adminPasswordSetAt?: number;
+  /** Legacy plaintext config key; accepted on read but never written. */
   password?: string;
 }
 
@@ -43,10 +80,10 @@ function expandHome(p: string): string {
 }
 
 const ACTIVE_CONFIG_PTR = resolve(DEFAULT_CONFIG_DIR, 'active-config');
+const CONFIG_ENV = 'PAWTERM_CONFIG';
 
 function resolveConfigPath(): string {
-  if (process.env.PAWTERM_CONFIG) return process.env.PAWTERM_CONFIG;
-  if (process.env.CC_CONFIG) return process.env.CC_CONFIG;
+  if (process.env[CONFIG_ENV]) return process.env[CONFIG_ENV];
   if (existsSync(ACTIVE_CONFIG_PTR)) {
     const ptr = readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim();
     if (ptr) return resolve(ptr.replace(/^~/, homedir()));
@@ -62,13 +99,13 @@ function loadConfig(): ServerSettings {
   if (!existsSync(configPath)) {
     const adminToken = 'sk-' + randomBytes(16).toString('hex');
     const serverId = randomUUID();
-    const defaultConfig = {
+    const defaultConfig: Required<Pick<RawServerConfig, 'host' | 'port' | 'projects' | 'token' | 'server_id' | 'paired_devices'>> = {
       host: '0.0.0.0',
       port: 8765,
-      projects: [] as Array<{ name: string; path: string }>,
+      projects: [],
       token: adminToken,
       server_id: serverId,
-      paired_devices: [] as StoredDevice[],
+      paired_devices: [],
     };
     try {
       isFirstRun = true;
@@ -91,24 +128,7 @@ function loadConfig(): ServerSettings {
     };
   }
 
-  const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as {
-    host?: string;
-    port?: number;
-    projects?: Array<{ name?: string; path: string }>;
-    log_level?: string;
-    log_format?: LogFormat;
-    log_file?: string;
-    token?: string;
-    password?: string;
-    server_id?: string;
-    paired_devices?: Array<{
-      device_id: string;
-      name: string;
-      device_token: string;
-      paired_at: number;
-      last_seen: number | null;
-    }>;
-  };
+  const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as RawServerConfig;
 
   let adminToken = raw.token as string | undefined;
   let needsWrite = false;
@@ -153,6 +173,8 @@ function loadConfig(): ServerSettings {
     adminToken,
     serverId,
     pairedDevices,
+    adminPasswordHash: raw.admin_password_hash,
+    adminPasswordSetAt: raw.admin_password_set_at,
     password: raw.password as string | undefined,
   };
 }
@@ -195,16 +217,26 @@ async function persistProjects(): Promise<void> {
 }
 
 export async function setPassword(password: string): Promise<void> {
+  const hash = hashAdminPassword(password);
+  const setAt = Date.now();
   await writeConfigPreserving((c) => {
-    c['password'] = password;
+    c['admin_password_hash'] = hash;
+    c['admin_password_set_at'] = setAt;
+    delete c['password'];
   });
-  (settings as any).password = password;
+  (settings as any).adminPasswordHash = hash;
+  (settings as any).adminPasswordSetAt = setAt;
+  (settings as any).password = undefined;
 }
 
 export async function clearPassword(): Promise<void> {
   await writeConfigPreserving((c) => {
+    delete c['admin_password_hash'];
+    delete c['admin_password_set_at'];
     delete c['password'];
   });
+  (settings as any).adminPasswordHash = undefined;
+  (settings as any).adminPasswordSetAt = undefined;
   (settings as any).password = undefined;
 }
 

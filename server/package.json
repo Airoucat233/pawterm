@@ -7,17 +7,19 @@
   },
   "files": [
     "dist",
+    "dist-web",
+    "scripts/copy-web-dist.cjs",
     "scripts/fix-pty-perms.cjs"
   ],
   "scripts": {
-    "dev": "CC_CONFIG=$(pwd)/config.json tsx watch src/index.ts",
-    "dev:test": "CC_CONFIG=$(pwd)/config.test.json tsx src/index.ts",
+    "dev": "PAWTERM_CONFIG=$(pwd)/config.json tsx watch src/index.ts",
+    "dev:test": "PAWTERM_CONFIG=$(pwd)/config.test.json tsx src/index.ts",
     "test-server:start": "./scripts/test-server.sh start",
     "test-server:stop": "./scripts/test-server.sh stop",
     "test-server:restart": "./scripts/test-server.sh restart",
     "test-server:status": "./scripts/test-server.sh status",
     "test-server:logs": "./scripts/test-server.sh logs",
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-web-dist.cjs",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
