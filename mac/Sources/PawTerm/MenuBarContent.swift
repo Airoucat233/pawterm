@@ -79,7 +79,7 @@ struct MenuBarContent: View {
                 }
                 .disabled(true)
                 Button("Download App…") {
-                    NSWorkspace.shared.open(URL(string: "https://github.com/Airoucat233/pawterm/releases/latest")!)
+                    NSWorkspace.shared.open(serverManager.appReleasePageURL)
                 }
                 Divider()
             }
@@ -169,6 +169,15 @@ struct MenuBarContent: View {
                     await serverManager.checkForUpdates()
                     showUpdateResult()
                 }
+            }
+
+            if serverManager.isDevBuild {
+                Text("PawTerm Dev: official updates are disabled").disabled(true)
+            } else {
+                Toggle("Prerelease channel", isOn: Binding(
+                    get: { serverManager.prereleaseChannelEnabled },
+                    set: { serverManager.prereleaseChannelEnabled = $0 }
+                ))
             }
 
             Menu("About PawTerm") {

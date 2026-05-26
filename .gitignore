@@ -47,6 +47,9 @@ app/ios/Runner/GeneratedPluginRegistrant.*
 app/android/.gradle/
 app/android/.idea/
 app/android/local.properties
+app/android/key.properties
+app/android/*.jks
+app/android/*.keystore
 app/android/captures/
 app/android/app/release/
 app/macos/Flutter/ephemeral/

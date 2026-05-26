@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # Bump Mac app version in Info.plist, commit, push to main.
-# Mac .app is bundled automatically in every app release (release/v* tag).
-# Run this before app/scripts/release.sh when Mac has changes to ship.
+# Mac .app is bundled automatically in every app release (release-v* tag).
+# Run this before scripts/release.sh when Mac has changes to ship.
 #
 # Usage: ./scripts/release.sh
 
@@ -84,4 +84,4 @@ git -C "$REPO_ROOT" push origin main
 
 echo
 echo "\033[32m✓ Mac version bumped to $NEW\033[0m"
-echo "  Now run app/scripts/release.sh to ship a release."
+echo "  Now run scripts/release.sh to ship a release."

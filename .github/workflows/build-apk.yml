@@ -37,8 +37,8 @@ jobs:
         run: flutter analyze --no-fatal-warnings --no-fatal-infos
         working-directory: app
 
-      - name: Build APKs
-        run: flutter build apk --release --split-per-abi
+      - name: Build APK
+        run: flutter build apk --debug --flavor prod --target-platform android-arm64
         working-directory: app
 
       - name: Read app version
@@ -53,8 +53,7 @@ jobs:
           SAFE="${VER//+/_}"
           OUT=app/build/app/outputs/flutter-apk
           mkdir -p artifacts
-          cp "$OUT/app-arm64-v8a-release.apk"   "artifacts/pawterm-${SAFE}-arm64-v8a.apk"
-          cp "$OUT/app-armeabi-v7a-release.apk" "artifacts/pawterm-${SAFE}-armeabi-v7a.apk" || true
+          cp "$OUT/app-prod-debug.apk" "artifacts/pawterm-${SAFE}-prod-debug.apk"
           ls -lh artifacts/
 
       - name: Compute artifact name

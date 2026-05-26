@@ -54,7 +54,11 @@ class SettingsBody extends ConsumerWidget {
           _SegmentRow(
             label: s.settingsTheme,
             icon: Icons.brightness_6_outlined,
-            options: [s.settingsThemeSystem, s.settingsThemeLight, s.settingsThemeDark],
+            options: [
+              s.settingsThemeSystem,
+              s.settingsThemeLight,
+              s.settingsThemeDark
+            ],
             selected: switch (themeMode) {
               ThemeMode.light => 1,
               ThemeMode.dark => 2,
@@ -102,19 +106,21 @@ class SettingsBody extends ConsumerWidget {
             icon: Icons.info_outline,
             label: s.settingsVersion,
             valueWidget: ref.watch(packageInfoProvider).when(
-              data: (info) => Text(
-                'v${info.version}',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: AppTokens.of(context).textMuted,
-                  fontFamily: 'monospace',
+                  data: (info) => Text(
+                    'v${info.version}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppTokens.of(context).textMuted,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  loading: () => Text('…',
+                      style: TextStyle(
+                          fontSize: 13, color: AppTokens.of(context).textDim)),
+                  error: (_, __) => Text('—',
+                      style: TextStyle(
+                          fontSize: 13, color: AppTokens.of(context).textDim)),
                 ),
-              ),
-              loading: () => Text('…',
-                  style: TextStyle(fontSize: 13, color: AppTokens.of(context).textDim)),
-              error: (_, __) => Text('—',
-                  style: TextStyle(fontSize: 13, color: AppTokens.of(context).textDim)),
-            ),
           ),
           _Divider(),
           _InfoRow(
@@ -133,7 +139,7 @@ class SettingsBody extends ConsumerWidget {
             ),
           ),
           _Divider(),
-          const _DevChannelTile(),
+          const _PrereleaseChannelTile(),
           _Divider(),
           const _CheckUpdateTile(),
         ]),
@@ -232,7 +238,8 @@ class _SegmentRow extends StatelessWidget {
                   onTap: () => onChanged(i),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 150),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       color: active ? t.accent : Colors.transparent,
                       borderRadius: BorderRadius.circular(7),
@@ -339,7 +346,8 @@ class _InfoRow extends StatelessWidget {
           if (valueWidget != null)
             valueWidget!
           else
-            Text(value ?? '', style: TextStyle(fontSize: 13, color: t.textMuted)),
+            Text(value ?? '',
+                style: TextStyle(fontSize: 13, color: t.textMuted)),
         ],
       ),
     );
@@ -351,7 +359,11 @@ class _TappableRow extends StatelessWidget {
   final String label;
   final Widget? trailing;
   final VoidCallback onTap;
-  const _TappableRow({required this.icon, required this.label, required this.onTap, this.trailing});
+  const _TappableRow(
+      {required this.icon,
+      required this.label,
+      required this.onTap,
+      this.trailing});
 
   @override
   Widget build(BuildContext context) {
@@ -367,7 +379,8 @@ class _TappableRow extends StatelessWidget {
             Text(label, style: TextStyle(fontSize: 14, color: t.text)),
             const Spacer(),
             if (trailing != null)
-              IconTheme(data: IconThemeData(color: t.textDim), child: trailing!),
+              IconTheme(
+                  data: IconThemeData(color: t.textDim), child: trailing!),
           ],
         ),
       ),
@@ -375,16 +388,16 @@ class _TappableRow extends StatelessWidget {
   }
 }
 
-// ── Dev channel toggle ─────────────────────────────────────────────────────────
+// ── Prerelease channel toggle ──────────────────────────────────────────────────
 
-class _DevChannelTile extends ConsumerWidget {
-  const _DevChannelTile();
+class _PrereleaseChannelTile extends ConsumerWidget {
+  const _PrereleaseChannelTile();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
     final s = ref.watch(stringsProvider);
-    final enabled = ref.watch(devChannelProvider);
+    final enabled = ref.watch(prereleaseChannelProvider);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -396,15 +409,17 @@ class _DevChannelTile extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(s.settingsDevChannel, style: TextStyle(fontSize: 14, color: t.text)),
-                Text(s.settingsDevChannelSub,
+                Text(s.settingsPrereleaseChannel,
+                    style: TextStyle(fontSize: 14, color: t.text)),
+                Text(s.settingsPrereleaseChannelSub,
                     style: TextStyle(fontSize: 11, color: t.textMuted)),
               ],
             ),
           ),
           Switch(
             value: enabled,
-            onChanged: (v) => ref.read(devChannelProvider.notifier).set(v),
+            onChanged: (v) =>
+                ref.read(prereleaseChannelProvider.notifier).set(v),
             activeColor: t.accent,
           ),
         ],
@@ -438,8 +453,9 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
       current = pkgInfo.version;
     } catch (_) {}
 
-    final devChannel = ref.read(devChannelProvider);
-    final release = await fetchLatestRelease(devChannel: devChannel);
+    final prereleaseChannel = ref.read(prereleaseChannelProvider);
+    final release =
+        await fetchLatestRelease(prereleaseChannel: prereleaseChannel);
 
     if (!mounted) return;
 
@@ -450,8 +466,9 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
       });
       return;
     }
-    // Dev channel: always offer the dev release if it exists.
-    final hasUpdate = devChannel ? true : isNewerVersion(release.tagName, current);
+    // Prerelease channel: always offer the newest prerelease if it exists.
+    final hasUpdate =
+        prereleaseChannel ? true : isNewerVersion(release.tagName, current);
     if (hasUpdate) {
       setState(() {
         _status = _UpdateStatus.hasUpdate;
@@ -467,8 +484,11 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
 
   Future<void> _openReleasePage() async {
     if (_release == null) return;
-    final url = Uri.parse('https://github.com/Airoucat233/pawterm/releases/tag/${_release!.tagName}');
-    if (await canLaunchUrl(url)) await launchUrl(url, mode: LaunchMode.externalApplication);
+    final url = Uri.parse(
+        'https://github.com/Airoucat233/pawterm/releases/tag/${_release!.tagName}');
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
   }
 
   @override
@@ -482,7 +502,8 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
 
     switch (_status) {
       case _UpdateStatus.idle:
-        trailing = Icon(Icons.system_update_outlined, size: 16, color: t.textMuted);
+        trailing =
+            Icon(Icons.system_update_outlined, size: 16, color: t.textMuted);
       case _UpdateStatus.checking:
         trailing = SizedBox(
           width: 14,
@@ -491,14 +512,16 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
         );
         subtitle = s.updateChecking;
       case _UpdateStatus.upToDate:
-        trailing = const Icon(Icons.check_circle_outline, size: 16, color: Colors.green);
+        trailing = const Icon(Icons.check_circle_outline,
+            size: 16, color: Colors.green);
         subtitle = s.updateUpToDate;
       case _UpdateStatus.checkFailed:
         trailing = Icon(Icons.warning_amber_outlined, size: 16, color: t.error);
         subtitle = s.updateCheckFailed;
       case _UpdateStatus.hasUpdate:
         trailing = Icon(Icons.download_outlined, size: 16, color: t.accent);
-        subtitle = s.updateAvailableTpl.replaceAll('{version}', _release!.tagName);
+        subtitle =
+            s.updateAvailableTpl.replaceAll('{version}', _release!.tagName);
         titleColor = t.accent;
     }
 
@@ -536,4 +559,3 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
     );
   }
 }
-

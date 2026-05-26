@@ -46,6 +46,11 @@ struct PairedDeviceInfo: Identifiable {
     var id: String { deviceId }
 }
 
+enum AppUpdateChannel {
+    case stable
+    case prerelease
+}
+
 // MARK: - ServerManager
 
 @MainActor
@@ -64,6 +69,8 @@ class ServerManager: ObservableObject {
     // App update
     @Published var appUpdateAvailable: Bool = false
     @Published var latestAppVersion: String? = nil
+    @Published var latestAppReleaseTag: String? = nil
+    @Published var appUpdateChannel: AppUpdateChannel = .stable
     @Published var availableConfigs: [String] = []
 
     var port: Int { config.port }
@@ -75,6 +82,7 @@ class ServerManager: ObservableObject {
     private var updateCheckTimer: Timer?
     private var sseTask: Task<Void, Never>?
     private var stoppingStartedAt: Date?
+    private static let prereleaseChannelKey = "pawterm_prerelease_channel"
     private static let blockedKey = "pawterm_blocked_devices"
     private var blockedDeviceIds: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: Self.blockedKey) ?? []) }
@@ -82,6 +90,26 @@ class ServerManager: ObservableObject {
     }
 
     private static let activeConfigPtrPath = "\(NSHomeDirectory())/.config/pawterm/active-config"
+
+    var isDevBuild: Bool {
+        (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
+    }
+
+    var prereleaseChannelEnabled: Bool {
+        get { appUpdateChannel == .prerelease }
+        set {
+            appUpdateChannel = newValue ? .prerelease : .stable
+            UserDefaults.standard.set(newValue, forKey: Self.prereleaseChannelKey)
+            Task { await checkAppUpdate() }
+        }
+    }
+
+    var appReleasePageURL: URL {
+        if let tag = latestAppReleaseTag {
+            return URL(string: "https://github.com/Airoucat233/pawterm/releases/tag/\(tag)")!
+        }
+        return URL(string: "https://github.com/Airoucat233/pawterm/releases/latest")!
+    }
 
     private static func readActiveConfigPath() -> String {
         if let ptr = try? String(contentsOfFile: activeConfigPtrPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
@@ -105,6 +133,7 @@ class ServerManager: ObservableObject {
         let active = Self.readActiveConfigPath()
         self.configPath = active
         self.config = PawTermConfig.load(from: active)
+        self.appUpdateChannel = UserDefaults.standard.bool(forKey: Self.prereleaseChannelKey) ? .prerelease : .stable
         refreshAvailableConfigs()
         startPolling()
     }
@@ -207,7 +236,8 @@ class ServerManager: ObservableObject {
 
         let proc = Process()
         proc.executableURL = npmURL
-        proc.arguments = ["install", "-g", "pawterm-server@latest"]
+        let serverPackage = appUpdateChannel == .prerelease ? "pawterm-server@prerelease" : "pawterm-server@latest"
+        proc.arguments = ["install", "-g", serverPackage]
         proc.environment = enrichedEnvironment()
 
         let outPipe = Pipe(), errPipe = Pipe()
@@ -278,7 +308,8 @@ class ServerManager: ObservableObject {
                     ? String(raw.dropFirst("pawterm-server ".count)) : raw
             }
         }
-        guard let url = URL(string: "https://registry.npmjs.org/pawterm-server/latest") else { return }
+        let serverTag = appUpdateChannel == .prerelease ? "prerelease" : "latest"
+        guard let url = URL(string: "https://registry.npmjs.org/pawterm-server/\(serverTag)") else { return }
         if let (data, _) = try? await URLSession.shared.data(from: url),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let latest = json["version"] as? String {
@@ -290,16 +321,61 @@ class ServerManager: ObservableObject {
     }
 
     private func checkAppUpdate() async {
-        guard let url = URL(string: "https://api.github.com/repos/Airoucat233/pawterm/releases/latest") else { return }
+        if isDevBuild {
+            latestAppVersion = nil
+            latestAppReleaseTag = nil
+            appUpdateAvailable = false
+            return
+        }
+
+        let urlString: String
+        switch appUpdateChannel {
+        case .stable:
+            urlString = "https://api.github.com/repos/Airoucat233/pawterm/releases/latest"
+        case .prerelease:
+            urlString = "https://api.github.com/repos/Airoucat233/pawterm/releases"
+        }
+
+        guard let url = URL(string: urlString) else { return }
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tagName = json["tag_name"] as? String else { return }
-        let latest = tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
+              let tagName = parseAppReleaseTag(from: data) else {
+            latestAppVersion = nil
+            latestAppReleaseTag = nil
+            appUpdateAvailable = false
+            return
+        }
+        let latest = version(fromReleaseTag: tagName)
         let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        latestAppReleaseTag = tagName
         latestAppVersion = latest
-        appUpdateAvailable = latest != current
+        appUpdateAvailable = appUpdateChannel == .prerelease ? true : latest != current
+    }
+
+    private func parseAppReleaseTag(from data: Data) -> String? {
+        switch appUpdateChannel {
+        case .stable:
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return json["tag_name"] as? String
+        case .prerelease:
+            guard let releases = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return nil
+            }
+            return releases.compactMap { $0["tag_name"] as? String }
+                .first { $0.hasPrefix("prerelease-v") }
+        }
+    }
+
+    private func version(fromReleaseTag tagName: String) -> String {
+        for prefix in ["release-v", "prerelease-v", "v"] {
+            if tagName.hasPrefix(prefix) {
+                return String(tagName.dropFirst(prefix.count))
+            }
+        }
+        return tagName
     }
 
     // MARK: - Pairing PIN

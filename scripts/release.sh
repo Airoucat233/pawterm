@@ -4,14 +4,15 @@
 # Default: bump version → push tag → CI builds APK + Mac + GitHub Release
 # --local:  verify exact artifacts in dist/, create GH Release, push tag (no bump)
 #           if tag already exists, prompts whether to replace artifacts
-# --dev:    prerelease build from any branch (tag: dev/v*, GH Release: prerelease)
-#           can be combined with --local
+# --prerelease: prerelease build from any branch (tag: prerelease-v*, GH Release: prerelease)
+#               can be combined with --local
+# --dev:    deprecated alias for --prerelease
 #
 # Usage:
-#   ./scripts/release.sh               # CI build (main branch, release/v*)
+#   ./scripts/release.sh               # CI build (main branch, release-v*)
 #   ./scripts/release.sh --local       # upload local artifacts (main branch)
-#   ./scripts/release.sh --dev         # CI build (any branch, dev/v*, prerelease)
-#   ./scripts/release.sh --dev --local # upload local artifacts (any branch, prerelease)
+#   ./scripts/release.sh --prerelease  # CI build (any branch, prerelease-v*, prerelease)
+#   ./scripts/release.sh --prerelease --local
 
 set -euo pipefail
 
@@ -21,20 +22,26 @@ APP_DIR="$REPO_ROOT/app"
 PUBSPEC="$APP_DIR/pubspec.yaml"
 
 LOCAL=0
-DEV=0
+PRERELEASE=0
+USED_DEV_ALIAS=0
 for arg in "$@"; do
   case "$arg" in
     --local) LOCAL=1 ;;
-    --dev)   DEV=1 ;;
+    --prerelease|--pre) PRERELEASE=1 ;;
+    --dev) PRERELEASE=1; USED_DEV_ALIAS=1 ;;
   esac
 done
+
+if [[ $USED_DEV_ALIAS -eq 1 ]]; then
+  echo "warning: --dev is deprecated for GitHub Release; use --prerelease. GitHub assets always use the prod app id."
+fi
 
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-if [[ $DEV -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
+if [[ $PRERELEASE -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
   echo "✗ release must be run from main (current: $CURRENT_BRANCH)" >&2
-  echo "  use --dev to release from a non-main branch" >&2
+  echo "  use --prerelease to release from a non-main branch" >&2
   exit 1
 fi
 
@@ -49,14 +56,14 @@ SEMVER="${CURRENT%%+*}"
 # ══════════════════════════════════════════════════════════════
 
 if [[ $LOCAL -eq 1 ]]; then
-  if [[ $DEV -eq 1 ]]; then
-    TAG="dev-v$SEMVER"
+  if [[ $PRERELEASE -eq 1 ]]; then
+    TAG="prerelease-v$SEMVER"
   else
     TAG="release-v$SEMVER"
   fi
   echo
   printf "  version : \033[36m%s\033[0m  →  tag: \033[1m%s\033[0m\n" "$CURRENT" "$TAG"
-  [[ $DEV -eq 1 ]] && echo "  mode    : dev (prerelease)"
+  [[ $PRERELEASE -eq 1 ]] && echo "  mode    : prerelease (prod app id)"
   echo
 
   # ---- Check artifacts (exact filenames) ----
@@ -69,16 +76,13 @@ if [[ $LOCAL -eq 1 ]]; then
   [[ -f "$ARM64"   ]] && ARTIFACTS+=("$ARM64")   || MISSING+=("$(basename "$ARM64")")
   [[ -f "$ARMEABI" ]] && ARTIFACTS+=("$ARMEABI") || true   # optional
 
-  # Mac zip only for non-dev
-  if [[ $DEV -eq 0 ]]; then
-    MAC_VER=$(/usr/bin/python3 -c "
+  MAC_VER=$(/usr/bin/python3 -c "
 import plistlib
 with open('$REPO_ROOT/mac/Info.plist', 'rb') as f: pl = plistlib.load(f)
 print(pl.get('CFBundleShortVersionString', ''))
 " 2>/dev/null || echo "")
-    MAC_ZIP="$REPO_ROOT/dist/PawTerm-${MAC_VER}-mac.zip"
-    [[ -n "$MAC_VER" && -f "$MAC_ZIP" ]] && ARTIFACTS+=("$MAC_ZIP") || true  # optional
-  fi
+  MAC_ZIP="$REPO_ROOT/dist/PawTerm-${MAC_VER}-mac.zip"
+  [[ -n "$MAC_VER" && -f "$MAC_ZIP" ]] && ARTIFACTS+=("$MAC_ZIP") || true  # optional
 
   if [[ ${#ARTIFACTS[@]} -eq 0 ]]; then
     echo "✗ No artifacts found. Run app/scripts/build-apk.sh first." >&2
@@ -128,8 +132,8 @@ print(pl.get('CFBundleShortVersionString', ''))
   read -r CONFIRM
   [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
 
-  # ---- Commit version bumps (only for non-dev full release) ----
-  if [[ $DEV -eq 0 ]]; then
+  # ---- Commit version bumps (only for stable release) ----
+  if [[ $PRERELEASE -eq 0 ]]; then
     git -C "$REPO_ROOT" add app/pubspec.yaml mac/Info.plist
     git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore: bump version to $SEMVER"
     git -C "$REPO_ROOT" push origin main
@@ -137,16 +141,16 @@ print(pl.get('CFBundleShortVersionString', ''))
 
   # ---- Release ----
   SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
-  if [[ $DEV -eq 1 ]]; then
-    TITLE="[dev] v$SEMVER"
-    [[ -n "$SERVER_VERSION" ]] && TITLE="[dev] v$SEMVER  ·  server v$SERVER_VERSION"
+  if [[ $PRERELEASE -eq 1 ]]; then
+    TITLE="[prerelease] v$SEMVER"
+    [[ -n "$SERVER_VERSION" ]] && TITLE="[prerelease] v$SEMVER  ·  server v$SERVER_VERSION"
   else
     TITLE="v$SEMVER"
     [[ -n "$SERVER_VERSION" ]] && TITLE="v$SEMVER  ·  server v$SERVER_VERSION"
   fi
 
   PRERELEASE_FLAG=""
-  [[ $DEV -eq 1 ]] && PRERELEASE_FLAG="--prerelease"
+  [[ $PRERELEASE -eq 1 ]] && PRERELEASE_FLAG="--prerelease"
 
   echo
   echo "▶ gh release create $TAG"
@@ -176,7 +180,7 @@ IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
 
 echo
 printf "  current: \033[36m%s\033[0m\n" "$CURRENT"
-[[ $DEV -eq 1 ]] && echo "  mode   : dev (prerelease, tag: dev/v*)"
+[[ $PRERELEASE -eq 1 ]] && echo "  mode   : prerelease (prod app id, tag: prerelease-v*)"
 echo
 
 cat <<MENU
@@ -203,8 +207,8 @@ case "$CHOICE" in
   *)       echo "  invalid choice" >&2; exit 1 ;;
 esac
 
-if [[ $DEV -eq 1 ]]; then
-  TAG="dev-v${NEW%%+*}"
+if [[ $PRERELEASE -eq 1 ]]; then
+  TAG="prerelease-v${NEW%%+*}"
 else
   TAG="release-v${NEW%%+*}"
 fi
@@ -232,7 +236,7 @@ fi
 git -C "$REPO_ROOT" add app/pubspec.yaml
 git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "chore(app): bump version to $NEW"
 
-if [[ $DEV -eq 1 ]]; then
+if [[ $PRERELEASE -eq 1 ]]; then
   git -C "$REPO_ROOT" push origin "$CURRENT_BRANCH"
 else
   git -C "$REPO_ROOT" push origin main

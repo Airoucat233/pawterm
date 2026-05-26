@@ -97,9 +97,67 @@ Open the app → tap **Scan LAN** → select your computer → tap **Pair** → 
 {
   "host": "0.0.0.0",
   "port": 8765,
-  "permission_mode": "acceptEdits",
   "projects": [
     { "name": "my-project", "path": "~/code/my-project" }
+  ]
+}
+```
+
+Config path resolution:
+
+1. `PAWTERM_CONFIG=/path/to/config.json` for one-off foreground/dev/test runs.
+2. `~/.config/pawterm/active-config`, managed by `pawterm-server use <path>`, for the installed background service.
+3. `~/.config/pawterm/config.json` as the default.
+
+Supported `config.json` keys:
+
+| Key | Required | Notes |
+|---|---:|---|
+| `host` | no | Defaults to `0.0.0.0`. |
+| `port` | no | Defaults to `8765`. |
+| `projects` | no | Project allow-list. Each item is `{ "name"?: string, "path": string }`; `~` is expanded. |
+| `log_level` | no | Defaults to `info`; can be overridden by `PAWTERM_LOG_LEVEL`. |
+| `log_format` | no | `pretty` or `json`; can be overridden by `PAWTERM_LOG_FORMAT`. |
+| `log_file` | no | File path or `null`; can be overridden by `PAWTERM_LOG_FILE`. |
+| `token` | no | Admin pairing token. Generated and persisted when omitted. |
+| `server_id` | no | Stable server identity. Generated and persisted when omitted. |
+| `paired_devices` | no | Managed by pairing flow; do not hand-edit in normal development. |
+| `admin_password_hash` | no | Hashed admin password. Managed by Web Admin or `pawterm-server password set`; do not hand-edit. |
+| `admin_password_set_at` | no | Timestamp for the current admin password hash. |
+| `password` | no | Legacy plaintext password key; accepted on read, replaced by `admin_password_hash` when changed. |
+
+Open Web Admin locally with:
+
+```bash
+pawterm-server admin
+```
+
+This creates a short-lived `admin_login_code` and opens
+`/admin?admin_login_code=...`; the browser exchanges it for an
+`admin_access_token` and uses Bearer auth for admin APIs. The Web Admin renews
+that access token before expiry; after the maximum session lifetime, reopen via
+`pawterm-server admin` or the Mac app.
+
+Minimal local development files:
+
+`server/config.json`:
+
+```json
+{
+  "port": 8765,
+  "projects": [
+    { "path": "/Users/you/code/my-project" }
+  ]
+}
+```
+
+`server/config.test.json`:
+
+```json
+{
+  "port": 8766,
+  "projects": [
+    { "path": "/Users/you/code/my-project" }
   ]
 }
 ```
@@ -118,10 +176,10 @@ pnpm dev:server
 # Phone app
 cd app && flutter pub get
 flutter run                  # debug on connected device
-bash scripts/build-apk.sh   # versioned release APK
+bash scripts/build-apk.sh --prod  # versioned release APK
 
 # Mac app
-cd mac && bash build.sh --install
+cd mac && bash scripts/build.sh --prod
 ```
 
 ---

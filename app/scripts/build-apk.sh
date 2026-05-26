@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# Build release APKs. Prompts for version bump unless CI=true.
+# Build release APKs. Prompts for version bump for prod builds unless CI=true.
 #
 # Output:
 #   build/app/outputs/flutter-apk/releases/{version}/  ← local reference
@@ -7,7 +7,9 @@
 #   dist/pawterm-{version}-*.apk                        ← release artifacts
 #
 # Usage:
-#   ./scripts/build-apk.sh           # release build (split-per-abi)
+#   ./scripts/build-apk.sh           # prod release build (split-per-abi)
+#   ./scripts/build-apk.sh --prod    # prod release build (split-per-abi)
+#   ./scripts/build-apk.sh --dev     # local dev release build, app id com.airoucat.pawterm.dev
 #   ./scripts/build-apk.sh --debug   # debug build (arm64 only)
 
 set -euo pipefail
@@ -23,8 +25,15 @@ RELEASES_DIR="$OUT_DIR/releases"
 DIST_DIR="$REPO_ROOT/dist"
 
 DEBUG=0
+FLAVOR="prod"
+NAME_PREFIX="pawterm"
 for arg in "$@"; do
-  case "$arg" in --debug|-d) DEBUG=1 ;; esac
+  case "$arg" in
+    --debug|-d) DEBUG=1 ;;
+    --prod) FLAVOR="prod"; NAME_PREFIX="pawterm" ;;
+    --dev) FLAVOR="dev"; NAME_PREFIX="pawterm-dev" ;;
+    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+  esac
 done
 
 # -------- Read version --------
@@ -34,21 +43,22 @@ VERSION=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")
 
 echo
 echo "  current: \033[36m$VERSION\033[0m"
+echo "  flavor : \033[36m$FLAVOR\033[0m"
 
 # -------- Debug build (no bump) --------
 
 if [[ $DEBUG -eq 1 ]]; then
   echo
-  echo "▶ flutter build apk --debug --target-platform android-arm64"
-  flutter build apk --debug --target-platform android-arm64
+  echo "▶ flutter build apk --debug --flavor $FLAVOR --target-platform android-arm64"
+  flutter build apk --debug --flavor "$FLAVOR" --target-platform android-arm64
   echo
-  echo "\033[32m✓ debug build done\033[0m  →  $OUT_DIR/app-debug.apk"
+  echo "\033[32m✓ debug build done\033[0m  →  $OUT_DIR"
   exit 0
 fi
 
-# -------- Bump (skip in CI) --------
+# -------- Bump (prod only, skip in CI) --------
 
-if [[ "${CI:-}" != "true" ]]; then
+if [[ "$FLAVOR" == "prod" && "${CI:-}" != "true" ]]; then
   SEMVER="${VERSION%%+*}"
   BUILD="${VERSION#*+}"
   [[ "$BUILD" == "$VERSION" ]] && BUILD="1"
@@ -96,14 +106,14 @@ echo
 # -------- Build --------
 
 find "$OUT_DIR" -maxdepth 1 -name "*.apk" -delete 2>/dev/null || true
-find "$DIST_DIR" -maxdepth 1 -name "pawterm-*.apk" -delete 2>/dev/null || true
+find "$DIST_DIR" -maxdepth 1 -name "$NAME_PREFIX-*.apk" -delete 2>/dev/null || true
 
 echo "▶ flutter pub get"
 flutter pub get
 
 echo
-echo "▶ flutter build apk --release --split-per-abi"
-flutter build apk --release --split-per-abi
+echo "▶ flutter build apk --release --flavor $FLAVOR --split-per-abi"
+flutter build apk --release --flavor "$FLAVOR" --split-per-abi
 
 # -------- Organize into versioned dir --------
 
@@ -111,37 +121,41 @@ VERSION_DIR="$RELEASES_DIR/$VERSION"
 mkdir -p "$VERSION_DIR"
 
 ARM64=""
-for f in "$OUT_DIR"/*arm64*-release.apk; do
-  TARGET="$VERSION_DIR/pawterm-${VERSION}-arm64-v8a.apk"
+while IFS= read -r f; do
+  TARGET="$VERSION_DIR/${NAME_PREFIX}-${VERSION}-arm64-v8a.apk"
   /bin/cp "$f" "$TARGET"
   ARM64="$TARGET"
-done
-for f in "$OUT_DIR"/*armeabi*-release.apk; do
-  /bin/cp "$f" "$VERSION_DIR/pawterm-${VERSION}-armeabi-v7a.apk"
-done
-for f in "$OUT_DIR"/*x86_64*-release.apk; do
-  /bin/cp "$f" "$VERSION_DIR/pawterm-${VERSION}-x86_64.apk"
-done
+done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*arm64*-release.apk")
+while IFS= read -r f; do
+  /bin/cp "$f" "$VERSION_DIR/${NAME_PREFIX}-${VERSION}-armeabi-v7a.apk"
+done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*armeabi*-release.apk")
+while IFS= read -r f; do
+  /bin/cp "$f" "$VERSION_DIR/${NAME_PREFIX}-${VERSION}-x86_64.apk"
+done < <(find "$OUT_DIR" -maxdepth 1 -type f -name "*x86_64*-release.apk")
 
 find "$OUT_DIR" -maxdepth 1 -name "*release.apk" -delete 2>/dev/null || true
 
 [[ -z "$ARM64" ]] && { echo "✗ arm64 APK not produced" >&2; exit 1; }
 
-LATEST="$OUT_DIR/latest.apk"
+LATEST="$OUT_DIR/latest-$FLAVOR.apk"
 /bin/cp "$ARM64" "$LATEST"
+if [[ "$FLAVOR" == "prod" ]]; then
+  /bin/cp "$ARM64" "$OUT_DIR/latest.apk"
+fi
 
 # -------- Copy to dist/ --------
 
 mkdir -p "$DIST_DIR"
-for f in "$VERSION_DIR"/pawterm-"${VERSION}"-*.apk; do
+while IFS= read -r f; do
   /bin/cp "$f" "$DIST_DIR/"
-done
+done < <(find "$VERSION_DIR" -maxdepth 1 -type f -name "${NAME_PREFIX}-${VERSION}-*.apk")
 
 # -------- Report --------
 
 echo
 echo "\033[32m✓ build done\033[0m"
 echo "  version : $VERSION"
+echo "  flavor  : $FLAVOR"
 echo "  releases: $VERSION_DIR"
 /bin/ls -1 "$VERSION_DIR" | /usr/bin/sed 's/^/    /'
 echo "  latest  : $LATEST"

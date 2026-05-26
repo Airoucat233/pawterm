@@ -11,7 +11,7 @@ PawTerm = 一台桥接 server（跑在开发机，调用 `claude` CLI）+ 一个
 ## 仓库布局（pnpm workspace + Flutter）
 
 - `server/` — Node.js 服务端（npm 包 `pawterm-server`，workspace 名 `@cc/server`）
-- `web/` — Vite + React 19 管理面板（`@cc/web`）
+- `web/` — Vite + React 18 管理面板（`@pawterm/web`）
 - `packages/shared/` — server / web 共享的 TS 类型（`@pawterm/shared`，wire protocol 唯一来源）
 - `app/` — Flutter 客户端（Riverpod + xterm；安卓为主，iOS 可打 IPA）
 - `docs/` — 设计文档（debug pipeline、streaming response 等）
@@ -67,10 +67,10 @@ flutter run               # 调试，需连真机/模拟器
 适合想在本地验证产物再发出去的场景。
 
 ```bash
-bash app/scripts/build-apk.sh        # 交互式 bump → 构建 APK → dist/
-bash mac/scripts/build.sh            # 交互式 bump（可选 same）→ 构建 .app → dist/
-bash app/scripts/release.sh --local  # 检查 dist/ 产物 → gh release create → push tag
-                                     # （tag 会触发 CI，但 CI 检测到 release 已存在会跳过构建）
+bash app/scripts/build-apk.sh --prod # 交互式 bump → 构建正式 APK → dist/
+bash mac/scripts/build.sh --prod     # 交互式 bump（可选 same）→ 构建 PawTerm.app → dist/
+bash scripts/release.sh --local      # 检查 dist/ 产物 → gh release create → push tag
+                                     # tag 会触发 CI，但 CI 检测到 release 已存在会跳过构建
 ```
 
 ### 发布方式 B：CI 构建
@@ -78,28 +78,47 @@ bash app/scripts/release.sh --local  # 检查 dist/ 产物 → gh release create
 适合直接让 CI 打包的场景，本地只负责 bump + 推 tag。
 
 ```bash
-bash app/scripts/release.sh          # 交互式 bump → commit → push main → push tag → CI 构建
+bash scripts/release.sh              # 交互式 bump → commit → push main → push tag → CI 构建
 ```
+
+### 预发布与本地 dev 包
+
+- GitHub Release 只发布正式 App 包名：Android `com.airoucat.pawterm`、macOS `com.airoucat.pawterm`。
+- 稳定版 tag：`release-v{semver}`；预发布 tag：`prerelease-v{semver}`。
+- `scripts/release.sh --prerelease` 发布预发布，仍然构建正式 App 包名，供 App 内“预发布频道”覆盖升级。
+- `app/scripts/build-apk.sh --dev` 只用于本地开发包，Android 包名 `com.airoucat.pawterm.dev`，显示名 `PawTerm Dev`，不得上传 GitHub Release。
+- `mac/scripts/build.sh --dev [--install]` 只用于本地 `PawTermDev.app`，bundle id `com.airoucat.pawterm.dev`，不得上传 GitHub Release。
+- 正式 Mac App 菜单里有 `Prerelease channel` 开关；关闭时检查 `release-v*` latest，打开时检查 `prerelease-v*`。
+- Mac dev build 不检查 GitHub App 更新，只保留 server 更新检查，避免提示安装正式版覆盖开发版语义。
+- `scripts/release.sh --dev` 仅是旧参数兼容别名，新增用法必须写 `--prerelease`。
+- Android 正式/预发布 release 不得使用 debug key；CI 需要 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` secrets，本地可用 `app/android/key.properties`。
 
 ### Server 发布（独立）
 
 ```bash
-bash server/scripts/publish.sh       # 交互式 bump → commit → push → npm publish
+bash server/scripts/publish.sh              # 交互式 bump → commit → push → npm publish latest
+bash server/scripts/publish.sh --prerelease # 当前分支发布 npm prerelease dist-tag
 ```
+
+Server 没有独立 dev 安装身份，预发布会覆盖同一个 `pawterm-server` 全局包；不要再用 dev 命名。Server 预发布版本后缀为 `-prerelease.N`，git tag 为 `prerelease-server-v{version}`，npm dist-tag 为 `prerelease`，安装命令为 `npm install -g pawterm-server@prerelease`。`--dev` 只保留为旧参数兼容别名。
 
 ### 脚本一览
 
 | 脚本 | 说明 |
 |---|---|
-| `app/scripts/build-apk.sh` | bump + 构建 APK，产物到 `dist/`；`CI=true` 时跳过 bump |
-| `mac/scripts/build.sh` | bump + 构建 PawTerm.app zip，产物到 `dist/`；`CI=true` / `--dev` 时跳过 bump |
-| `app/scripts/release.sh --local` | 验证 `dist/` 产物精确匹配当前版本 → gh release create → push tag |
-| `app/scripts/release.sh` | 交互式 bump → commit pubspec → push main → push tag → CI 构建 |
-| `server/scripts/publish.sh` | 交互式 bump → commit package.json → push → npm publish |
+| `app/scripts/build-apk.sh --prod` | bump + 构建正式 APK，产物到 `dist/`；`CI=true` 时跳过 bump |
+| `app/scripts/build-apk.sh --dev` | 本地构建 `PawTerm Dev` APK，产物名 `pawterm-dev-*`，不发布 |
+| `mac/scripts/build.sh --prod` | bump + 构建 PawTerm.app zip，产物到 `dist/`；`CI=true` 时跳过 bump |
+| `mac/scripts/build.sh --dev [--install]` | 本地构建/安装 PawTermDev.app，不发布 |
+| `scripts/release.sh --local` | 验证 `dist/` 产物精确匹配当前版本 → gh release create → push tag |
+| `scripts/release.sh` | 交互式 bump → commit pubspec → push main → push tag → CI 构建 |
+| `scripts/release.sh --prerelease` | 交互式 bump → push 当前分支 → push `prerelease-v*` tag → CI 构建预发布 |
+| `server/scripts/publish.sh` | 交互式 bump → commit package.json → push → npm publish latest |
+| `server/scripts/publish.sh --prerelease` | 交互式 bump → push 当前分支 → push `prerelease-server-v*` tag → npm publish `--tag prerelease` |
 
 `dist/` 文件命名：`pawterm-{app-version}-arm64-v8a.apk`、`pawterm-{app-version}-armeabi-v7a.apk`、`PawTerm-{mac-version}-mac.zip`。app 版本来自 `pubspec.yaml`，mac 版本独立来自 `mac/Info.plist`。
 
-`server/dist/` 在 `.gitignore` 中，不入 git；publish.sh 发布前会自动 `pnpm build`（tsup）。
+`server/dist/` 和 `server/dist-web/` 在 `.gitignore` 中，不入 git；publish.sh 发布前必须先构建 `web/dist`，再执行 server build，把 Web 管理面板复制进 npm 包。
 
 ---
 

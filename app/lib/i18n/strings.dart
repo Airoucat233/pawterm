@@ -163,9 +163,9 @@ class Strings {
   // Time-ago helpers
   final String timeJustNow;
   final String timeMinutesAgoTpl; // "{n}m 前"
-  final String timeHoursAgoTpl;   // "{n}h 前"
-  final String timeDaysAgoTpl;    // "{n} 天前"
-  final String timeWeeksAgoTpl;   // "{n} 周前"
+  final String timeHoursAgoTpl; // "{n}h 前"
+  final String timeDaysAgoTpl; // "{n} 天前"
+  final String timeWeeksAgoTpl; // "{n} 周前"
 
   // Add-connection sheet
   final String addConnectionPairConnect;
@@ -262,8 +262,8 @@ class Strings {
 
   // Check for updates
   final String settingsCheckUpdate;
-  final String settingsDevChannel;
-  final String settingsDevChannelSub;
+  final String settingsPrereleaseChannel;
+  final String settingsPrereleaseChannelSub;
   final String updateChecking;
   final String updateUpToDate;
   final String updateAvailableTpl; // {version}
@@ -486,8 +486,8 @@ class Strings {
     required this.thinkingExpanded,
     required this.timeYesterday,
     required this.settingsCheckUpdate,
-    required this.settingsDevChannel,
-    required this.settingsDevChannelSub,
+    required this.settingsPrereleaseChannel,
+    required this.settingsPrereleaseChannelSub,
     required this.updateChecking,
     required this.updateUpToDate,
     required this.updateAvailableTpl,
@@ -665,18 +665,21 @@ const Strings stringsEn = Strings(
   pairSheetAutoTab: 'Auto',
   pairSheetPinTab: 'Enter PIN',
   pairSheetQrTab: 'Scan QR',
-  pairSheetPinHint: 'Run pawterm-server pair on the server, then enter the 6-digit PIN',
+  pairSheetPinHint:
+      'Run pawterm-server pair on the server, then enter the 6-digit PIN',
   pairSheetPairBtn: 'Pair',
   pairSheetQrBtn: 'Open scanner',
   pairSheetBadPin: 'Wrong PIN, please try again',
-  pairSheetPairingClosed: 'Pairing window closed — run pawterm-server pair again',
+  pairSheetPairingClosed:
+      'Pairing window closed — run pawterm-server pair again',
   pairSheetRateLimited: 'Too many attempts, wait 60 seconds',
   pairSheetFailed: 'Pairing failed: {error}',
   pairSheetConnFailed: 'Connection failed, check network',
   pairSheetAlreadyPaired: 'Paired',
   pairSheetPinOpen: 'PIN open',
   pairSheetAutoWaiting: 'Waiting for approval…',
-  pairSheetAutoHint: 'Approve on your computer\'s browser\nwhen the prompt appears',
+  pairSheetAutoHint:
+      'Approve on your computer\'s browser\nwhen the prompt appears',
   pairSheetAutoDenied: 'The computer denied the pairing request',
   pairSheetAutoExpired: 'Request timed out, please try again',
   pairSheetAutoNetError: 'Network error, please retry',
@@ -707,16 +710,28 @@ const Strings stringsEn = Strings(
   spinnerToolInput: 'Tool args…',
   spinnerStop: 'Stop',
   spinnerRespondingVerbs: [
-    'Writing', 'Drafting', 'Composing', 'Crafting', 'Penning',
-    'Articulating', 'Formulating', 'Conjuring', 'Sketching', 'Spinning',
-    'Shaping', 'Polishing', 'Refining', 'Weaving', 'Brewing',
+    'Writing',
+    'Drafting',
+    'Composing',
+    'Crafting',
+    'Penning',
+    'Articulating',
+    'Formulating',
+    'Conjuring',
+    'Sketching',
+    'Spinning',
+    'Shaping',
+    'Polishing',
+    'Refining',
+    'Weaving',
+    'Brewing',
   ],
   thinkingCollapsed: 'Thinking…',
   thinkingExpanded: 'Thinking trace',
   timeYesterday: 'Yesterday',
   settingsCheckUpdate: 'Check for updates',
-  settingsDevChannel: 'Dev channel',
-  settingsDevChannelSub: 'Receive pre-release builds',
+  settingsPrereleaseChannel: 'Prerelease channel',
+  settingsPrereleaseChannelSub: 'Receive signed prerelease builds',
   updateChecking: 'Checking…',
   updateUpToDate: 'Up to date',
   updateAvailableTpl: '{version} available',
@@ -850,8 +865,7 @@ const Strings stringsZh = Strings(
   settingsClaudeModel: 'Claude 模型',
   settingsTabConnections: '连接',
   settingsTabSettings: '设置',
-  connectionsEmptyHintLong:
-      '添加一台运行了 PawTerm Server\n的机器，就能从手机控制它。',
+  connectionsEmptyHintLong: '添加一台运行了 PawTerm Server\n的机器，就能从手机控制它。',
   connectionsAddFirst: '添加第一台',
   connectionsSectionRecent: '最近使用',
   connectionsSectionOther: '其他',
@@ -935,16 +949,28 @@ const Strings stringsZh = Strings(
   spinnerToolInput: '调用工具…',
   spinnerStop: '停止',
   spinnerRespondingVerbs: [
-    '生成中', '推敲中', '酝酿中', '梳理中', '组织中',
-    '雕琢中', '构思中', '编织中', '琢磨中', '盘算中',
-    '勾画中', '揣摩中', '凝神中', '沉吟中', '运笔中',
+    '生成中',
+    '推敲中',
+    '酝酿中',
+    '梳理中',
+    '组织中',
+    '雕琢中',
+    '构思中',
+    '编织中',
+    '琢磨中',
+    '盘算中',
+    '勾画中',
+    '揣摩中',
+    '凝神中',
+    '沉吟中',
+    '运笔中',
   ],
   thinkingCollapsed: '思考片段',
   thinkingExpanded: '思考过程',
   timeYesterday: '昨天',
   settingsCheckUpdate: '检测更新',
-  settingsDevChannel: '开发频道',
-  settingsDevChannelSub: '接收预发布版本',
+  settingsPrereleaseChannel: '预发布频道',
+  settingsPrereleaseChannelSub: '接收已签名的预发布版本',
   updateChecking: '检测中…',
   updateUpToDate: '已是最新',
   updateAvailableTpl: '有新版本 {version}',
