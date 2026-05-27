@@ -4,31 +4,31 @@ import clsx from 'clsx';
 import {
   Activity,
   Braces,
+  CheckCircle2,
   ChevronDown,
   CircleDot,
   Cpu,
   Database,
-  FileCode,
-  GitBranch,
   KeyRound,
-  Play,
+  LogOut,
+  QrCode,
   RefreshCw,
-  Search,
-  Server,
   Settings,
   ShieldCheck,
   Smartphone,
   Terminal,
-  X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { AdminEvent, PairedDevice } from '@pawterm/shared';
+import type { AdminEvent, AgentInfo, PairedDevice, Project } from '@pawterm/shared';
 import { useAdminStore } from './store';
 import {
   approvePair,
+  ApiError,
   createAdminLoginCode,
   denyPair,
   exchangeAdminLoginCode,
+  fetchAgents,
+  fetchProjects,
   fetchQr,
   openPairWindow,
   revokeDevice,
@@ -37,6 +37,39 @@ import {
 import { useAdminAccessRenew, useAdminSSE, useDevicesPoll, useHealthPing } from './useAdminData';
 
 type ThemeMode = 'dark' | 'light';
+type ViewId = 'overview' | 'pairing' | 'devices' | 'agents' | 'projects' | 'events' | 'settings';
+const THEME_STORAGE_KEY = 'pawterm-admin-theme';
+
+const pageMeta: Record<ViewId, { title: string; subtitle: string }> = {
+  overview: {
+    title: '服务概览',
+    subtitle: '查看 PawTerm Server 状态、配对入口和当前资源规模。',
+  },
+  pairing: {
+    title: '设备配对',
+    subtitle: '通过 QR claim 或 6 位 PIN 让手机获得 device token。',
+  },
+  devices: {
+    title: '设备管理',
+    subtitle: '查看已配对设备、last seen，并撤销不再信任的设备。',
+  },
+  agents: {
+    title: 'Agent Runtime',
+    subtitle: '查看 Claude、Codex 等 provider 的运行状态和默认 runtime。',
+  },
+  projects: {
+    title: '项目白名单',
+    subtitle: '查看 config.json 中允许访问的项目路径。',
+  },
+  events: {
+    title: '事件流',
+    subtitle: '查看 Web Admin 收到的实时 admin events 和原始 payload。',
+  },
+  settings: {
+    title: '管理设置',
+    subtitle: '设置 admin 密码、查看本地配置入口和断开当前后台会话。',
+  },
+};
 
 function TokenGate({ children }: { children: ReactNode }) {
   const token = useAdminStore((s) => s.token);
@@ -138,6 +171,7 @@ function StatusPill({ online }: { online: boolean }) {
 }
 
 function Shell({ theme, setTheme }: { theme: ThemeMode; setTheme: (mode: ThemeMode) => void }) {
+  const token = useAdminStore((s) => s.token);
   const online = useAdminStore((s) => s.serverOnline);
   const hostname = useAdminStore((s) => s.hostname);
   const serverId = useAdminStore((s) => s.serverId);
@@ -145,10 +179,52 @@ function Shell({ theme, setTheme }: { theme: ThemeMode; setTheme: (mode: ThemeMo
   const devices = useAdminStore((s) => s.devices);
   const events = useAdminStore((s) => s.events);
   const clearToken = useAdminStore((s) => s.clearToken);
+  const [activeView, setActiveView] = useState<ViewId>('overview');
+  const [pairSignal, setPairSignal] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [resourcesError, setResourcesError] = useState<string | null>(null);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
 
   const displayHost = (hostname ?? window.location.hostname) || 'localhost';
   const displayPort = (port ?? Number(window.location.port)) || 8765;
-  const shortId = serverId ? serverId.slice(-8) : '--------';
+  const accessExpiresAt = useAdminStore((s) => s.tokenExpiresAt);
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 3200);
+  }, []);
+
+  const loadResources = useCallback(async () => {
+    if (!token) return;
+    setResourcesLoading(true);
+    setResourcesError(null);
+    try {
+      const [nextAgents, nextProjects] = await Promise.all([fetchAgents(token), fetchProjects(token)]);
+      setAgents(nextAgents);
+      setProjects(nextProjects);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        clearToken();
+        return;
+      }
+      setResourcesError('资源列表加载失败');
+    } finally {
+      setResourcesLoading(false);
+    }
+  }, [token, clearToken]);
+
+  useEffect(() => {
+    void loadResources();
+  }, [loadResources]);
+
+  function openPairing() {
+    setActiveView('pairing');
+    setPairSignal((n) => n + 1);
+  }
+
+  const page = pageMeta[activeView];
 
   return (
     <div className={clsx('admin-railway', theme === 'light' && 'light')}>
@@ -162,139 +238,111 @@ function Shell({ theme, setTheme }: { theme: ThemeMode; setTheme: (mode: ThemeMo
             </div>
           </div>
 
-          <button className="admin-switcher" type="button">
+          <button className="admin-switcher" type="button" onClick={() => setActiveView('overview')}>
             <span>active server</span>
             <strong>
-              {displayHost}
+              {displayHost}:{displayPort}
               <ChevronDown size={14} />
             </strong>
           </button>
 
           <NavGroup
-            title="Workspace"
+            title="管理"
+            activeView={activeView}
+            onSelect={setActiveView}
             items={[
-              ['Overview', Activity, true],
-              ['Projects', Database, false],
-              ['Agents', Cpu, false],
-              ['Runs', GitBranch, false],
+              ['overview', '服务概览', Activity],
+              ['pairing', '设备配对', QrCode],
+              ['devices', '设备管理', Smartphone],
             ]}
           />
           <NavGroup
-            title="Operations"
+            title="资源"
+            activeView={activeView}
+            onSelect={setActiveView}
             items={[
-              ['Devices', Smartphone, false],
-              ['Logs', Terminal, false],
-              ['Config', FileCode, false],
-              ['Settings', Settings, false],
+              ['agents', 'Agents', Cpu],
+              ['projects', 'Projects', Database],
+              ['events', '事件流', Terminal],
             ]}
+          />
+          <NavGroup
+            title="系统"
+            activeView={activeView}
+            onSelect={setActiveView}
+            items={[['settings', '设置', Settings]]}
           />
         </aside>
 
         <main className="admin-main">
-          <header className="admin-topbar">
-            <div className="admin-crumb">
-              PawTerm / <strong>claude-companion</strong> / production
+          <header className="admin-page-header">
+            <div>
+              <div className="admin-crumb">PawTerm / Web Admin / {activeView}</div>
+              <h2>{page.title}</h2>
+              <p>{page.subtitle}</p>
             </div>
-            <div className="admin-search">
-              <Search size={14} />
-              搜索 project、session、tool event
-              <kbd>⌘ K</kbd>
-            </div>
-            <div className="admin-theme-toggle" aria-label="主题切换">
-              <button
-                type="button"
-                className={clsx(theme === 'dark' && 'active')}
-                onClick={() => setTheme('dark')}
-              >
-                暗色
-              </button>
-              <button
-                type="button"
-                className={clsx(theme === 'light' && 'active')}
-                onClick={() => setTheme('light')}
-              >
-                日间
-              </button>
+            <div className="admin-top-actions">
+              <StatusPill online={online} />
+              <div className="admin-theme-toggle" aria-label="主题切换">
+                <button
+                  type="button"
+                  className={clsx(theme === 'dark' && 'active')}
+                  onClick={() => setTheme('dark')}
+                >
+                  暗色
+                </button>
+                <button
+                  type="button"
+                  className={clsx(theme === 'light' && 'active')}
+                  onClick={() => setTheme('light')}
+                >
+                  日间
+                </button>
+              </div>
             </div>
           </header>
 
-          <section className="admin-hero-grid">
-            <div className="admin-service-hero">
-              <div className="admin-hero-head">
-                <div>
-                  <div className="admin-eyebrow">
-                    <span className="admin-pulse" />
-                    server running
-                  </div>
-                  <h2>本地 Agent 服务正在运行</h2>
-                  <p>
-                    当前连接到 <strong>{displayHost}:{displayPort}</strong>，Web Admin 统一管理配对、
-                    项目白名单、Agent runtime 与原始事件流。
-                  </p>
-                </div>
-                <StatusPill online={online} />
-              </div>
-              <div className="admin-actions">
-                <button className="admin-button primary" type="button">
-                  <Play size={14} />
-                  打开配对窗口
-                </button>
-                <button className="admin-button" type="button">
-                  <Terminal size={14} />
-                  查看运行日志
-                </button>
-                <button className="admin-button" type="button">
-                  <Braces size={14} />
-                  编辑 config.json
-                </button>
-              </div>
-            </div>
-            <ActivityCard />
-          </section>
-
-          <section className="admin-metrics">
-            <Metric label="Active runs" value="3" foot="2 Claude · 1 Codex" />
-            <Metric label="Projects" value="4" foot="全部在 allow-list 内" />
-            <Metric label="Paired devices" value={String(devices.length)} foot="设备连接与撤销" />
-            <Metric label="Raw events" value={String(events.length)} foot="保留原生事件名" />
-          </section>
-
-          <section className="admin-content-grid">
-            <ResourcePanel />
-            <EventPanel />
-          </section>
-
-          <section className="admin-lower-grid">
-            <PairingPanel />
-            <DevicesPanel />
-          </section>
+          {activeView === 'overview' && (
+            <OverviewPage
+              online={online}
+              displayHost={displayHost}
+              displayPort={displayPort}
+              serverId={serverId}
+              agents={agents}
+              projects={projects}
+              devices={devices}
+              events={events}
+              resourcesError={resourcesError}
+              resourcesLoading={resourcesLoading}
+              onRefreshResources={loadResources}
+              onOpenPairing={openPairing}
+              onOpenEvents={() => setActiveView('events')}
+              onOpenSettings={() => setActiveView('settings')}
+            />
+          )}
+          {activeView === 'pairing' && <PairingPage autoOpenSignal={pairSignal} />}
+          {activeView === 'devices' && <DevicesPage />}
+          {activeView === 'agents' && (
+            <AgentsPage agents={agents} loading={resourcesLoading} error={resourcesError} onRefresh={loadResources} />
+          )}
+          {activeView === 'projects' && (
+            <ProjectsPage projects={projects} loading={resourcesLoading} error={resourcesError} onRefresh={loadResources} />
+          )}
+          {activeView === 'events' && <EventsPage />}
+          {activeView === 'settings' && (
+            <SettingsPage
+              tokenExpiresAt={accessExpiresAt}
+              serverId={serverId}
+              displayHost={displayHost}
+              displayPort={displayPort}
+              onDisconnect={clearToken}
+              onToast={showToast}
+            />
+          )}
         </main>
-
-        <aside className="admin-inspector">
-          <div className="admin-inspector-head">
-            <h2>Claude Code</h2>
-            <p>当前选中的 Agent service。这里像 Railway 的 service inspector，展示 runtime、能力、最近事件和原始 payload。</p>
-          </div>
-          <KeyValues
-            rows={[
-              ['Status', <StatusPill key="status" online={online} />],
-              ['Runtime', 'acceptEdits'],
-              ['Model', 'claude-sonnet-4-6'],
-              ['Server ID', shortId],
-              ['Devices', String(devices.length)],
-            ]}
-          />
-          <AdminPasswordPanel />
-          <RawPreview />
-          <div className="admin-inspector-actions">
-            <button className="admin-button" type="button" onClick={clearToken}>
-              <X size={14} />
-              Disconnect admin
-            </button>
-          </div>
-        </aside>
       </div>
       <PairRequestModal />
+      {toast && <div className="admin-toast">{toast}</div>}
     </div>
   );
 }
@@ -302,15 +350,24 @@ function Shell({ theme, setTheme }: { theme: ThemeMode; setTheme: (mode: ThemeMo
 function NavGroup({
   title,
   items,
+  activeView,
+  onSelect,
 }: {
   title: string;
-  items: Array<[string, LucideIcon, boolean]>;
+  items: Array<[ViewId, string, LucideIcon]>;
+  activeView: ViewId;
+  onSelect: (view: ViewId) => void;
 }) {
   return (
     <div className="admin-nav-group">
       <div className="admin-nav-title">{title}</div>
-      {items.map(([label, Icon, active]) => (
-        <button key={label} className={clsx('admin-nav-item', active && 'active')} type="button">
+      {items.map(([view, label, Icon]) => (
+        <button
+          key={view}
+          className={clsx('admin-nav-item', activeView === view && 'active')}
+          type="button"
+          onClick={() => onSelect(view)}
+        >
           <span>
             <Icon size={13} />
           </span>
@@ -321,24 +378,129 @@ function NavGroup({
   );
 }
 
-function ActivityCard() {
-  const heights = [22, 42, 36, 58, 76, 48, 66, 81, 57, 33, 69, 92, 51, 28, 45, 73, 61, 39];
+function OverviewPage({
+  online,
+  displayHost,
+  displayPort,
+  serverId,
+  agents,
+  projects,
+  devices,
+  events,
+  resourcesError,
+  resourcesLoading,
+  onRefreshResources,
+  onOpenPairing,
+  onOpenEvents,
+  onOpenSettings,
+}: {
+  online: boolean;
+  displayHost: string;
+  displayPort: number;
+  serverId: string | null;
+  agents: AgentInfo[];
+  projects: Project[];
+  devices: PairedDevice[];
+  events: Array<{ id: string; event: AdminEvent; receivedAt: number }>;
+  resourcesError: string | null;
+  resourcesLoading: boolean;
+  onRefreshResources: () => Promise<void>;
+  onOpenPairing: () => void;
+  onOpenEvents: () => void;
+  onOpenSettings: () => void;
+}) {
+  const serverStatus = events.find((entry) => entry.event.type === 'server_status')?.event;
+  const activeDevices = serverStatus?.type === 'server_status' ? serverStatus.activeDevices : null;
+  const readyAgents = agents.filter((agent) => agent.status === 'ready').length;
+
   return (
-    <div className="admin-card admin-activity-card">
-      <div className="admin-card-title">过去 30 分钟</div>
-      <div className="admin-card-sub">turns / tool calls / device events</div>
-      <div className="admin-activity-bars">
-        {heights.map((height, index) => (
-          <div key={index} className="admin-bar" style={{ height: `${height}%` }} />
-        ))}
-      </div>
+    <div className="admin-page-stack">
+      <section className="admin-service-hero compact">
+        <div className="admin-hero-head">
+          <div>
+            <div className="admin-eyebrow">
+              <span className="admin-pulse" />
+              local server
+            </div>
+            <h2>本地 Agent 控制台</h2>
+            <p>
+              当前连接到 <strong>{displayHost}:{displayPort}</strong>。这里管理 Web Admin 已经具备的能力：
+              手机配对、设备撤销、Agent runtime、项目白名单和实时事件流。
+            </p>
+          </div>
+          <StatusPill online={online} />
+        </div>
+        <div className="admin-actions">
+          <button className="admin-button primary" type="button" onClick={onOpenPairing}>
+            <QrCode size={14} />
+            打开配对窗口
+          </button>
+          <button className="admin-button" type="button" onClick={onOpenEvents}>
+            <Terminal size={14} />
+            查看事件流
+          </button>
+          <button className="admin-button" type="button" onClick={onOpenSettings}>
+            <Settings size={14} />
+            管理设置
+          </button>
+        </div>
+      </section>
+
+      <section className="admin-metrics">
+        <StatCard label="Server" value={online ? 'online' : 'offline'} foot={serverId ? `id ${serverId.slice(-8)}` : '等待 health'} tone={online ? 'green' : 'red'} />
+        <StatCard label="Agents" value={`${readyAgents}/${agents.length}`} foot="ready / total" tone="purple" />
+        <StatCard label="Projects" value={String(projects.length)} foot="config allow-list" tone="blue" />
+        <StatCard label="Devices" value={String(devices.length)} foot={activeDevices == null ? 'paired devices' : `${activeDevices} active`} tone="yellow" />
+      </section>
+
+      <section className="admin-page-grid">
+        <div className="admin-card">
+          <div className="admin-card-head">
+            <div>
+              <div className="admin-card-title">资源状态</div>
+              <div className="admin-card-sub">来自 /api/agents 与 /api/projects，不展示后端尚未实现的功能</div>
+            </div>
+            <button className="admin-icon-button" type="button" onClick={() => void onRefreshResources()} disabled={resourcesLoading}>
+              <RefreshCw size={14} />
+            </button>
+          </div>
+          {resourcesError ? (
+            <div className="admin-empty">{resourcesError}</div>
+          ) : (
+            <div className="admin-resource-summary">
+              {agents.map((agent) => (
+                <div key={agent.kind} className="admin-summary-row">
+                  <div className={clsx('admin-resource-icon', agent.kind)}>{agent.kind.slice(0, 2).toUpperCase()}</div>
+                  <div className="min-w-0">
+                    <strong>{agent.label}</strong>
+                    <span>{describeRuntime(agent.defaultRuntime)}</span>
+                  </div>
+                  <span className={clsx('admin-badge', agent.status === 'ready' ? 'green' : 'red')}>{agent.status}</span>
+                </div>
+              ))}
+              {agents.length === 0 && <div className="admin-empty">暂无 agent runtime</div>}
+            </div>
+          )}
+        </div>
+        <EventPanel limit={6} />
+      </section>
     </div>
   );
 }
 
-function Metric({ label, value, foot }: { label: string; value: string; foot: string }) {
+function StatCard({
+  label,
+  value,
+  foot,
+  tone,
+}: {
+  label: string;
+  value: string;
+  foot: string;
+  tone: 'green' | 'blue' | 'yellow' | 'red' | 'purple';
+}) {
   return (
-    <div className="admin-card admin-metric">
+    <div className={clsx('admin-card admin-metric', `tone-${tone}`)}>
       <div className="admin-metric-label">{label}</div>
       <div className="admin-metric-value">{value}</div>
       <div className="admin-metric-foot">{foot}</div>
@@ -346,76 +508,291 @@ function Metric({ label, value, foot }: { label: string; value: string; foot: st
   );
 }
 
-const resources = [
-  ['CL', 'Claude Code', 'permission_mode=acceptEdits · model=claude-sonnet-4-6', 'ready', 'green', 'claude'],
-  ['CX', 'Codex', 'sandbox=workspace-write · approval_policy=on-request', 'ready', 'green', 'codex'],
-  ['GM', 'Gemini', 'provider slot reserved · runtime schema ready', 'disabled', '', 'gemini'],
-  ['PT', 'claude-companion', '/Users/airoucat/workspace/shulex/claude-companion', '4 sessions', 'blue', 'project'],
-] as const;
+function PairingPage({ autoOpenSignal }: { autoOpenSignal: number }) {
+  const pairQueue = useAdminStore((s) => s.pairQueue);
 
-function ResourcePanel() {
   return (
-    <div className="admin-card">
-      <div className="admin-card-head">
-        <div>
-          <div className="admin-card-title">服务资源</div>
-          <div className="admin-card-sub">像 Railway service 一样管理 project 与 agent runtime</div>
-        </div>
-        <div className="admin-tabs">
-          <button className="active" type="button">Agents</button>
-          <button type="button">Projects</button>
-          <button type="button">Devices</button>
-        </div>
-      </div>
-      <div className="admin-resource-list">
-        {resources.map(([abbr, title, subtitle, badge, badgeTone, tone], index) => (
-          <div key={title} className={clsx('admin-resource', index === 0 && 'selected')}>
-            <div className={clsx('admin-resource-icon', tone)}>{abbr}</div>
-            <div className="min-w-0">
-              <h3>{title}</h3>
-              <p>{subtitle}</p>
-            </div>
-            <span className={clsx('admin-badge', badgeTone)}>{badge}</span>
+    <div className="admin-page-grid pairing">
+      <PairingPanel autoOpenSignal={autoOpenSignal} />
+      <div className="admin-card">
+        <div className="admin-card-head">
+          <div>
+            <div className="admin-card-title">待确认请求</div>
+            <div className="admin-card-sub">手机通过配对入口发起后，会在这里弹窗确认</div>
           </div>
-        ))}
+          <span className="admin-badge yellow">{pairQueue.length}</span>
+        </div>
+        {pairQueue.length === 0 ? (
+          <div className="admin-empty">暂无待确认设备</div>
+        ) : (
+          <div className="admin-device-list">
+            {pairQueue.map((request) => (
+              <div key={request.requestId} className="admin-device-row">
+                <Smartphone size={15} />
+                <div className="min-w-0">
+                  <strong>{request.deviceName}</strong>
+                  <span>{request.ip} · {request.deviceId.slice(-10)}</span>
+                </div>
+                <span className="admin-badge yellow">{relativeTime(request.createdAt)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function EventPanel() {
-  const liveEvents = [
-    ['green', 'Claude · Bash', 'pnpm --filter pawterm-server run typecheck', '12s'],
-    ['blue', 'Codex · commandExecution', 'flutter analyze · app/lib/screens/tabs/chat_tab.dart', '1m'],
-    ['yellow', 'Codex · fileChange', 'server/src/config.ts · RawServerConfig', '4m'],
-    ['red', 'Claude · TodoWrite', 'Task 13 · Flutter Chat Agent Runtime', '9m'],
-  ] as const;
+function DevicesPage() {
+  return (
+    <div className="admin-page-stack">
+      <DevicesPanel />
+    </div>
+  );
+}
+
+function AgentsPage({
+  agents,
+  loading,
+  error,
+  onRefresh,
+}: {
+  agents: AgentInfo[];
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => Promise<void>;
+}) {
+  return (
+    <div className="admin-page-stack">
+      <div className="admin-card">
+        <div className="admin-card-head">
+          <div>
+            <div className="admin-card-title">Agent Runtime</div>
+            <div className="admin-card-sub">保留 Claude / Codex / Gemini 各自的原生 runtime 定义</div>
+          </div>
+          <button className="admin-icon-button" type="button" onClick={() => void onRefresh()} disabled={loading}>
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        {error ? (
+          <div className="admin-empty">{error}</div>
+        ) : agents.length === 0 ? (
+          <div className="admin-empty">暂无 agent runtime</div>
+        ) : (
+          <div className="admin-agent-grid">
+            {agents.map((agent) => (
+              <AgentCard key={agent.kind} agent={agent} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AgentCard({ agent }: { agent: AgentInfo }) {
+  const capabilities = Object.entries(agent.capabilities).filter(([, enabled]) => enabled);
+  return (
+    <article className="admin-agent-card">
+      <div className="admin-agent-head">
+        <div className={clsx('admin-resource-icon', agent.kind)}>{agent.kind.slice(0, 2).toUpperCase()}</div>
+        <div className="min-w-0">
+          <h3>{agent.label}</h3>
+          <p>{agent.statusMessage || describeRuntime(agent.defaultRuntime)}</p>
+        </div>
+        <span className={clsx('admin-badge', agent.status === 'ready' ? 'green' : 'red')}>{agent.status}</span>
+      </div>
+      <KeyValues rows={runtimeRows(agent.defaultRuntime)} />
+      <div className="admin-capability-list">
+        {capabilities.map(([name]) => (
+          <span key={name} className="admin-badge blue">
+            <CheckCircle2 size={12} />
+            {name}
+          </span>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function ProjectsPage({
+  projects,
+  loading,
+  error,
+  onRefresh,
+}: {
+  projects: Project[];
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => Promise<void>;
+}) {
+  return (
+    <div className="admin-page-stack">
+      <div className="admin-card">
+        <div className="admin-card-head">
+          <div>
+            <div className="admin-card-title">项目白名单</div>
+            <div className="admin-card-sub">当前仅展示 config.json 中的 projects；新增/删除项目应走配置文件或后续专门 API</div>
+          </div>
+          <button className="admin-icon-button" type="button" onClick={() => void onRefresh()} disabled={loading}>
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        {error ? (
+          <div className="admin-empty">{error}</div>
+        ) : projects.length === 0 ? (
+          <div className="admin-empty">暂无白名单项目</div>
+        ) : (
+          <div className="admin-table">
+            {projects.map((project) => (
+              <div className="admin-table-row" key={project.path}>
+                <div className="admin-resource-icon project">{project.name.slice(0, 2).toUpperCase()}</div>
+                <div className="min-w-0">
+                  <strong>{project.name}</strong>
+                  <span>{project.path}</span>
+                </div>
+                <span className="admin-badge blue">allow-list</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EventsPage() {
+  const events = useAdminStore((s) => s.events);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = events.find((entry) => entry.id === selectedId) ?? events[0] ?? null;
+
+  useEffect(() => {
+    if (!selectedId && events[0]) setSelectedId(events[0].id);
+  }, [events, selectedId]);
+
+  return (
+    <div className="admin-page-grid events">
+      <div className="admin-card">
+        <div className="admin-card-head">
+          <div>
+            <div className="admin-card-title">实时事件</div>
+            <div className="admin-card-sub">这里展示 admin event 原始 type，不做通用重命名</div>
+          </div>
+          <span className="admin-badge green">live</span>
+        </div>
+        {events.length === 0 ? (
+          <div className="admin-empty">等待实时事件</div>
+        ) : (
+          <div className="admin-timeline selectable">
+            {events.map(({ id, event, receivedAt }) => (
+              <button
+                key={id}
+                type="button"
+                className={clsx('admin-event-row', selected?.id === id && 'selected')}
+                onClick={() => setSelectedId(id)}
+              >
+                <span className={clsx('admin-event-dot', eventTone(event))} />
+                <div className="min-w-0">
+                  <p>{eventTitle(event)}</p>
+                  <small>{eventMeta(event)}</small>
+                </div>
+                <time>{relativeTime(receivedAt)}</time>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <RawEventPanel event={selected?.event ?? null} />
+    </div>
+  );
+}
+
+function SettingsPage({
+  tokenExpiresAt,
+  serverId,
+  displayHost,
+  displayPort,
+  onDisconnect,
+  onToast,
+}: {
+  tokenExpiresAt: number | null;
+  serverId: string | null;
+  displayHost: string;
+  displayPort: number;
+  onDisconnect: () => void;
+  onToast: (message: string) => void;
+}) {
+  return (
+    <div className="admin-page-grid settings">
+      <div className="admin-card">
+        <div className="admin-card-head">
+          <div>
+            <div className="admin-card-title">Admin 会话</div>
+            <div className="admin-card-sub">Web Admin 使用 Bearer admin_access_token，过期前自动续期</div>
+          </div>
+          <ShieldCheck size={17} />
+        </div>
+        <KeyValues
+          rows={[
+            ['Server', `${displayHost}:${displayPort}`],
+            ['Server ID', serverId ? serverId.slice(-12) : 'unknown'],
+            ['Access token', tokenExpiresAt ? `expires ${formatDate(tokenExpiresAt)}` : 'session only'],
+            ['Auth header', 'Authorization: Bearer aat-...'],
+          ]}
+        />
+        <div className="admin-settings-actions">
+          <button
+            className="admin-button"
+            type="button"
+            onClick={() => onToast('浏览器不能直接打开本机编辑器。请用 Mac App 的 Edit Config，或编辑 PAWTERM_CONFIG 指向的 config.json。')}
+          >
+            <Braces size={14} />
+            config.json 位置说明
+          </button>
+          <button className="admin-button danger" type="button" onClick={onDisconnect}>
+            <LogOut size={14} />
+            断开后台会话
+          </button>
+        </div>
+      </div>
+      <AdminPasswordPanel />
+    </div>
+  );
+}
+
+function EventPanel({ limit }: { limit: number }) {
+  const events = useAdminStore((s) => s.events);
+
   return (
     <div className="admin-card">
       <div className="admin-card-head">
         <div>
-          <div className="admin-card-title">运行时间线</div>
-          <div className="admin-card-sub">展示原生 tool/event 名称，不做通用重命名</div>
+          <div className="admin-card-title">最近事件</div>
+          <div className="admin-card-sub">展示原生 admin event type</div>
         </div>
         <span className="admin-badge green">live</span>
       </div>
-      <div className="admin-timeline">
-        {liveEvents.map(([tone, title, meta, time]) => (
-          <div key={title} className="admin-event-row">
-            <span className={clsx('admin-event-dot', tone)} />
-            <div className="min-w-0">
-              <p>{title}</p>
-              <small>{meta}</small>
+      {events.length === 0 ? (
+        <div className="admin-empty">等待实时事件</div>
+      ) : (
+        <div className="admin-timeline">
+          {events.slice(0, limit).map(({ id, event, receivedAt }) => (
+            <div key={id} className="admin-event-row">
+              <span className={clsx('admin-event-dot', eventTone(event))} />
+              <div className="min-w-0">
+                <p>{eventTitle(event)}</p>
+                <small>{eventMeta(event)}</small>
+              </div>
+              <time>{relativeTime(receivedAt)}</time>
             </div>
-            <time>{time}</time>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function PairingPanel() {
+function PairingPanel({ autoOpenSignal }: { autoOpenSignal: number }) {
   const token = useAdminStore((s) => s.token);
   const [qrSvg, setQrSvg] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
@@ -463,8 +840,14 @@ function PairingPanel() {
     }
   }
 
+  useEffect(() => {
+    if (autoOpenSignal > 0) void showPin();
+    // showPin intentionally uses fresh token/loading state for this signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenSignal]);
+
   return (
-    <div className="admin-card admin-pairing-card">
+    <div className="admin-card admin-pairing-card" id="admin-pairing">
       <div className="admin-card-head">
         <div>
           <div className="admin-card-title">配对入口</div>
@@ -607,7 +990,7 @@ function AdminPasswordPanel() {
   }
 
   return (
-    <div className="admin-password-panel">
+    <div className="admin-card admin-password-panel" id="admin-password">
       <div className="admin-card-title">管理密码</div>
       <div className="admin-card-sub">保存在 config.json 中的是 scrypt hash，不写明文密码。</div>
       <input
@@ -634,25 +1017,78 @@ function AdminPasswordPanel() {
   );
 }
 
-function RawPreview() {
+function runtimeRows(runtime: AgentInfo['defaultRuntime']): Array<[string, React.ReactNode]> {
+  if (runtime.agent === 'claude') {
+    return [
+      ['agent', runtime.agent],
+      ['permission_mode', runtime.permission_mode],
+      ['model', runtime.model ?? 'default'],
+    ];
+  }
+  if (runtime.agent === 'codex') {
+    return [
+      ['agent', runtime.agent],
+      ['sandbox', runtime.sandbox],
+      ['approval_policy', runtime.approval_policy],
+      ['reasoning_effort', runtime.reasoning_effort ?? 'default'],
+      ['model', runtime.model ?? 'default'],
+    ];
+  }
+  return [
+    ['agent', runtime.agent],
+    ['approval_policy', runtime.approval_policy ?? 'default'],
+    ['model', runtime.model ?? 'default'],
+  ];
+}
+
+function describeRuntime(agent: AgentInfo['defaultRuntime']): string {
+  if (agent.agent === 'claude') {
+    return `permission_mode=${agent.permission_mode}${agent.model ? ` · model=${agent.model}` : ''}`;
+  }
+  if (agent.agent === 'codex') {
+    return `sandbox=${agent.sandbox} · approval_policy=${agent.approval_policy}`;
+  }
+  return agent.approval_policy ? `approval_policy=${agent.approval_policy}` : 'runtime schema ready';
+}
+
+function eventTone(event: AdminEvent): 'green' | 'blue' | 'yellow' | 'red' {
+  if (event.type === 'device_paired' || event.type === 'device_connected' || event.type === 'server_status') return 'green';
+  if (event.type === 'pair_request') return 'yellow';
+  if (event.type === 'device_revoked' || event.type === 'device_disconnected') return 'red';
+  return 'blue';
+}
+
+function eventTitle(event: AdminEvent): string {
+  if (event.type === 'pair_request') return `pair_request · ${event.deviceName}`;
+  if (event.type === 'device_paired') return `device_paired · ${event.name}`;
+  if (event.type === 'device_revoked') return `device_revoked · ${event.deviceId.slice(-8)}`;
+  if (event.type === 'device_connected') return `device_connected · ${event.deviceId.slice(-8)}`;
+  if (event.type === 'device_disconnected') return `device_disconnected · ${event.deviceId.slice(-8)}`;
+  return 'server_status';
+}
+
+function eventMeta(event: AdminEvent): string {
+  if (event.type === 'pair_request') return `${event.ip} · ${event.deviceId.slice(-8)}`;
+  if (event.type === 'server_status') return `paired=${event.pairedDevices} active=${event.activeDevices}`;
+  return JSON.stringify(event);
+}
+
+function relativeTime(ms: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.round(minutes / 60)}h`;
+}
+
+function RawEventPanel({ event }: { event: AdminEvent | null }) {
   return (
     <div className="admin-logbox">
       <div className="admin-logbar">
-        <span>raw event preview</span>
+        <span>raw admin event</span>
         <span>JSON</span>
       </div>
-      <pre>{`{
-  "agent": "claude",
-  "type": "assistant",
-  "content": [{
-    "type": "tool_use",
-    "name": "Bash",
-    "input": {
-      "command": "pnpm dev"
-    },
-    "raw_payload": "{...}"
-  }]
-}`}</pre>
+      <pre>{event ? JSON.stringify(event, null, 2) : '等待实时事件'}</pre>
     </div>
   );
 }
@@ -717,11 +1153,19 @@ function formatDate(ms: number | null): string {
 }
 
 export default function AdminApp() {
-  const [theme, setTheme] = useState<ThemeMode>('dark');
+  const [theme, setThemeState] = useState<ThemeMode>(() => {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === 'dark' || stored === 'light' ? stored : 'light';
+  });
   useAdminAccessRenew();
   useHealthPing();
   useDevicesPoll();
   useAdminSSE();
+
+  const setTheme = useCallback((mode: ThemeMode) => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, mode);
+    setThemeState(mode);
+  }, []);
 
   const bodyClass = useMemo(() => (theme === 'light' ? 'light' : ''), [theme]);
 

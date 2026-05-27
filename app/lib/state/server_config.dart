@@ -36,6 +36,7 @@ class Connection {
   bool get isPaired => serverId != null && token != null;
 
   String get httpBase => url;
+  String get apiBase => '${url.replaceFirst(RegExp(r'/$'), '')}/api';
   String get wsBase => url.replaceFirst(RegExp(r'^http'), 'ws');
   String get host => Uri.parse(url).host;
   int get port => Uri.parse(url).port;

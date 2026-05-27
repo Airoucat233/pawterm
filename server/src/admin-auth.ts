@@ -5,6 +5,10 @@ export interface AdminAccessToken {
   expiresAt: number;
 }
 
+export interface StoredAdminAccessToken extends AdminAccessToken {
+  maxExpiresAt: number;
+}
+
 export interface AdminLoginCode {
   loginCode: string;
   expiresAt: number;
@@ -15,6 +19,7 @@ interface AdminAccessManagerOptions {
   loginCodeTtlMs?: number;
   accessTokenTtlMs?: number;
   maxAccessTokenLifetimeMs?: number;
+  initialAccessTokens?: StoredAdminAccessToken[];
 }
 
 interface AccessTokenRecord {
@@ -35,6 +40,14 @@ export class AdminAccessManager {
     this.loginCodeTtlMs = opts.loginCodeTtlMs ?? 60_000;
     this.accessTokenTtlMs = opts.accessTokenTtlMs ?? 12 * 60 * 60 * 1000;
     this.maxAccessTokenLifetimeMs = opts.maxAccessTokenLifetimeMs ?? 7 * 24 * 60 * 60 * 1000;
+    for (const token of opts.initialAccessTokens ?? []) {
+      if (token.expiresAt > this.now() && token.maxExpiresAt > this.now()) {
+        this.accessTokens.set(token.accessToken, {
+          expiresAt: token.expiresAt,
+          maxExpiresAt: token.maxExpiresAt,
+        });
+      }
+    }
   }
 
   createLoginCode(): AdminLoginCode {
@@ -65,6 +78,15 @@ export class AdminAccessManager {
     this.accessTokens.delete(token);
     if (!record || record.expiresAt <= this.now() || record.maxExpiresAt <= this.now()) return null;
     return this.createAccessToken(record.maxExpiresAt);
+  }
+
+  snapshotAccessTokens(): StoredAdminAccessToken[] {
+    this.pruneExpired();
+    return Array.from(this.accessTokens, ([accessToken, record]) => ({
+      accessToken,
+      expiresAt: record.expiresAt,
+      maxExpiresAt: record.maxExpiresAt,
+    }));
   }
 
   private createAccessToken(maxExpiresAt = this.now() + this.maxAccessTokenLifetimeMs): AdminAccessToken {

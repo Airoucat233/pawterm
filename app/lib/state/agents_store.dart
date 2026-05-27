@@ -9,7 +9,7 @@ import 'server_config.dart';
 final agentsProvider = FutureProvider<List<AgentInfo>>((ref) async {
   final conn = ref.watch(activeConnectionProvider);
   if (conn == null) return [];
-  return AgentsApi(conn.httpBase, token: conn.token).list();
+  return AgentsApi(conn.apiBase, token: conn.token).list();
 });
 
 final projectDefaultAgentProvider =
@@ -17,7 +17,8 @@ final projectDefaultAgentProvider =
   (ref) => ProjectDefaultAgentNotifier(),
 );
 
-class ProjectDefaultAgentNotifier extends StateNotifier<Map<String, AgentKind>> {
+class ProjectDefaultAgentNotifier
+    extends StateNotifier<Map<String, AgentKind>> {
   ProjectDefaultAgentNotifier() : super(const {}) {
     _load();
   }
@@ -34,7 +35,8 @@ class ProjectDefaultAgentNotifier extends StateNotifier<Map<String, AgentKind>> 
       return;
     }
     final decoded = jsonDecode(raw) as Map<String, dynamic>;
-    final loaded = decoded.map((k, v) => MapEntry(k, AgentKind.fromWire(v as String?)));
+    final loaded =
+        decoded.map((k, v) => MapEntry(k, AgentKind.fromWire(v as String?)));
     state = _dirtyBeforeLoad ? {...loaded, ...state} : loaded;
     _loaded = true;
   }
@@ -43,7 +45,8 @@ class ProjectDefaultAgentNotifier extends StateNotifier<Map<String, AgentKind>> 
     if (!_loaded) _dirtyBeforeLoad = true;
     state = {...state, cwd: agent};
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, jsonEncode(state.map((k, v) => MapEntry(k, v.wire))));
+    await prefs.setString(
+        _key, jsonEncode(state.map((k, v) => MapEntry(k, v.wire))));
   }
 
   AgentKind forProject(String cwd) => state[cwd] ?? AgentKind.claude;

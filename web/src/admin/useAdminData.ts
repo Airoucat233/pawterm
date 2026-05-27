@@ -3,7 +3,7 @@
  */
 import { useEffect, useRef, useCallback } from 'react';
 import { useAdminStore } from './store';
-import { fetchHealth, fetchDevices, renewAdminAccessToken } from './api';
+import { apiBase, fetchHealth, fetchDevices, renewAdminAccessToken } from './api';
 import type { AdminEvent } from '@pawterm/shared';
 
 const POLL_INTERVAL = 5000;
@@ -51,7 +51,7 @@ export function useHealthPing() {
 
     async function ping() {
       try {
-        const h = await fetchHealth(token!);
+        const h = await fetchHealth();
         if (alive)
           setHealth({
             online: h.status === 'ok',
@@ -140,7 +140,7 @@ export function useAdminSSE() {
       if (!alive) return;
       abort = new AbortController();
       try {
-        const response = await fetch('/admin/events', {
+        const response = await fetch(`${apiBase()}/admin/events`, {
           headers: {
             Accept: 'text/event-stream',
             Authorization: `Bearer ${token}`,

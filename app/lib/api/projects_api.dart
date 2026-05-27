@@ -22,14 +22,16 @@ class ProjectsApi {
   final String baseUrl;
   final String? _token;
   ProjectsApi(this.baseUrl, {String? token}) : _token = token;
+  String get _apiBase => baseUrl.endsWith('/api') ? baseUrl : '$baseUrl/api';
 
   Map<String, String> get _auth =>
       _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
   Future<List<String>> browse(String path) async {
     final uri =
-        Uri.parse('$baseUrl/browse').replace(queryParameters: {'path': path});
-    final resp = await http.get(uri, headers: _auth).timeout(const Duration(seconds: 5));
+        Uri.parse('$_apiBase/browse').replace(queryParameters: {'path': path});
+    final resp =
+        await http.get(uri, headers: _auth).timeout(const Duration(seconds: 5));
     if (resp.statusCode != 200) return [];
     final body = jsonDecode(resp.body) as Map<String, dynamic>;
     return (body['dirs'] as List).cast<String>();
@@ -40,7 +42,7 @@ class ProjectsApi {
   Future<Project> addProject({String? name, required String path}) async {
     final resp = await http
         .post(
-          Uri.parse('$baseUrl/projects'),
+          Uri.parse('$_apiBase/projects'),
           headers: {'Content-Type': 'application/json', ..._auth},
           body: jsonEncode({
             if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
@@ -58,9 +60,11 @@ class ProjectsApi {
 
   /// Removes a project from the server config. Does NOT delete sessions on disk.
   Future<void> removeProject(String path) async {
-    final uri =
-        Uri.parse('$baseUrl/projects').replace(queryParameters: {'path': path});
-    final resp = await http.delete(uri, headers: _auth).timeout(const Duration(seconds: 5));
+    final uri = Uri.parse('$_apiBase/projects')
+        .replace(queryParameters: {'path': path});
+    final resp = await http
+        .delete(uri, headers: _auth)
+        .timeout(const Duration(seconds: 5));
     if (resp.statusCode != 200) {
       throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
     }
@@ -71,7 +75,7 @@ class ProjectsApi {
   Future<String> mkdir({required String parent, required String name}) async {
     final resp = await http
         .post(
-          Uri.parse('$baseUrl/browse/mkdir'),
+          Uri.parse('$_apiBase/browse/mkdir'),
           headers: {'Content-Type': 'application/json', ..._auth},
           body: jsonEncode({'parent': parent, 'name': name}),
         )

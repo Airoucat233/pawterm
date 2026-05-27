@@ -201,7 +201,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
       final deviceName = await ConnectionsNotifier.getDeviceName();
       final claimResp = await http
           .post(
-            Uri.parse('${result.url}/pair/qr-claim'),
+            Uri.parse('${result.url}/api/pair/qr-claim'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'deviceId': deviceId,

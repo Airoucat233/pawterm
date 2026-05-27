@@ -88,6 +88,7 @@ Supported `config.json` keys:
 | `log_file` | no | File path or `null`; can be overridden by `PAWTERM_LOG_FILE`. |
 | `token` | no | Admin pairing token. Generated and persisted when omitted. |
 | `server_id` | no | Stable server identity. Generated and persisted when omitted. |
+| `admin_access_tokens` | no | Active Web Admin Bearer tokens. Managed automatically; do not hand-edit. |
 | `paired_devices` | no | Managed by pairing flow; do not hand-edit in normal development. |
 | `admin_password_hash` | no | Hashed admin password. Managed by Web Admin or `pawterm-server password set`; do not hand-edit. |
 | `admin_password_set_at` | no | Timestamp for the current admin password hash. |
@@ -136,9 +137,10 @@ Over Tailscale: `http://100.x.x.x:8765`
 | Path | Description |
 |---|---|
 | `GET /health` | Health check |
-| `GET /projects` | Project whitelist |
-| `GET /sessions?cwd=...` | List sessions |
-| `GET /chat/:id/events` | SSE event stream |
+| `GET /api/projects` | Project whitelist |
+| `GET /api/sessions?cwd=...` | List sessions |
+| `GET /api/chat/events?uuid=...` | Chat SSE stream |
+| `GET /admin` | Web Admin SPA |
 | `WS  /ws/shell` | PTY byte stream |
 
 Full protocol: [`packages/shared/src/protocol.ts`](https://github.com/Airoucat233/pawterm/blob/main/packages/shared/src/protocol.ts)

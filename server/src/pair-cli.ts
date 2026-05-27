@@ -1,8 +1,8 @@
 /**
  * pair-cli.ts — implements `pawterm-server pair`
  *
- * Reads config to get adminToken + port + host, calls POST /admin/pair-window,
- * displays the PIN in a box, polls /admin/devices until a new device appears,
+ * Reads config to get adminToken + port + host, calls POST /api/admin/pair-window,
+ * displays the PIN in a box, polls /api/admin/devices until a new device appears,
  * then exits.
  */
 
@@ -84,7 +84,7 @@ export async function runPairCli(): Promise<void> {
 
   try {
     const result = await fetchJson<{ pin?: string; expiresAt?: number; error?: string }>(
-      `${base}/admin/pair-window`,
+      `${base}/api/admin/pair-window`,
       { method: 'POST', headers, body: '{}' },
     );
     if (!result.ok || !result.data.pin) {
@@ -107,7 +107,7 @@ export async function runPairCli(): Promise<void> {
   let knownDeviceIds = new Set<string>();
   try {
     const devResult = await fetchJson<Array<{ deviceId: string }>>(
-      `${base}/admin/devices`,
+      `${base}/api/admin/devices`,
       { headers },
     );
     if (devResult.ok) {
@@ -127,7 +127,7 @@ export async function runPairCli(): Promise<void> {
 
     try {
       const devResult = await fetchJson<Array<{ deviceId: string; name: string }>>(
-        `${base}/admin/devices`,
+        `${base}/api/admin/devices`,
         { headers },
       );
       if (!devResult.ok) return;

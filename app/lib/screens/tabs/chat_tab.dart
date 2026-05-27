@@ -285,7 +285,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     _serverToken = config.token;
 
-    unawaited(_connectToSession(config.httpBase, session));
+    unawaited(_connectToSession(config.apiBase, session));
   }
 
   /// 处理会话冲突（另一个设备持有该会话）。
@@ -455,7 +455,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _observeMode = false;
       _observeHolderDeviceId = null;
     });
-    unawaited(_doTakeover(config.httpBase, session, uuid));
+    unawaited(_doTakeover(config.apiBase, session, uuid));
   }
 
   /// 建立到会话的连接。为新建会话生成 UUID，为已有会话使用 resumeId。
@@ -628,7 +628,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
     try {
       final page = await _fetchHistoryPage(
-        conn.httpBase,
+        conn.apiBase,
         session!.cwd,
         session.resumeId!,
         session.agent,
@@ -668,7 +668,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     required int limit,
     String? beforeUuid,
   }) async {
-    final uri = Uri.parse('$httpBase/sessions/$sessionId/messages').replace(
+    final apiBase = httpBase.endsWith('/api') ? httpBase : '$httpBase/api';
+    final uri = Uri.parse('$apiBase/sessions/$sessionId/messages').replace(
       queryParameters: {
         'cwd': cwd,
         'limit': '$limit',
@@ -1052,7 +1053,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           .then((_) {
         // Turn started — connect SSE if not already connected.
         if (mounted && _sseClient == null) {
-          _subscribeSse(config.httpBase, uuid, session.agent);
+          _subscribeSse(config.apiBase, uuid, session.agent);
         }
       }).catchError((e) {
         if (mounted) {
@@ -1144,7 +1145,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (session == null) return;
     final config = ref.read(activeConnectionProvider);
     if (config == null) return;
-    final api = UploadApi(config.httpBase, token: config.token);
+    final api = UploadApi(config.apiBase, token: config.token);
     for (final pickedFile in result.files) {
       final path = pickedFile.path;
       if (path == null) continue;
@@ -1189,7 +1190,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       a.errorMsg = null;
     });
     await _uploadOne(
-        UploadApi(config.httpBase, token: config.token), a, session.cwd);
+        UploadApi(config.apiBase, token: config.token), a, session.cwd);
   }
 
   bool get _attachmentsAllReady =>

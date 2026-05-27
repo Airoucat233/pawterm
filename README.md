@@ -121,6 +121,7 @@ Supported `config.json` keys:
 | `log_file` | no | File path or `null`; can be overridden by `PAWTERM_LOG_FILE`. |
 | `token` | no | Admin pairing token. Generated and persisted when omitted. |
 | `server_id` | no | Stable server identity. Generated and persisted when omitted. |
+| `admin_access_tokens` | no | Active Web Admin Bearer tokens. Managed automatically; do not hand-edit. |
 | `paired_devices` | no | Managed by pairing flow; do not hand-edit in normal development. |
 | `admin_password_hash` | no | Hashed admin password. Managed by Web Admin or `pawterm-server password set`; do not hand-edit. |
 | `admin_password_set_at` | no | Timestamp for the current admin password hash. |
@@ -167,12 +168,36 @@ Minimal local development files:
 ## Build from Source
 
 ```bash
-# Server
 git clone https://github.com/Airoucat233/pawterm.git
 cd pawterm && pnpm install
 cp server/config.example.json server/config.json
-pnpm dev:server
+```
 
+Common root workspace commands:
+
+```bash
+pnpm dev              # run pnpm dev:server + pnpm dev:web; asks before killing 8765 conflicts
+pnpm dev:server       # run pawterm-server from server/config.json on 8765
+pnpm dev:web          # run Vite web dev server; proxies to localhost:8765 by default
+pnpm build            # build web, then package it into server/dist-web
+pnpm build:all        # build server bundle, dev Android APK, and dev Mac app
+pnpm build:web        # build only @pawterm/web
+pnpm build:server     # build web, then build pawterm-server package
+pnpm build:app        # build local dev Android APK
+pnpm build:app:prod   # release APK; may prompt for version bump
+pnpm build:ios        # release IPA; requires macOS/Xcode/signing
+pnpm build:mac                # build local PawTermDev.app
+pnpm build:mac:install        # build and install PawTermDev.app to /Applications
+pnpm build:mac:prod           # release Mac zip; may prompt for version bump
+pnpm release          # bump/tag; CI builds release artifacts
+pnpm release:local    # create/upload GH release from local dist artifacts
+pnpm release:pre      # prerelease tag flow
+pnpm start:server     # run server/dist/index.js after build
+pnpm typecheck        # typecheck all workspace packages
+pnpm test:server      # run server tests
+```
+
+```bash
 # Phone app
 cd app && flutter pub get
 flutter run                  # Android debug on connected device, defaults to prod flavor

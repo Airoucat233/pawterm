@@ -1,7 +1,7 @@
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import websocketPlugin from '@fastify/websocket';
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
@@ -13,11 +13,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import type { AgentsResponse, HealthResponse, Project, PairedDevice, ModelsResponse, ModelInfo, ModelProvider } from '@pawterm/shared';
 
-import { adminAccessManager } from './admin-auth.js';
+import { AdminAccessManager } from './admin-auth.js';
 import { verifyAdminPassword } from './admin-password.js';
 import { defaultAgentRegistry } from './agents/registry.js';
 import { registerChatRest } from './chat-rest.js';
-import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices } from './config.js';
+import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices, persistAdminAccessTokens } from './config.js';
 import { adminEventBus } from './event-bus.js';
 import { buildLoggerOptions, SILENT_PATHS } from './logger.js';
 import { startMdns } from './mdns.js';
@@ -32,6 +32,10 @@ const VERSION: string = typeof __SERVER_VERSION__ !== 'undefined' ? __SERVER_VER
   try { return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version ?? 'dev'; }
   catch { return 'dev'; }
 })();
+
+const adminAccessManager = new AdminAccessManager({
+  initialAccessTokens: settings.adminAccessTokens,
+});
 
 // Extract a short human label from a model ID, falling back to the provided default.
 // e.g. "global.anthropic.claude-sonnet-4-6" → "Sonnet 4.6"
@@ -229,24 +233,20 @@ async function main(): Promise<void> {
     return payload;
   });
 
-  // Auth middleware
-  // Skipped: /health (LAN discovery), /ws/shell (WS auth via init message),
-  // /pair/start (PIN is the credential), /pair/qr-claim (claim code is the credential)
+  // Auth middleware.
+  // Frontend routes/static files are public. API routes live under /api, except
+  // /health which remains a root LAN/discovery probe.
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
-    const isPublicAdminAsset =
-      url === '/admin' ||
-      url.startsWith('/assets/') ||
-      /^\/admin\/(?:assets\/)?[^/]+\.(?:js|css|svg|png|ico|woff2?)$/.test(url);
     if (
       url === '/health' ||
+      (!url.startsWith('/api/') && url !== '/ws/shell') ||
       url === '/ws/shell' ||
-      url === '/pair/start' ||
-      url === '/pair/request' ||
-      url === '/pair/qr-claim' ||
-      url === '/admin/access-token' ||
-      isPublicAdminAsset ||
-      url.startsWith('/pair/poll/')
+      url === '/api/pair/start' ||
+      url === '/api/pair/request' ||
+      url === '/api/pair/qr-claim' ||
+      url === '/api/admin/access-token' ||
+      url.startsWith('/api/pair/poll/')
     ) {
       return;
     }
@@ -272,12 +272,12 @@ async function main(): Promise<void> {
     }
 
     // Admin-only routes
-    if (url === '/admin/login-codes' && !isRootAdmin) {
+    if (url === '/api/admin/login-codes' && !isRootAdmin) {
       reply.code(403).send({ error: 'root admin token required' });
       return;
     }
 
-    if (url.startsWith('/admin/') && !isAdmin) {
+    if (url.startsWith('/api/admin/') && !isAdmin) {
       reply.code(403).send({ error: 'admin access token required' });
       return;
     }
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
   });
 
   // REST: health (no auth)
-  app.get('/health', async (): Promise<HealthResponse> => {
+  const healthHandler = async (): Promise<HealthResponse> => {
     const advertisedAddress = networkAddressService.getCurrent();
     return {
       status: 'ok',
@@ -302,14 +302,18 @@ async function main(): Promise<void> {
         ? { name: advertisedAddress.name, address: advertisedAddress.address }
         : undefined,
     };
-  });
+  };
+  app.get('/health', healthHandler);
 
-  app.get('/agents', async (): Promise<AgentsResponse> => ({
+  await app.register(async (api) => {
+
+  const agentsHandler = async (): Promise<AgentsResponse> => ({
     agents: await defaultAgentRegistry.listInfos(),
-  }));
+  });
+  api.get('/agents', agentsHandler);
 
   // REST: models — reads ~/.claude/settings.json to detect provider + available models
-  app.get('/models', async (): Promise<ModelsResponse> => {
+  api.get('/models', async (): Promise<ModelsResponse> => {
     const claudeSettings = (() => {
       try {
         return JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8'));
@@ -338,10 +342,11 @@ async function main(): Promise<void> {
   });
 
   // REST: projects list
-  app.get('/projects', async (): Promise<Project[]> => settings.projects);
+  const projectsHandler = async (): Promise<Project[]> => settings.projects;
+  api.get('/projects', projectsHandler);
 
   // REST: add project. name is optional; defaults to basename(path).
-  app.post<{ Body: { name?: string; path: string } }>('/projects', async (req, reply) => {
+  api.post<{ Body: { name?: string; path: string } }>('/projects', async (req, reply) => {
     const { name, path: p } = req.body ?? {};
     if (!p) {
       reply.code(400);
@@ -359,7 +364,7 @@ async function main(): Promise<void> {
   });
 
   // REST: remove project (config only — never touches ~/.claude/projects sessions).
-  app.delete<{ Querystring: { path?: string } }>('/projects', async (req, reply) => {
+  api.delete<{ Querystring: { path?: string } }>('/projects', async (req, reply) => {
     const p = req.query.path;
     if (!p) {
       reply.code(400);
@@ -371,7 +376,7 @@ async function main(): Promise<void> {
   });
 
   // REST: browse server filesystem (directories only)
-  app.get<{ Querystring: { path?: string } }>('/browse', async (req): Promise<{ dirs: string[] }> => {
+  api.get<{ Querystring: { path?: string } }>('/browse', async (req): Promise<{ dirs: string[] }> => {
     const p = req.query.path;
     const abs = p ? resolve(p.replace(/^~/, homedir())) : homedir();
     try {
@@ -387,7 +392,7 @@ async function main(): Promise<void> {
   });
 
   // REST: create a new subdirectory under `parent`.
-  app.post<{ Body: { parent: string; name: string } }>('/browse/mkdir', async (req, reply) => {
+  api.post<{ Body: { parent: string; name: string } }>('/browse/mkdir', async (req, reply) => {
     const { parent, name } = req.body ?? {};
     if (!parent || !name) {
       reply.code(400);
@@ -415,7 +420,7 @@ async function main(): Promise<void> {
 
   // REST: filesystem — list and download files under whitelisted project roots.
   // Both endpoints accept absolute paths and reject anything outside isPathAllowed().
-  app.get<{ Querystring: { path?: string } }>('/fs/ls', async (req, reply) => {
+  api.get<{ Querystring: { path?: string } }>('/fs/ls', async (req, reply) => {
     const p = req.query.path;
     if (!p) { reply.code(400); return { error: 'path required' }; }
     const abs = resolve(p.replace(/^~/, homedir()));
@@ -460,7 +465,7 @@ async function main(): Promise<void> {
    * Returns `{ path, size, text, truncated, binary? }`. If the file looks
    * binary we return `{ binary: true }` without `text` — client decides.
    */
-  app.get<{ Querystring: { path?: string; max_bytes?: string } }>('/fs/cat', async (req, reply) => {
+  api.get<{ Querystring: { path?: string; max_bytes?: string } }>('/fs/cat', async (req, reply) => {
     const p = req.query.path;
     if (!p) { reply.code(400); return { error: 'path required' }; }
     const abs = resolve(p.replace(/^~/, homedir()));
@@ -504,7 +509,7 @@ async function main(): Promise<void> {
     }
   });
 
-  app.get<{ Querystring: { path?: string } }>('/fs/download', async (req, reply) => {
+  api.get<{ Querystring: { path?: string } }>('/fs/download', async (req, reply) => {
     const p = req.query.path;
     if (!p) { reply.code(400); return { error: 'path required' }; }
     const abs = resolve(p.replace(/^~/, homedir()));
@@ -530,35 +535,34 @@ async function main(): Promise<void> {
   });
 
   // REST: sessions
-  await registerSessionsApi(app, { registry: defaultAgentRegistry });
+  await registerSessionsApi(api, { registry: defaultAgentRegistry });
 
   // REST + SSE: chat
-  await registerChatRest(app);
+  await registerChatRest(api);
 
   // REST: upload (chat attachments)
-  await registerUpload(app);
-
-  // WebSocket: shell
-  app.get('/ws/shell', { websocket: true }, (socket, req) => {
-    handleShellSocket(socket, req);
-  });
+  await registerUpload(api);
 
   // ============ Admin access endpoints ============
 
-  // POST /admin/login-codes — root admin token/password required.
+  // POST /api/admin/login-codes — root admin token/password required.
   // Used by local trusted entry points (CLI / Mac app) to open Web Admin
   // without placing the root admin token in the browser URL.
-  app.post('/admin/login-codes', async () => {
+  const createAdminLoginCodeHandler = async () => {
     const login = adminAccessManager.createLoginCode();
     return {
       admin_login_code: login.loginCode,
       expires_at: login.expiresAt,
     };
-  });
+  };
+  api.post('/admin/login-codes', createAdminLoginCodeHandler);
 
-  // POST /admin/access-token — public exchange endpoint; the one-time
+  // POST /api/admin/access-token — public exchange endpoint; the one-time
   // admin_login_code is the credential and is consumed whether exchange succeeds.
-  app.post<{ Body: { admin_login_code?: string } }>('/admin/access-token', async (req, reply) => {
+  const exchangeAdminAccessTokenHandler = async (
+    req: FastifyRequest<{ Body: { admin_login_code?: string } }>,
+    reply: FastifyReply,
+  ) => {
     const code = req.body?.admin_login_code;
     if (!code) {
       reply.code(400);
@@ -569,15 +573,17 @@ async function main(): Promise<void> {
       reply.code(403);
       return { error: 'invalid or expired admin_login_code' };
     }
+    await persistAdminAccessTokens(adminAccessManager.snapshotAccessTokens());
     return {
       admin_access_token: access.accessToken,
       expires_at: access.expiresAt,
     };
-  });
+  };
+  api.post<{ Body: { admin_login_code?: string } }>('/admin/access-token', exchangeAdminAccessTokenHandler);
 
-  // POST /admin/access-token/renew — admin access token required.
+  // POST /api/admin/access-token/renew — admin access token required.
   // Rotates the Bearer token before expiry; the old token is revoked.
-  app.post('/admin/access-token/renew', async (req, reply) => {
+  const renewAdminAccessTokenHandler = async (req: FastifyRequest, reply: FastifyReply) => {
     const auth = req.headers['authorization'];
     const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
     if (!token) {
@@ -586,17 +592,23 @@ async function main(): Promise<void> {
     }
     const access = adminAccessManager.renewAccessToken(token);
     if (!access) {
+      await persistAdminAccessTokens(adminAccessManager.snapshotAccessTokens());
       reply.code(403);
       return { error: 'admin access token expired' };
     }
+    await persistAdminAccessTokens(adminAccessManager.snapshotAccessTokens());
     return {
       admin_access_token: access.accessToken,
       expires_at: access.expiresAt,
     };
-  });
+  };
+  api.post('/admin/access-token/renew', renewAdminAccessTokenHandler);
 
-  // POST /admin/password — admin auth required.
-  app.post<{ Body: { password?: string } }>('/admin/password', async (req, reply) => {
+  // POST /api/admin/password — admin auth required.
+  const setAdminPasswordHandler = async (
+    req: FastifyRequest<{ Body: { password?: string } }>,
+    reply: FastifyReply,
+  ) => {
     const password = req.body?.password ?? '';
     if (!isValidPassword(password)) {
       reply.code(400);
@@ -604,23 +616,26 @@ async function main(): Promise<void> {
     }
     await setPassword(password);
     return { ok: true, admin_password_set_at: settings.adminPasswordSetAt ?? Date.now() };
-  });
+  };
+  api.post<{ Body: { password?: string } }>('/admin/password', setAdminPasswordHandler);
 
-  app.delete('/admin/password', async () => {
+  const clearAdminPasswordHandler = async () => {
     await clearPassword();
     return { ok: true };
-  });
+  };
+  api.delete('/admin/password', clearAdminPasswordHandler);
 
   // ============ Pairing endpoints ============
 
-  // POST /admin/pair-window — adminToken required (checked by middleware)
-  app.post('/admin/pair-window', async (_req, _reply) => {
+  // POST /api/admin/pair-window — adminToken required (checked by middleware)
+  const openPairWindowHandler = async () => {
     const result = pairingManager.openWindow();
     return result;
-  });
+  };
+  api.post('/admin/pair-window', openPairWindowHandler);
 
-  // POST /pair/start — no auth; PIN is the out-of-band credential
-  app.post<{ Body: { deviceId: string; deviceName: string; pin: string } }>(
+  // POST /api/pair/start — no auth; PIN is the out-of-band credential
+  api.post<{ Body: { deviceId: string; deviceName: string; pin: string } }>(
     '/pair/start',
     async (req, reply) => {
       const { deviceId, deviceName, pin } = req.body ?? {};
@@ -637,8 +652,8 @@ async function main(): Promise<void> {
     },
   );
 
-  // POST /pair/qr-claim — no auth; claim code (from QR) is the credential
-  app.post<{ Body: { deviceId: string; deviceName: string; claim: string } }>(
+  // POST /api/pair/qr-claim — no auth; claim code (from QR) is the credential
+  api.post<{ Body: { deviceId: string; deviceName: string; claim: string } }>(
     '/pair/qr-claim',
     async (req, reply) => {
       const { deviceId, deviceName, claim } = req.body ?? {};
@@ -656,18 +671,22 @@ async function main(): Promise<void> {
     },
   );
 
-  // GET /admin/devices — list paired devices (no deviceToken in response)
-  app.get('/admin/devices', async (): Promise<PairedDevice[]> => {
+  // GET /api/admin/devices — list paired devices (no deviceToken in response)
+  const listAdminDevicesHandler = async (): Promise<PairedDevice[]> => {
     return settings.pairedDevices.map((d) => ({
       deviceId: d.deviceId,
       name: d.name,
       pairedAt: d.pairedAt,
       lastSeen: d.lastSeen,
     }));
-  });
+  };
+  api.get('/admin/devices', listAdminDevicesHandler);
 
-  // DELETE /admin/devices/:id — revoke a device
-  app.delete<{ Params: { id: string } }>('/admin/devices/:id', async (req, reply) => {
+  // DELETE /api/admin/devices/:id — revoke a device
+  const revokeAdminDeviceHandler = async (
+    req: FastifyRequest<{ Params: { id: string } }>,
+    reply: FastifyReply,
+  ) => {
     const { id } = req.params;
     const revoked = await pairingManager.revokeDevice(id);
     if (!revoked) {
@@ -675,22 +694,24 @@ async function main(): Promise<void> {
       return { error: 'device not found' };
     }
     return { revoked: true };
-  });
+  };
+  api.delete<{ Params: { id: string } }>('/admin/devices/:id', revokeAdminDeviceHandler);
 
   // ==========================================
   // ======== Slice 8: Web Admin APIs =========
 
-  // GET /admin/qr — adminToken required.
-  // 生成一次性 QR claim code，5min 过期，扫码端用 POST /pair/qr-claim 兑换 deviceToken。
-  app.get('/admin/qr', async (_req, _reply) => {
+  // GET /api/admin/qr — adminToken required.
+  // 生成一次性 QR claim code，5min 过期，扫码端用 POST /api/pair/qr-claim 兑换 deviceToken。
+  const adminQrHandler = async () => {
     const { code, expiresAt } = pairingManager.createQrClaim();
     const content = `pawterm://${advertisedHost()}:${settings.port}?claim=${code}`;
     const svg = await QRCode.toString(content, { type: 'svg' });
     return { content, svg, expiresAt };
-  });
+  };
+  api.get('/admin/qr', adminQrHandler);
 
-  // POST /pair/request — no auth
-  app.post<{ Body: { deviceId: string; deviceName: string } }>(
+  // POST /api/pair/request — no auth
+  api.post<{ Body: { deviceId: string; deviceName: string } }>(
     '/pair/request',
     async (req, reply) => {
       const { deviceId, deviceName } = req.body ?? {};
@@ -707,13 +728,13 @@ async function main(): Promise<void> {
       const requestId = result.request.requestId;
       return {
         requestId,
-        pollUrl: `/pair/poll/${requestId}`,
+        pollUrl: `/api/pair/poll/${requestId}`,
       };
     },
   );
 
-  // GET /pair/poll/:requestId — no auth, long-poll (up to 30s)
-  app.get<{ Params: { requestId: string } }>(
+  // GET /api/pair/poll/:requestId — no auth, long-poll (up to 30s)
+  api.get<{ Params: { requestId: string } }>(
     '/pair/poll/:requestId',
     async (req, reply) => {
       const { requestId } = req.params;
@@ -734,10 +755,11 @@ async function main(): Promise<void> {
     },
   );
 
-  // POST /admin/pair-approve — adminToken required
-  app.post<{ Body: { requestId: string } }>(
-    '/admin/pair-approve',
-    async (req, reply) => {
+  // POST /api/admin/pair-approve — adminToken required
+  const approvePairHandler = async (
+    req: FastifyRequest<{ Body: { requestId: string } }>,
+    reply: FastifyReply,
+  ) => {
       const { requestId } = req.body ?? {};
       if (!requestId) {
         reply.code(400);
@@ -750,13 +772,14 @@ async function main(): Promise<void> {
       }
       const pairReq = pairingManager.getRequest(requestId)!;
       return { ok: true, deviceId: pairReq.deviceId, name: pairReq.deviceName };
-    },
-  );
+  };
+  api.post<{ Body: { requestId: string } }>('/admin/pair-approve', approvePairHandler);
 
-  // POST /admin/pair-deny — adminToken required
-  app.post<{ Body: { requestId: string } }>(
-    '/admin/pair-deny',
-    async (req, reply) => {
+  // POST /api/admin/pair-deny — adminToken required
+  const denyPairHandler = async (
+    req: FastifyRequest<{ Body: { requestId: string } }>,
+    reply: FastifyReply,
+  ) => {
       const { requestId } = req.body ?? {};
       if (!requestId) {
         reply.code(400);
@@ -768,11 +791,11 @@ async function main(): Promise<void> {
         return { error: 'request not found or not pending' };
       }
       return { ok: true };
-    },
-  );
+  };
+  api.post<{ Body: { requestId: string } }>('/admin/pair-deny', denyPairHandler);
 
-  // GET /admin/events — SSE stream; admin auth via Bearer header.
-  app.get('/admin/events', async (req, reply) => {
+  // GET /api/admin/events — SSE stream; admin auth via Bearer header.
+  const adminEventsHandler = async (req: FastifyRequest, reply: FastifyReply) => {
     reply
       .raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -810,9 +833,21 @@ async function main(): Promise<void> {
 
     // Never resolve — Fastify will manage the raw response
     return reply;
+  };
+  api.get('/admin/events', adminEventsHandler);
+
+  }, { prefix: '/api' });
+
+  // WebSocket: shell
+  app.get('/ws/shell', { websocket: true }, (socket, req) => {
+    handleShellSocket(socket, req);
   });
 
-  // GET /admin — serve built web admin SPA; fallback placeholder when not built
+  app.get('/', async (_req, reply) => {
+    reply.redirect('/admin');
+  });
+
+  // GET /admin — serve built web admin SPA; fallback placeholder when not built.
   const packagedWebDist = resolve(__dirname, '..', 'dist-web');
   const repoWebDist = resolve(__dirname, '..', '..', 'web', 'dist');
   const webDist = existsSync(packagedWebDist) ? packagedWebDist : repoWebDist;
@@ -837,9 +872,9 @@ async function main(): Promise<void> {
     }
   };
 
-  app.get('/admin', async (_req, reply) => {
-    if (existsSync(resolve(webDist, 'admin.html'))) {
-      await serveStatic('admin.html', reply);
+  const serveIndex = async (reply: import('fastify').FastifyReply) => {
+    if (existsSync(resolve(webDist, 'index.html'))) {
+      await serveStatic('index.html', reply);
       return;
     }
     reply
@@ -847,13 +882,15 @@ async function main(): Promise<void> {
       .send(
         '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PawTerm Web Admin</title></head>' +
         '<body style="font-family:monospace;padding:2rem;background:#111;color:#eee">' +
-        '<h2>🐾 PawTerm Web Admin</h2>' +
+        '<h2>PawTerm Web Admin</h2>' +
         '<p>Web admin not built yet — run <code>pnpm --filter @pawterm/web build</code>.</p>' +
         '</body></html>',
       );
-  });
-  // Admin SPA assets (Vite emits hashed filenames under /admin/ and /assets/)
-  app.get<{ Params: { '*': string } }>('/admin/*', (req, reply) => serveStatic(join('admin', req.params['*']), reply));
+  };
+
+  app.get('/admin', async (_req, reply) => serveIndex(reply));
+  app.get<{ Params: { '*': string } }>('/admin/*', async (_req, reply) => serveIndex(reply));
+  // Vite emits hashed filenames under /assets/.
   app.get<{ Params: { '*': string } }>('/assets/*', (req, reply) => serveStatic(join('assets', req.params['*']), reply));
 
   // ==========================================

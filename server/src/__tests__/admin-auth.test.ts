@@ -70,4 +70,25 @@ describe('AdminAccessManager', () => {
     expect(auth.renewAccessToken(first.accessToken)).toBeNull();
     expect(auth.isAdminAccessToken(first.accessToken)).toBe(false);
   });
+
+  it('restores persisted admin access tokens after restart', () => {
+    let now = 1_000;
+    const firstProcess = new AdminAccessManager({
+      now: () => now,
+      accessTokenTtlMs: 5_000,
+      maxAccessTokenLifetimeMs: 20_000,
+    });
+    const login = firstProcess.createLoginCode();
+    const access = firstProcess.redeemLoginCode(login.loginCode)!;
+    const persisted = firstProcess.snapshotAccessTokens();
+
+    const restarted = new AdminAccessManager({
+      now: () => now,
+      initialAccessTokens: persisted,
+    });
+
+    expect(restarted.isAdminAccessToken(access.accessToken)).toBe(true);
+    now = access.expiresAt + 1;
+    expect(restarted.isAdminAccessToken(access.accessToken)).toBe(false);
+  });
 });

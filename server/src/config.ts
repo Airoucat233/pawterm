@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import type { Project, PermissionMode } from '@pawterm/shared';
+import type { StoredAdminAccessToken } from './admin-auth.js';
 import { hashAdminPassword } from './admin-password.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -36,6 +37,12 @@ export interface RawStoredDeviceConfig {
   last_seen: number | null;
 }
 
+export interface RawAdminAccessTokenConfig {
+  access_token: string;
+  expires_at: number;
+  max_expires_at: number;
+}
+
 /** JSON shape stored in config.json. Keys use snake_case on disk. */
 export interface RawServerConfig {
   host?: string;
@@ -53,6 +60,8 @@ export interface RawServerConfig {
   admin_password_set_at?: number;
   /** Stable server identity. Generated automatically when omitted. */
   server_id?: string;
+  /** Active Web Admin bearer tokens. Managed automatically. */
+  admin_access_tokens?: RawAdminAccessTokenConfig[];
   paired_devices?: RawStoredDeviceConfig[];
 }
 
@@ -67,6 +76,7 @@ export interface ServerSettings {
   adminToken: string;
   serverId: string;
   pairedDevices: StoredDevice[];
+  adminAccessTokens: StoredAdminAccessToken[];
   adminPasswordHash?: string;
   adminPasswordSetAt?: number;
   /** Legacy plaintext config key; accepted on read but never written. */
@@ -125,6 +135,7 @@ function loadConfig(): ServerSettings {
       adminToken,
       serverId,
       pairedDevices: [],
+      adminAccessTokens: [],
     };
   }
 
@@ -159,6 +170,14 @@ function loadConfig(): ServerSettings {
     lastSeen: d.last_seen,
   }));
 
+  const adminAccessTokens: StoredAdminAccessToken[] = (raw.admin_access_tokens ?? [])
+    .filter((t) => typeof t.access_token === 'string' && typeof t.expires_at === 'number' && typeof t.max_expires_at === 'number')
+    .map((t) => ({
+      accessToken: t.access_token,
+      expiresAt: t.expires_at,
+      maxExpiresAt: t.max_expires_at,
+    }));
+
   return {
     host: raw.host ?? '0.0.0.0',
     port: raw.port ?? 8765,
@@ -173,6 +192,7 @@ function loadConfig(): ServerSettings {
     adminToken,
     serverId,
     pairedDevices,
+    adminAccessTokens,
     adminPasswordHash: raw.admin_password_hash,
     adminPasswordSetAt: raw.admin_password_set_at,
     password: raw.password as string | undefined,
@@ -248,6 +268,21 @@ export async function persistPairedDevices(): Promise<void> {
       device_token: d.deviceToken,
       paired_at: d.pairedAt,
       last_seen: d.lastSeen,
+    }));
+  });
+}
+
+export async function persistAdminAccessTokens(tokens: StoredAdminAccessToken[]): Promise<void> {
+  settings.adminAccessTokens = tokens;
+  await writeConfigPreserving((c) => {
+    if (tokens.length === 0) {
+      delete c['admin_access_tokens'];
+      return;
+    }
+    c['admin_access_tokens'] = tokens.map((t) => ({
+      access_token: t.accessToken,
+      expires_at: t.expiresAt,
+      max_expires_at: t.maxExpiresAt,
     }));
   });
 }

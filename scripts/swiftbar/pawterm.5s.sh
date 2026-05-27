@@ -42,11 +42,11 @@ if [ -z "$HEALTH" ]; then
 fi
 
 DEVICES_JSON=$(/usr/bin/curl -sf --max-time 1 -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:$PORT/admin/devices" 2>/dev/null)
+  "http://127.0.0.1:$PORT/api/admin/devices" 2>/dev/null)
 DEVICE_COUNT=$(echo "$DEVICES_JSON" | /usr/bin/grep -c '"deviceId"' 2>/dev/null)
 DEVICE_COUNT="${DEVICE_COUNT:-0}"
 
-ADMIN_URL="http://127.0.0.1:$PORT/admin?token=$TOKEN"
+ADMIN_URL="http://127.0.0.1:$PORT/admin"
 
 if [ "$DEVICE_COUNT" -gt 0 ]; then
   echo "🐾 $DEVICE_COUNT"
@@ -58,6 +58,6 @@ echo "PawTerm — :$PORT | color=#7dd3fc"
 echo "$DEVICE_COUNT paired devices"
 echo "---"
 echo "Open admin… | href=$ADMIN_URL"
-echo "Show QR | href=$ADMIN_URL#qr"
+echo "Show QR | href=$ADMIN_URL"
 echo "---"
 echo "Refresh | refresh=true"

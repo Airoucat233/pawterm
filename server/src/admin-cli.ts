@@ -67,7 +67,7 @@ export async function runAdminCli(): Promise<void> {
 
   let loginCode: string;
   try {
-    const res = await fetch(`${base}/admin/login-codes`, {
+    const res = await fetch(`${base}/api/admin/login-codes`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${adminToken}`,

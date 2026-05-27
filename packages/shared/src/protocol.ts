@@ -90,21 +90,21 @@ export interface HealthResponse {
 
 // ============== Pairing ==============
 
-// POST /admin/pair-window — requires adminToken
+// POST /api/admin/pair-window — requires adminToken
 export interface PairWindowRequest {}
 export interface PairWindowResponse { pin: string; expiresAt: number }
 
-// POST /pair/start — no auth; PIN is the out-of-band credential
+// POST /api/pair/start — no auth; PIN is the out-of-band credential
 export interface PairStartRequest { deviceId: string; deviceName: string; pin: string }
 export type PairStartResponse =
   | { ok: true; deviceToken: string; serverId: string }
   | { ok: false; error: 'bad_pin' | 'pairing_closed' | 'rate_limited' };
 
-// POST /pair/qr-claim — no auth; QR claim is the credential
+// POST /api/pair/qr-claim — no auth; QR claim is the credential
 export interface PairQrClaimRequest { deviceId: string; deviceName: string }
 export interface PairQrClaimResponse { deviceToken: string; serverId: string }
 
-// GET /admin/devices — list; DELETE /admin/devices/:id — revoke; requires admin auth
+// GET /api/admin/devices — list; DELETE /api/admin/devices/:id — revoke; requires admin auth
 export interface PairedDevice {
   deviceId: string;
   name: string;
@@ -116,20 +116,20 @@ export interface AdminLoginCodeResponse { admin_login_code: string; expires_at: 
 export interface AdminAccessTokenResponse { admin_access_token: string; expires_at: number }
 export interface AdminPasswordRequest { password: string }
 
-// GET /admin/qr — requires admin auth
+// GET /api/admin/qr — requires admin auth
 export interface QrResponse { content: string; svg: string; expiresAt?: number }
 
-// POST /pair/request — no auth
+// POST /api/pair/request — no auth
 export interface PairRequestRequest { deviceId: string; deviceName: string }
 export interface PairRequestResponse { requestId: string; pollUrl: string }
 
-// GET /pair/poll/:requestId — no auth, long-poll
+// GET /api/pair/poll/:requestId — no auth, long-poll
 export type PairPollResponse =
   | { status: 'pending' }
   | { status: 'approved'; deviceToken: string; serverId: string }
   | { status: 'denied' | 'expired' };
 
-// GET /admin/events — SSE stream, requires admin Bearer auth
+// GET /api/admin/events — SSE stream, requires admin Bearer auth
 export type AdminEvent =
   | { type: 'pair_request'; requestId: string; deviceId: string; deviceName: string; ip: string; createdAt: number }
   | { type: 'device_paired'; deviceId: string; name: string }
@@ -214,9 +214,9 @@ export type ToolResultContent =
   | Array<{ type: 'text'; text: string } | { type: string; [k: string]: unknown }>
   | null;
 
-// ============== Chat REST: POST /chat/answer ==============
+// ============== Chat REST: POST /api/chat/answer ==============
 
-/** POST /chat/answer 请求 body */
+/** POST /api/chat/answer 请求 body */
 export interface AnswerQuestionRequest {
   uuid: string;
   tool_use_id: string;

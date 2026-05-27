@@ -61,7 +61,7 @@ async function main() {
     });
     const info = JSON.parse(pack.stdout)[0];
     const paths = new Set((info.files ?? []).map((f) => f.path));
-    for (const required of ['package.json', 'dist/index.js', 'dist-web/admin.html']) {
+    for (const required of ['package.json', 'dist/index.js', 'dist-web/index.html']) {
       if (!paths.has(required)) fail(`npm package is missing ${required}`);
     }
   } finally {

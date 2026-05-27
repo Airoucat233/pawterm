@@ -86,7 +86,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       final resp = await http
           .post(
             Uri.parse(
-                'http://${widget.server.host}:${widget.server.port}/pair/request'),
+                'http://${widget.server.host}:${widget.server.port}/api/pair/request'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'deviceId': deviceId,
@@ -96,12 +96,6 @@ class _PairSheetState extends ConsumerState<PairSheet> {
           .timeout(const Duration(seconds: 10));
 
       if (!mounted || _cancelled) return;
-
-      if (resp.statusCode == 404) {
-        // Old server — silently fall to PIN input
-        setState(() => _phase = _PairPhase.pinInput);
-        return;
-      }
 
       if (resp.statusCode != 200) {
         // Any other error — silently fall to PIN input
@@ -245,7 +239,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       final resp = await http
           .post(
             Uri.parse(
-                'http://${widget.server.host}:${widget.server.port}/pair/start'),
+                'http://${widget.server.host}:${widget.server.port}/api/pair/start'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'deviceId': deviceId,

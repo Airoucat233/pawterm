@@ -382,7 +382,7 @@ class ServerManager: ObservableObject {
 
     func requestPairWindow() async -> (pin: String, expiresAt: Int)? {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/pair-window") else { return nil }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/pair-window") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -397,7 +397,7 @@ class ServerManager: ObservableObject {
 
     func requestAdminLoginCode() async -> String? {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/login-codes") else { return nil }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/login-codes") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -529,7 +529,7 @@ class ServerManager: ObservableObject {
 
     private func runSSE() async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/events") else { return }
+              let url = URL(string: "http://127.0.0.1:\(config.port)/api/admin/events") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 86400
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -615,7 +615,7 @@ class ServerManager: ObservableObject {
 
     func approvePairRequest(requestId: String) async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/pair-approve") else { return }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/pair-approve") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -626,7 +626,7 @@ class ServerManager: ObservableObject {
 
     func denyPairRequest(requestId: String) async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/pair-deny") else { return }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/pair-deny") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -637,7 +637,7 @@ class ServerManager: ObservableObject {
 
     func revokeDevice(_ deviceId: String) async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/devices/\(deviceId)") else { return }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/devices/\(deviceId)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "DELETE"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -649,7 +649,7 @@ class ServerManager: ObservableObject {
 
     private func fetchPairedDevices() async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/devices") else { return }
+              let url = URL(string: "http://127.0.0.1:\(config.port)/api/admin/devices") else { return }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         guard let (data, _) = try? await URLSession.shared.data(for: req),

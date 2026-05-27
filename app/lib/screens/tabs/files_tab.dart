@@ -26,19 +26,46 @@ enum _PreviewType { text, markdown, image, pdf, none }
 
 _PreviewType _previewTypeFor(String name) {
   final lower = name.toLowerCase();
-  if (lower.endsWith('.md')) { return _PreviewType.markdown; }
-  if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') ||
-      lower.endsWith('.gif') || lower.endsWith('.webp')) { return _PreviewType.image; }
-  if (lower.endsWith('.pdf')) { return _PreviewType.pdf; }
-  if (lower.endsWith('.txt') || lower.endsWith('.log') || lower.endsWith('.json') ||
-      lower.endsWith('.yaml') || lower.endsWith('.yml') || lower.endsWith('.toml') ||
-      lower.endsWith('.ini') || lower.endsWith('.env') || lower.endsWith('.ts') ||
-      lower.endsWith('.tsx') || lower.endsWith('.js') || lower.endsWith('.jsx') ||
-      lower.endsWith('.dart') || lower.endsWith('.py') || lower.endsWith('.rs') ||
-      lower.endsWith('.go') || lower.endsWith('.java') || lower.endsWith('.kt') ||
-      lower.endsWith('.swift') || lower.endsWith('.c') || lower.endsWith('.cpp') ||
-      lower.endsWith('.h') || lower.endsWith('.sh') || lower.endsWith('.bash') ||
-      lower.endsWith('.css') || lower.endsWith('.html') || lower.endsWith('.xml') ||
+  if (lower.endsWith('.md')) {
+    return _PreviewType.markdown;
+  }
+  if (lower.endsWith('.png') ||
+      lower.endsWith('.jpg') ||
+      lower.endsWith('.jpeg') ||
+      lower.endsWith('.gif') ||
+      lower.endsWith('.webp')) {
+    return _PreviewType.image;
+  }
+  if (lower.endsWith('.pdf')) {
+    return _PreviewType.pdf;
+  }
+  if (lower.endsWith('.txt') ||
+      lower.endsWith('.log') ||
+      lower.endsWith('.json') ||
+      lower.endsWith('.yaml') ||
+      lower.endsWith('.yml') ||
+      lower.endsWith('.toml') ||
+      lower.endsWith('.ini') ||
+      lower.endsWith('.env') ||
+      lower.endsWith('.ts') ||
+      lower.endsWith('.tsx') ||
+      lower.endsWith('.js') ||
+      lower.endsWith('.jsx') ||
+      lower.endsWith('.dart') ||
+      lower.endsWith('.py') ||
+      lower.endsWith('.rs') ||
+      lower.endsWith('.go') ||
+      lower.endsWith('.java') ||
+      lower.endsWith('.kt') ||
+      lower.endsWith('.swift') ||
+      lower.endsWith('.c') ||
+      lower.endsWith('.cpp') ||
+      lower.endsWith('.h') ||
+      lower.endsWith('.sh') ||
+      lower.endsWith('.bash') ||
+      lower.endsWith('.css') ||
+      lower.endsWith('.html') ||
+      lower.endsWith('.xml') ||
       lower.endsWith('.svg')) {
     return _PreviewType.text;
   }
@@ -97,7 +124,7 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     });
 
     try {
-      final api = FilesApi(conn.httpBase, token: conn.token);
+      final api = FilesApi(conn.apiBase, token: conn.token);
       final listing = await api.ls(path);
       if (!mounted) return;
       _cache[listing.path] = listing;
@@ -196,13 +223,14 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     try {
       await destDir.create(recursive: true);
       final dest = File('${destDir.path}/${entry.name}');
-      final api = FilesApi(conn.httpBase, token: conn.token);
+      final api = FilesApi(conn.apiBase, token: conn.token);
       final file = await api.download(
         remotePath: entry.path,
         destFile: dest,
         cancelToken: cancelToken,
         onProgress: (recv, total) {
-          progressNotifier.value = _DownloadState(received: recv, total: total, done: false);
+          progressNotifier.value =
+              _DownloadState(received: recv, total: total, done: false);
         },
       );
       progressNotifier.value = _DownloadState(
@@ -231,7 +259,8 @@ class _FilesTabState extends ConsumerState<FilesTab> {
 
   Future<void> _doPreview(FsEntry entry) async {
     final tmpDir = await getTemporaryDirectory();
-    final file = await _downloadTo(entry, Directory('${tmpDir.path}/cc-previews'));
+    final file =
+        await _downloadTo(entry, Directory('${tmpDir.path}/cc-previews'));
     if (file == null || !mounted) return;
     await showModalBottomSheet<void>(
       context: context,
@@ -277,14 +306,16 @@ class _FilesTabState extends ConsumerState<FilesTab> {
           children: [
             Icon(Icons.check_circle_outline, color: t.success, size: 20),
             const SizedBox(width: 8),
-            Text('已保存到 Downloads', style: TextStyle(fontSize: 16, color: t.text)),
+            Text('已保存到 Downloads',
+                style: TextStyle(fontSize: 16, color: t.text)),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('路径（可长按复制）:', style: TextStyle(fontSize: 12, color: t.textMuted)),
+            Text('路径（可长按复制）:',
+                style: TextStyle(fontSize: 12, color: t.textMuted)),
             const SizedBox(height: 6),
             Container(
               width: double.infinity,
@@ -342,7 +373,8 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     if (file == null || !mounted) return;
     final result = await OpenFile.open(file.path);
     if (!mounted) return;
-    if (result.type != ResultType.done && result.type != ResultType.noAppToOpen) {
+    if (result.type != ResultType.done &&
+        result.type != ResultType.noAppToOpen) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('安装失败: ${result.message}')),
       );
@@ -367,7 +399,10 @@ class _FilesTabState extends ConsumerState<FilesTab> {
               Icon(Icons.folder_open, size: 40, color: t.textDim),
               const SizedBox(height: 12),
               Text(s.chatEmptyPickProject,
-                  style: TextStyle(fontSize: 14, color: t.textMuted, fontWeight: FontWeight.w500),
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: t.textMuted,
+                      fontWeight: FontWeight.w500),
                   textAlign: TextAlign.center),
             ],
           ),
@@ -396,7 +431,8 @@ class _FilesTabState extends ConsumerState<FilesTab> {
 
   Widget _body(AppTokens t, Strings s) {
     if (_loading && _entries.isEmpty) {
-      return Center(child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
+      return Center(
+          child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
     }
     if (_error != null) {
       return Center(
@@ -419,7 +455,8 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     }
     if (_entries.isEmpty) {
       return Center(
-        child: Text(s.filesEmpty, style: TextStyle(color: t.textDim, fontSize: 13)),
+        child: Text(s.filesEmpty,
+            style: TextStyle(color: t.textDim, fontSize: 13)),
       );
     }
     return RefreshIndicator(
@@ -522,7 +559,8 @@ class _PathBar extends StatelessWidget {
                     if (i < segs.length - 1)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 2),
-                        child: Icon(Icons.chevron_right, size: 12, color: t.textDim),
+                        child: Icon(Icons.chevron_right,
+                            size: 12, color: t.textDim),
                       ),
                   ],
                 ],
@@ -530,7 +568,8 @@ class _PathBar extends StatelessWidget {
             ),
           ),
           IconButton(
-            icon: Icon(Icons.refresh, size: 16, color: onRefresh == null ? t.textDim : t.textMuted),
+            icon: Icon(Icons.refresh,
+                size: 16, color: onRefresh == null ? t.textDim : t.textMuted),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             onPressed: onRefresh,
@@ -588,23 +627,55 @@ class _FsRow extends StatelessWidget {
 
   IconData _iconFor(String name) {
     final lower = name.toLowerCase();
-    if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') ||
-        lower.endsWith('.gif') || lower.endsWith('.webp')) { return Icons.image_outlined; }
-    if (lower.endsWith('.mp4') || lower.endsWith('.mov') ||
-        lower.endsWith('.webm')) { return Icons.movie_outlined; }
-    if (lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.m4a') ||
-        lower.endsWith('.flac')) { return Icons.audiotrack_outlined; }
-    if (lower.endsWith('.pdf')) { return Icons.picture_as_pdf_outlined; }
-    if (lower.endsWith('.zip') || lower.endsWith('.tar') || lower.endsWith('.gz') ||
-        lower.endsWith('.tgz')) { return Icons.folder_zip_outlined; }
-    if (lower.endsWith('.md') || lower.endsWith('.txt') ||
-        lower.endsWith('.log')) { return Icons.description_outlined; }
-    if (lower.endsWith('.ts') || lower.endsWith('.tsx') || lower.endsWith('.js') ||
-        lower.endsWith('.jsx') || lower.endsWith('.dart') || lower.endsWith('.py') ||
-        lower.endsWith('.rs') || lower.endsWith('.go') || lower.endsWith('.java') ||
-        lower.endsWith('.kt') || lower.endsWith('.swift') || lower.endsWith('.c') ||
-        lower.endsWith('.cpp') || lower.endsWith('.h') ||
-        lower.endsWith('.json')) { return Icons.code_outlined; }
+    if (lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.gif') ||
+        lower.endsWith('.webp')) {
+      return Icons.image_outlined;
+    }
+    if (lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.webm')) {
+      return Icons.movie_outlined;
+    }
+    if (lower.endsWith('.mp3') ||
+        lower.endsWith('.wav') ||
+        lower.endsWith('.m4a') ||
+        lower.endsWith('.flac')) {
+      return Icons.audiotrack_outlined;
+    }
+    if (lower.endsWith('.pdf')) {
+      return Icons.picture_as_pdf_outlined;
+    }
+    if (lower.endsWith('.zip') ||
+        lower.endsWith('.tar') ||
+        lower.endsWith('.gz') ||
+        lower.endsWith('.tgz')) {
+      return Icons.folder_zip_outlined;
+    }
+    if (lower.endsWith('.md') ||
+        lower.endsWith('.txt') ||
+        lower.endsWith('.log')) {
+      return Icons.description_outlined;
+    }
+    if (lower.endsWith('.ts') ||
+        lower.endsWith('.tsx') ||
+        lower.endsWith('.js') ||
+        lower.endsWith('.jsx') ||
+        lower.endsWith('.dart') ||
+        lower.endsWith('.py') ||
+        lower.endsWith('.rs') ||
+        lower.endsWith('.go') ||
+        lower.endsWith('.java') ||
+        lower.endsWith('.kt') ||
+        lower.endsWith('.swift') ||
+        lower.endsWith('.c') ||
+        lower.endsWith('.cpp') ||
+        lower.endsWith('.h') ||
+        lower.endsWith('.json')) {
+      return Icons.code_outlined;
+    }
     return Icons.insert_drive_file_outlined;
   }
 
@@ -636,7 +707,10 @@ class _FsRow extends StatelessWidget {
                     const SizedBox(height: 2),
                     Text(
                       '${formatBytes(entry.sizeBytes)} · ${_relativeTime(entry.modifiedMs)}',
-                      style: TextStyle(fontSize: 10.5, color: t.textDim, fontFamily: 'monospace'),
+                      style: TextStyle(
+                          fontSize: 10.5,
+                          color: t.textDim,
+                          fontFamily: 'monospace'),
                     ),
                   ],
                 ],
@@ -689,19 +763,24 @@ class _FileActionSheet extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
-                Icon(Icons.insert_drive_file_outlined, size: 18, color: t.textMuted),
+                Icon(Icons.insert_drive_file_outlined,
+                    size: 18, color: t.textMuted),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     entry.name,
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.text),
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: t.text),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 Text(
                   formatBytes(entry.sizeBytes),
-                  style: TextStyle(fontSize: 11, color: t.textDim, fontFamily: 'monospace'),
+                  style: TextStyle(
+                      fontSize: 11, color: t.textDim, fontFamily: 'monospace'),
                 ),
               ],
             ),
@@ -718,7 +797,9 @@ class _FileActionSheet extends ConsumerWidget {
               s.filesPreview,
               style: TextStyle(color: previewEnabled ? t.text : t.textDim),
             ),
-            onTap: previewEnabled ? () => Navigator.of(context).pop(_FileAction.preview) : null,
+            onTap: previewEnabled
+                ? () => Navigator.of(context).pop(_FileAction.preview)
+                : null,
           ),
           if (_isApk(entry.name))
             ListTile(
@@ -784,7 +865,10 @@ class _PreviewSheet extends StatelessWidget {
                 Expanded(
                   child: Text(
                     name,
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.text),
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: t.text),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -792,7 +876,8 @@ class _PreviewSheet extends StatelessWidget {
                 IconButton(
                   icon: Icon(Icons.close, size: 20, color: t.textMuted),
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                  constraints:
+                      const BoxConstraints(minWidth: 40, minHeight: 40),
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ],
@@ -863,10 +948,13 @@ class _TextPreviewState extends State<_TextPreview> {
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     if (_error != null) {
-      return Center(child: Text('$_error', style: TextStyle(color: t.error, fontSize: 12)));
+      return Center(
+          child:
+              Text('$_error', style: TextStyle(color: t.error, fontSize: 12)));
     }
     if (_content == null) {
-      return Center(child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
+      return Center(
+          child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
     }
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
@@ -909,10 +997,13 @@ class _MarkdownPreviewState extends State<_MarkdownPreview> {
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     if (_error != null) {
-      return Center(child: Text('$_error', style: TextStyle(color: t.error, fontSize: 12)));
+      return Center(
+          child:
+              Text('$_error', style: TextStyle(color: t.error, fontSize: 12)));
     }
     if (_content == null) {
-      return Center(child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
+      return Center(
+          child: CircularProgressIndicator(strokeWidth: 2, color: t.accent));
     }
     return Markdown(data: _content!, padding: const EdgeInsets.all(16));
   }
@@ -932,7 +1023,8 @@ class _PdfPreviewState extends State<_PdfPreview> {
   @override
   void initState() {
     super.initState();
-    _controller = PdfController(document: PdfDocument.openFile(widget.file.path));
+    _controller =
+        PdfController(document: PdfDocument.openFile(widget.file.path));
   }
 
   @override
@@ -953,7 +1045,8 @@ class _DownloadState {
   final int received;
   final int? total;
   final bool done;
-  const _DownloadState({required this.received, required this.total, required this.done});
+  const _DownloadState(
+      {required this.received, required this.total, required this.done});
 }
 
 class _DownloadProgressDialog extends StatelessWidget {
@@ -974,7 +1067,8 @@ class _DownloadProgressDialog extends StatelessWidget {
     return AlertDialog(
       backgroundColor: t.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: Text(s.filesDownloading, style: TextStyle(fontSize: 16, color: t.text)),
+      title: Text(s.filesDownloading,
+          style: TextStyle(fontSize: 16, color: t.text)),
       content: ValueListenableBuilder<_DownloadState>(
         valueListenable: progress,
         builder: (_, state, __) {
@@ -987,7 +1081,8 @@ class _DownloadProgressDialog extends StatelessWidget {
             children: [
               Text(
                 filename,
-                style: TextStyle(fontSize: 13, color: t.text, fontFamily: 'monospace'),
+                style: TextStyle(
+                    fontSize: 13, color: t.text, fontFamily: 'monospace'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -1001,7 +1096,8 @@ class _DownloadProgressDialog extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 '${formatBytes(state.received)}${state.total != null ? ' / ${formatBytes(state.total!)}' : ''}',
-                style: TextStyle(fontSize: 11, color: t.textDim, fontFamily: 'monospace'),
+                style: TextStyle(
+                    fontSize: 11, color: t.textDim, fontFamily: 'monospace'),
               ),
             ],
           );
@@ -1022,7 +1118,9 @@ class _DownloadProgressDialog extends StatelessWidget {
 String formatBytes(int n) {
   if (n < 1024) return '${n}B';
   if (n < 1024 * 1024) return '${(n / 1024).toStringAsFixed(1)}KB';
-  if (n < 1024 * 1024 * 1024) return '${(n / 1024 / 1024).toStringAsFixed(1)}MB';
+  if (n < 1024 * 1024 * 1024) {
+    return '${(n / 1024 / 1024).toStringAsFixed(1)}MB';
+  }
   return '${(n / 1024 / 1024 / 1024).toStringAsFixed(2)}GB';
 }
 
