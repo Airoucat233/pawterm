@@ -231,9 +231,11 @@ else
   echo
   if [[ $PRERELEASE -eq 1 ]]; then
     echo "▶ npm publish --tag prerelease --registry https://registry.npmjs.org"
+    cd "$SERVER_DIR"
     npm publish --tag prerelease --registry https://registry.npmjs.org
   else
     echo "▶ npm publish --registry https://registry.npmjs.org"
+    cd "$SERVER_DIR"
     npm publish --registry https://registry.npmjs.org
   fi
 fi
