@@ -8,6 +8,7 @@
     "dev:server": "pnpm --filter pawterm-server run dev",
     "dev:server:test": "pnpm --filter pawterm-server run dev:test",
     "dev:web": "pnpm --filter @pawterm/web run dev",
+    "dev:android": "node scripts/dev-android.cjs",
     "build": "pnpm run build:server",
     "build:all": "pnpm run build:server && pnpm run build:app && pnpm run build:mac",
     "build:app": "cd app && zsh scripts/build-apk.sh --dev",

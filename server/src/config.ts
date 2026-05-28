@@ -287,32 +287,40 @@ export async function persistAdminAccessTokens(tokens: StoredAdminAccessToken[])
   });
 }
 
+let configWriteQueue = Promise.resolve();
+
 /**
  * 读盘 → 修改 → 写盘，磁盘异常（不存在 / 空文件 / JSON 损坏）时回退到 `{}` 并
  * 用内存中的 `settings` 重建 token / server_id / host / port 等关键字段，
  * 防止一次 writeFile 半成品状态把整份配置带崩。
  *
- * NB: 这里没加跨调用的串行保护，若并发 persist 仍可能丢更新；那是另一个修。
+ * 所有 config 写入必须串行化。项目添加、设备 last_seen、admin token 续期可能
+ * 在同一轮请求里相邻发生；如果并发读旧文件再写回，后写者会覆盖前写者的字段。
  */
 async function writeConfigPreserving(
   mutator: (current: Record<string, unknown>) => void,
 ): Promise<void> {
-  let current: Record<string, unknown> = {};
-  if (existsSync(configPath)) {
-    try {
-      const text = readFileSync(configPath, 'utf-8').trim();
-      if (text) current = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      // 文件被写到一半 / 被外部破坏 —— 用 settings 重建，下面会补关键字段。
-      current = {};
+  const write = async () => {
+    let current: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try {
+        const text = readFileSync(configPath, 'utf-8').trim();
+        if (text) current = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        // 文件被写到一半 / 被外部破坏 —— 用 settings 重建，下面会补关键字段。
+        current = {};
+      }
     }
-  }
-  if (current['host'] === undefined) current['host'] = settings.host;
-  if (current['port'] === undefined) current['port'] = settings.port;
-  if (current['token'] === undefined) current['token'] = settings.adminToken;
-  if (current['server_id'] === undefined) current['server_id'] = settings.serverId;
-  mutator(current);
-  await writeFile(configPath, JSON.stringify(current, null, 2));
+    if (current['host'] === undefined) current['host'] = settings.host;
+    if (current['port'] === undefined) current['port'] = settings.port;
+    if (current['token'] === undefined) current['token'] = settings.adminToken;
+    if (current['server_id'] === undefined) current['server_id'] = settings.serverId;
+    mutator(current);
+    await writeFile(configPath, JSON.stringify(current, null, 2));
+  };
+  const run = configWriteQueue.then(write, write);
+  configWriteQueue = run.catch(() => {});
+  await run;
 }
 
 /** Returns true if `target` is inside any whitelisted project root. */

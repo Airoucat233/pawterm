@@ -2,10 +2,12 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import websocketPlugin from '@fastify/websocket';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import { execFile } from 'node:child_process';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 
@@ -15,6 +17,7 @@ import type { AgentsResponse, HealthResponse, Project, PairedDevice, ModelsRespo
 
 import { AdminAccessManager } from './admin-auth.js';
 import { verifyAdminPassword } from './admin-password.js';
+import { parseAgentQuery } from './agents/http-helpers.js';
 import { defaultAgentRegistry } from './agents/registry.js';
 import { registerChatRest } from './chat-rest.js';
 import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices, persistAdminAccessTokens } from './config.js';
@@ -37,6 +40,8 @@ const adminAccessManager = new AdminAccessManager({
   initialAccessTokens: settings.adminAccessTokens,
 });
 
+const execFileAsync = promisify(execFile);
+
 // Extract a short human label from a model ID, falling back to the provided default.
 // e.g. "global.anthropic.claude-sonnet-4-6" → "Sonnet 4.6"
 //      "anthropic.claude-opus-4-7-20260101" → "Opus 4.7"
@@ -44,6 +49,77 @@ function _modelLabel(id: string, fallback: string): string {
   const m = id.match(/claude-(opus|sonnet|haiku)[-.](\d+[-.]?\d*)/i);
   if (m) return `${m[1].charAt(0).toUpperCase()}${m[1].slice(1)} ${m[2].replace(/-/g, '.')}`;
   return fallback;
+}
+
+type CodexDebugModel = {
+  slug?: unknown;
+  display_name?: unknown;
+  description?: unknown;
+  visibility?: unknown;
+};
+
+function _codexModelTier(id: string): ModelInfo['tier'] {
+  if (id.includes('mini')) return 'cheap';
+  if (id.includes('codex')) return 'coding';
+  if (id === 'gpt-5.5') return 'powerful';
+  return 'fast';
+}
+
+function _codexFallbackModels(): ModelInfo[] {
+  return [
+    {
+      id: 'gpt-5.5',
+      label: 'gpt-5.5',
+      tier: 'powerful',
+      description: 'Frontier model for complex coding, research, and real-world work.',
+    },
+    {
+      id: 'gpt-5.4',
+      label: 'gpt-5.4',
+      tier: 'fast',
+      description: 'Strong model for everyday coding.',
+    },
+    {
+      id: 'gpt-5.4-mini',
+      label: 'gpt-5.4-mini',
+      tier: 'cheap',
+      description: 'Small, fast, and cost-efficient model for simpler coding tasks.',
+    },
+    {
+      id: 'gpt-5.3-codex',
+      label: 'gpt-5.3-codex',
+      tier: 'coding',
+      description: 'Coding-optimized model.',
+    },
+    {
+      id: 'gpt-5.2',
+      label: 'gpt-5.2',
+      tier: 'fast',
+      description: 'Optimized for professional work and long-running agents.',
+    },
+  ];
+}
+
+async function _codexModelsFromCli(): Promise<ModelInfo[]> {
+  const { stdout } = await execFileAsync('codex', ['debug', 'models'], {
+    timeout: 2000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const parsed = JSON.parse(stdout) as { models?: CodexDebugModel[] };
+  const models = (parsed.models ?? [])
+    .filter((m) => m.visibility === 'list' && typeof m.slug === 'string')
+    .map((m): ModelInfo => {
+      const id = String(m.slug);
+      return {
+        id,
+        label: id,
+        tier: _codexModelTier(id),
+        ...(typeof m.description === 'string' && m.description.trim()
+          ? { description: m.description.trim() }
+          : {}),
+      };
+    });
+  return models.length > 0 ? models : _codexFallbackModels();
 }
 
 function isValidPassword(pw: string): boolean {
@@ -312,8 +388,29 @@ async function main(): Promise<void> {
   });
   api.get('/agents', agentsHandler);
 
-  // REST: models — reads ~/.claude/settings.json to detect provider + available models
-  api.get('/models', async (): Promise<ModelsResponse> => {
+  // REST: models — agent-aware model candidates for the mobile/web picker.
+  api.get<{ Querystring: { agent?: string } }>('/models', async (req): Promise<ModelsResponse> => {
+    const agent = parseAgentQuery(req.query.agent);
+    if (agent === 'codex') {
+      const codexConfig = (() => {
+        try {
+          return readFileSync(join(homedir(), '.codex', 'config.toml'), 'utf-8');
+        } catch {
+          return '';
+        }
+      })();
+      const configuredModel = codexConfig.match(/^\s*model\s*=\s*["']([^"']+)["']/m)?.[1]?.trim() ?? '';
+      const codexModels = await _codexModelsFromCli().catch(() => _codexFallbackModels());
+      const models = configuredModel && !codexModels.some((m) => m.id === configuredModel)
+        ? [{ id: configuredModel, label: configuredModel, tier: 'default' as const }, ...codexModels]
+        : codexModels;
+      return {
+        provider: 'openai',
+        current: configuredModel || models[0]?.id || '',
+        models,
+      };
+    }
+
     const claudeSettings = (() => {
       try {
         return JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8'));

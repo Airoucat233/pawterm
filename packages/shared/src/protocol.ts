@@ -159,13 +159,14 @@ export const KNOWN_MODELS = [
 
 // ============== Models ==============
 
-export type ModelTier = 'fast' | 'powerful' | 'cheap';
-export type ModelProvider = 'anthropic' | 'bedrock' | 'vertex' | 'unknown';
+export type ModelTier = 'fast' | 'powerful' | 'cheap' | 'coding' | 'default';
+export type ModelProvider = 'anthropic' | 'bedrock' | 'vertex' | 'openai' | 'unknown';
 
 export interface ModelInfo {
   id: string;
   label: string;
   tier: ModelTier;
+  description?: string;
 }
 
 export interface ModelsResponse {

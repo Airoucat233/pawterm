@@ -34,7 +34,6 @@ interface RunEntry {
 
 /** Key = `${agent}:${uuid}`. Only present during an active turn. */
 const activeRuns = new Map<string, RunEntry>();
-const sessionAliases = new Map<string, string>();
 const GRACE_MS = 60_000;
 const HEARTBEAT_MS = 15_000;
 
@@ -112,10 +111,52 @@ function maybeSetPendingToolUseId(wire: ReturnType<typeof messageToWire>, regist
   }
 }
 
-function runMessagesToWire(agent: AgentKind, msg: unknown): Array<ReturnType<typeof messageToWire>> {
-  if (agent === 'claude') return [messageToWire(msg)];
+type WireWithId = {
+  wire: ReturnType<typeof messageToWire>;
+  uuid: string | null;
+};
+
+export function runMessagesToWire(agent: AgentKind, msg: unknown): WireWithId[] {
+  const fromClaude = messageToWire(msg);
+  if (agent === 'claude') {
+    return fromClaude ? [{ wire: fromClaude, uuid: (msg as { uuid?: string }).uuid ?? null }] : [];
+  }
   if (agent === 'codex') {
     const notification = msg as { method?: string; params?: any };
+    if (notification.method === 'item/agentMessage/delta') {
+      const delta = notification.params?.delta;
+      if (typeof delta !== 'string' || delta.length === 0) return [];
+      return [{
+        wire: {
+          type: 'stream_delta',
+          index: 0,
+          kind: 'text',
+          text: delta,
+        },
+        uuid: null,
+      }];
+    }
+    if (notification.method === 'turn/completed') {
+      const turn = notification.params?.turn ?? {};
+      return [{
+        wire: {
+          type: 'result',
+          duration_ms: turn.durationMs ?? undefined,
+          is_error: turn.status === 'failed',
+          session_id: notification.params?.threadId,
+        },
+        uuid: typeof turn.id === 'string' ? turn.id : null,
+      }];
+    }
+    if (notification.method === 'error') {
+      return [{
+        wire: {
+          type: 'error',
+          message: String(notification.params?.error?.message ?? notification.params?.error ?? 'Codex error'),
+        },
+        uuid: null,
+      }];
+    }
     const items = Array.isArray(notification.params?.turn?.items)
       ? notification.params.turn.items
       : notification.params?.item
@@ -124,11 +165,33 @@ function runMessagesToWire(agent: AgentKind, msg: unknown): Array<ReturnType<typ
     return items
       .map((item: unknown) => {
         const wire = codexThreadItemToWire(item as Record<string, unknown>);
-        return wire ? { ...wire, native_event: notification.method, raw_payload: notification } : null;
+        if (!wire) return null;
+        const itemId = (item as { id?: unknown }).id;
+        return {
+          wire: { ...wire, native_event: notification.method, raw_payload: notification },
+          uuid: typeof itemId === 'string' ? itemId : null,
+        };
       })
       .filter(Boolean);
   }
   return [];
+}
+
+function shouldLogWireMessage(wire: ReturnType<typeof messageToWire>): boolean {
+  if (!wire || typeof wire !== 'object') return false;
+  const type = (wire as { type?: string }).type;
+  return type !== 'stream_delta' && type !== 'stream_block_start' && type !== 'stream_block_stop';
+}
+
+function wireForLog(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(wireForLog);
+  if (!value || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'raw_payload') continue;
+    out[key] = wireForLog(item);
+  }
+  return out;
 }
 
 async function consumeRun(agent: AgentKind, key: string, uuid: string, entry: RunEntry, log: FastifyInstance['log']): Promise<void> {
@@ -137,15 +200,22 @@ async function consumeRun(agent: AgentKind, key: string, uuid: string, entry: Ru
     if (!iter) throw new Error('run has no event source');
     for await (const sdkMsg of iter) {
       const wires = runMessagesToWire(agent, sdkMsg);
-      for (const wire of wires) {
-        if (!wire) continue;
+      for (const { wire, uuid: wireUuid } of wires) {
         const stamped = {
           ...wire,
           agent,
           session_ref: { agent, id: entry.sessionId },
           timestamp: Date.now(),
-          uuid: (sdkMsg as any).uuid ?? null,
+          uuid: wireUuid,
         };
+        if (shouldLogWireMessage(wire)) {
+          log.info({
+            uuid,
+            agent,
+            sessionId: entry.sessionId,
+            message: wireForLog(stamped),
+          }, 'run: message');
+        }
         maybeSetPendingToolUseId(wire, entry.askRegistry);
         broadcast(entry, (wire as { type: string }).type, stamped);
         if ((wire as { type: string }).type === 'result') {
@@ -220,9 +290,9 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         reply.code(400);
         return { error: (err as Error).message };
       }
-      const key = runKey(runtime.agent, uuid);
       const provider = defaultAgentRegistry.resolve(runtime.agent);
-      const providerSessionId = sessionAliases.get(key) ?? uuid;
+      const key = runKey(runtime.agent, uuid);
+      const providerSessionId = uuid;
 
       if (activeRuns.has(key)) {
         const existing = activeRuns.get(key)!;
@@ -290,10 +360,19 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         deviceId,
       });
       const actualSessionId = run.sessionId ?? providerSessionId;
-      sessionAliases.set(key, actualSessionId);
+      const actualKey = runKey(runtime.agent, actualSessionId);
+      if (actualKey !== key && activeRuns.has(actualKey)) {
+        const existing = activeRuns.get(actualKey)!;
+        if (!existing.resultReceived) {
+          req.log.warn({ uuid, actualSessionId, agent: runtime.agent }, 'run: 409 — actual run still active');
+          reply.code(409);
+          return { error: 'run already active for this session' };
+        }
+        closeRun(actualKey, req.log);
+      }
       const entry: RunEntry = {
         agent: runtime.agent,
-        uuid,
+        uuid: actualSessionId,
         sessionId: actualSessionId,
         run,
         buffer: new EventBuffer(2000),
@@ -302,10 +381,10 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         resultReceived: false,
         holderDeviceId: deviceId,
       };
-      activeRuns.set(key, entry);
-      req.log.info({ uuid, agent: runtime.agent, cwd }, 'run: created');
-      consumeRun(runtime.agent, key, uuid, entry, req.log).catch(() => {});
-      return { ok: true };
+      activeRuns.set(actualKey, entry);
+      req.log.info({ uuid: actualSessionId, requestedUuid: uuid, agent: runtime.agent, cwd }, 'run: created');
+      consumeRun(runtime.agent, actualKey, actualSessionId, entry, req.log).catch(() => {});
+      return { ok: true, session_id: actualSessionId };
     },
   );
 

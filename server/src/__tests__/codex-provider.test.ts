@@ -20,17 +20,24 @@ class FakeCodexClient {
         ],
       };
     }
-    if (method === 'thread/turns/items/list') {
+    if (method === 'thread/read') {
       return {
-        data: [{ type: 'agentMessage', id: 'msg_1', text: 'hello' }],
-        nextCursor: null,
+        thread: {
+          turns: [
+            {
+              id: 'turn-1',
+              completedAt: 10,
+              items: [{ type: 'agentMessage', id: 'msg_1', text: 'hello' }],
+            },
+          ],
+        },
       };
     }
     if (method === 'thread/resume') throw new Error('not found');
     if (method === 'thread/start') return { thread: { id: 'new-thread' } };
     if (method === 'turn/start') {
       this.handlersAtTurnStart = this.handlers.size;
-      return {};
+      return { turn: { id: 'turn-1' } };
     }
     return {};
   }
@@ -112,5 +119,24 @@ describe('CodexAgentProvider', () => {
     ]);
     expect(client.handlersAtTurnStart).toBe(1);
     expect(run.sessionId).toBe('new-thread');
+  });
+
+  it('interrupts the active turn with threadId and turnId', async () => {
+    const client = new FakeCodexClient();
+    const provider = providerWith(client);
+
+    const run = await provider.startTurn({
+      cwd: '/repo',
+      sessionId: 'thread-1',
+      text: 'hello',
+      runtime: { agent: 'codex', sandbox: 'workspace-write', approval_policy: 'on-request' },
+      deviceId: 'phone',
+    });
+    await run.interrupt();
+
+    expect(client.requests.at(-1)).toEqual({
+      method: 'turn/interrupt',
+      params: { threadId: 'new-thread', turnId: 'turn-1' },
+    });
   });
 });

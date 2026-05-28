@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/agents_api.dart';
 import '../api/chat_api.dart';
@@ -119,6 +120,65 @@ class CurrentSession {
 
 final currentSessionProvider = StateProvider<CurrentSession?>((ref) => null);
 
+final projectAgentRuntimeProvider = StateNotifierProvider<
+    ProjectAgentRuntimeNotifier, Map<String, Map<String, dynamic>>>(
+  (ref) => ProjectAgentRuntimeNotifier(),
+);
+
+class ProjectAgentRuntimeNotifier
+    extends StateNotifier<Map<String, Map<String, dynamic>>> {
+  ProjectAgentRuntimeNotifier() : super(const {}) {
+    _load();
+  }
+
+  static const _key = 'project_agent_runtime_v1';
+  bool _dirtyBeforeLoad = false;
+  bool _loaded = false;
+
+  static String _runtimeKey(String cwd, AgentKind agent) =>
+      '${agent.wire}|$cwd';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_key);
+    if (raw == null) {
+      _loaded = true;
+      return;
+    }
+    final decoded = jsonDecode(raw) as Map<String, dynamic>;
+    final loaded = decoded.map((k, v) {
+      final runtime =
+          v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
+      return MapEntry(k, runtime);
+    });
+    state = _dirtyBeforeLoad ? {...loaded, ...state} : loaded;
+    _loaded = true;
+  }
+
+  Map<String, dynamic> runtimeFor(String cwd, AgentKind agent) {
+    final saved = state[_runtimeKey(cwd, agent)] ?? const <String, dynamic>{};
+    return {
+      ...CurrentSession.defaultRuntimeForAgent(agent),
+      ...saved,
+      'agent': agent.wire,
+    };
+  }
+
+  Future<void> setRuntime(
+      String cwd, AgentKind agent, Map<String, dynamic> runtime) async {
+    if (!_loaded) _dirtyBeforeLoad = true;
+    final key = _runtimeKey(cwd, agent);
+    final next = {
+      ...CurrentSession.defaultRuntimeForAgent(agent),
+      ...runtime,
+      'agent': agent.wire,
+    };
+    state = {...state, key: next};
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, jsonEncode(state));
+  }
+}
+
 class ModelOption {
   final String id;
   final String label;
@@ -130,11 +190,14 @@ class ModelOption {
         m.id,
         m.label,
         m.tier,
-        switch (m.tier) {
-          'powerful' => '深度推理',
-          'cheap' => '轻量快速',
-          _ => '日常推荐',
-        },
+        m.description?.trim().isNotEmpty == true
+            ? m.description!.trim()
+            : switch (m.tier) {
+                'powerful' => '深度推理',
+                'cheap' => '轻量快速',
+                'coding' => 'Codex 优化',
+                _ => '日常推荐',
+              },
       );
 
   static ModelOption custom(String id) => ModelOption(

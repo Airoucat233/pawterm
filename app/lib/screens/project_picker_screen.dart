@@ -198,11 +198,43 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   void _enterProject(Project project) {
     final agent =
         ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
+    _showNewChatSheet(context, project, agent);
+  }
+
+  void _enterProjectWithAgent(Project project, AgentKind agent) {
     ref.read(selectedProjectProvider.notifier).state = project;
-    ref.read(currentSessionProvider.notifier).state =
-        CurrentSession(cwd: project.path, label: project.name, agent: agent);
+    final runtime = ref
+        .read(projectAgentRuntimeProvider.notifier)
+        .runtimeFor(project.path, agent);
+    ref.read(currentSessionProvider.notifier).state = CurrentSession(
+      cwd: project.path,
+      label: project.name,
+      agent: agent,
+      runtime: runtime,
+    );
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),
+    );
+  }
+
+  void _showNewChatSheet(
+      BuildContext context, Project project, AgentKind agent) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => _NewChatSheet(
+        project: project,
+        agent: agent,
+        onStart: () {
+          Navigator.of(sheetContext).pop();
+          _enterProjectWithAgent(project, agent);
+        },
+        onChangeAgent: () {
+          Navigator.of(sheetContext).pop();
+          _showAgentPicker(context, project);
+        },
+      ),
     );
   }
 
@@ -213,6 +245,9 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       label: '${project.name} · ${session.displayTitle}',
       resumeId: session.sessionId,
       agent: session.agent,
+      runtime: ref
+          .read(projectAgentRuntimeProvider.notifier)
+          .runtimeFor(project.path, session.agent),
     );
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),
@@ -769,12 +804,11 @@ class _ProjectList extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.only(bottom: 10, left: 2),
           child: Text(
-            'PROJECTS',
+            '项目',
             style: TextStyle(
-              fontSize: 10.5,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
               color: t.textDim,
-              letterSpacing: 0.7,
             ),
           ),
         ),
@@ -853,7 +887,9 @@ class _SlidableProjectCard extends StatelessWidget {
   }
 }
 
-class _ProjectCard extends ConsumerWidget {
+enum _SessionFilter { all, claude, codex }
+
+class _ProjectCard extends ConsumerStatefulWidget {
   final Project project;
   final bool isExpanded;
   final VoidCallback onToggle;
@@ -873,8 +909,17 @@ class _ProjectCard extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ProjectCard> createState() => _ProjectCardState();
+}
+
+class _ProjectCardState extends ConsumerState<_ProjectCard> {
+  _SessionFilter _filter = _SessionFilter.all;
+
+  @override
+  Widget build(BuildContext context) {
     final t = AppTokens.of(context);
+    final project = widget.project;
+    final isExpanded = widget.isExpanded;
     final defaultAgent = ref.watch(projectDefaultAgentProvider)[project.path] ??
         AgentKind.claude;
     final sessionsAsync =
@@ -894,7 +939,7 @@ class _ProjectCard extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           InkWell(
-            onTap: onToggle,
+            onTap: widget.onToggle,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
               child: Row(
@@ -967,34 +1012,20 @@ class _ProjectCard extends ConsumerWidget {
           if (isExpanded) ...[
             Divider(
                 color: t.borderSubt, height: 0.5, indent: 14, endIndent: 14),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-              child: _AgentProjectCard(
-                agent: defaultAgent,
-                onTap: onPickAgent,
-              ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(14, 12, 14, 0),
+              child: _SectionLabel('当前 Agent'),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _ActionChip(
-                      icon: Icons.add_comment_outlined,
-                      label: '新对话',
-                      primary: true,
-                      onTap: onNewSession,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  _IconAction(
-                    icon: Icons.delete_outline,
-                    color: t.error,
-                    tooltip: '从列表移除',
-                    onTap: onDelete,
-                  ),
-                ],
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+              child: _AgentProjectCard(
+                agent: defaultAgent,
+                onTap: widget.onPickAgent,
               ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(14, 10, 14, 0),
+              child: _SectionLabel('会话'),
             ),
             if (sessionsAsync != null)
               sessionsAsync.when(
@@ -1015,36 +1046,64 @@ class _ProjectCard extends ConsumerWidget {
                     style: TextStyle(fontSize: 11, color: t.error),
                   ),
                 ),
-                data: (sessions) => sessions.isEmpty
-                    ? Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
-                        child: Text(
-                          '暂无历史 session',
-                          style: TextStyle(fontSize: 12, color: t.textDim),
-                        ),
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
-                            child: Text(
-                              '历史 SESSION',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: t.textDim,
-                                letterSpacing: 0.5,
+                data: (sessions) {
+                  final filtered = sessions.where((s) {
+                    return switch (_filter) {
+                      _SessionFilter.all => true,
+                      _SessionFilter.claude => s.agent == AgentKind.claude,
+                      _SessionFilter.codex => s.agent == AgentKind.codex,
+                    };
+                  }).toList();
+                  return sessions.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
+                          child: Text(
+                            '暂无历史会话',
+                            style: TextStyle(fontSize: 12, color: t.textDim),
+                          ),
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+                              child: _SessionFilterBar(
+                                selected: _filter,
+                                onChanged: (next) =>
+                                    setState(() => _filter = next),
                               ),
                             ),
-                          ),
-                          for (final s in sessions)
-                            _SessionRow(
-                                session: s, onTap: () => onPickSession(s)),
-                          const SizedBox(height: 6),
-                        ],
-                      ),
+                            _SessionListViewport(
+                              sessions: filtered,
+                              emptyText: '这个 Agent 暂无历史会话',
+                              onPickSession: widget.onPickSession,
+                            ),
+                          ],
+                        );
+                },
               ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 6, 14, 14),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _ActionChip(
+                      icon: Icons.add_comment_outlined,
+                      label: '新会话',
+                      primary: true,
+                      onTap: widget.onNewSession,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _IconAction(
+                    icon: Icons.delete_outline,
+                    color: t.error,
+                    tooltip: '从列表移除',
+                    onTap: widget.onDelete,
+                  ),
+                ],
+              ),
+            ),
           ],
         ],
       ),
@@ -1129,8 +1188,160 @@ class _SessionRow extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, size: 16, color: t.textDim),
+            const SizedBox(width: 8),
+            AgentBadge(agent: session.agent, compact: true),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionListViewport extends StatelessWidget {
+  final List<SessionSummary> sessions;
+  final String emptyText;
+  final void Function(SessionSummary) onPickSession;
+
+  const _SessionListViewport({
+    required this.sessions,
+    required this.emptyText,
+    required this.onPickSession,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final maxHeight = (MediaQuery.sizeOf(context).height * 0.32)
+        .clamp(148.0, 260.0)
+        .toDouble();
+
+    if (sessions.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+        child: Text(
+          emptyText,
+          style: TextStyle(fontSize: 12, color: t.textDim),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 2, 0, 6),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        child: Scrollbar(
+          thumbVisibility: sessions.length > 4,
+          thickness: 2.5,
+          radius: const Radius.circular(2),
+          child: ListView.builder(
+            padding: EdgeInsets.zero,
+            shrinkWrap: true,
+            itemCount: sessions.length,
+            itemBuilder: (context, index) {
+              final session = sessions[index];
+              return _SessionRow(
+                session: session,
+                onTap: () => onPickSession(session),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Text(
+      text,
+      style: TextStyle(
+        fontSize: 12,
+        color: t.textDim,
+        fontWeight: FontWeight.w700,
+      ),
+    );
+  }
+}
+
+class _SessionFilterBar extends StatelessWidget {
+  final _SessionFilter selected;
+  final ValueChanged<_SessionFilter> onChanged;
+  const _SessionFilterBar({required this.selected, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      height: 34,
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: t.borderSubt, width: 0.5),
+      ),
+      padding: const EdgeInsets.all(3),
+      child: Row(
+        children: [
+          _FilterSegment(
+            label: '全部',
+            selected: selected == _SessionFilter.all,
+            onTap: () => onChanged(_SessionFilter.all),
+          ),
+          _FilterSegment(
+            label: 'Claude',
+            selected: selected == _SessionFilter.claude,
+            onTap: () => onChanged(_SessionFilter.claude),
+          ),
+          _FilterSegment(
+            label: 'Codex',
+            selected: selected == _SessionFilter.codex,
+            onTap: () => onChanged(_SessionFilter.codex),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FilterSegment extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _FilterSegment({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(7),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? t.surface : Colors.transparent,
+            borderRadius: BorderRadius.circular(7),
+            border:
+                selected ? Border.all(color: t.borderSubt, width: 0.5) : null,
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? t.text : t.textMuted,
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
         ),
       ),
     );
@@ -1147,34 +1358,259 @@ class _AgentProjectCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final desc = switch (agent) {
-      AgentKind.claude => 'Claude 历史与权限模式',
-      AgentKind.codex => 'Codex sandbox 与审批流',
-      AgentKind.gemini => 'Gemini Provider 预留',
+      AgentKind.claude => 'Sonnet · acceptEdits · Claude 权限模式',
+      AgentKind.codex => 'GPT · workspace-write · 高风险命令前询问',
+      AgentKind.gemini => 'Provider 预留 · 后续可接入 Gemini CLI',
     };
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(10),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
         decoration: BoxDecoration(
           color: t.surfaceHi,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(10),
           border: Border.all(color: t.borderSubt, width: 0.5),
         ),
         child: Row(
           children: [
-            AgentBadge(agent: agent, compact: true),
-            const SizedBox(width: 10),
+            AgentBadge(agent: agent),
+            const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                desc,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: t.textMuted, fontSize: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _agentLabel(agent),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: t.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    desc,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: t.textMuted, fontSize: 12),
+                  ),
+                ],
               ),
             ),
-            Icon(Icons.tune_rounded, size: 16, color: t.textDim),
+            Icon(Icons.chevron_right, size: 18, color: t.textDim),
           ],
+        ),
+      ),
+    );
+  }
+
+  String _agentLabel(AgentKind agent) => switch (agent) {
+        AgentKind.claude => 'Claude Code',
+        AgentKind.codex => 'Codex',
+        AgentKind.gemini => 'Gemini CLI',
+      };
+}
+
+class _NewChatSheet extends StatelessWidget {
+  final Project project;
+  final AgentKind agent;
+  final VoidCallback onStart;
+  final VoidCallback onChangeAgent;
+
+  const _NewChatSheet({
+    required this.project,
+    required this.agent,
+    required this.onStart,
+    required this.onChangeAgent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 18),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+          border: Border(top: BorderSide(color: t.border, width: 0.5)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 42,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: t.border,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ),
+            Text(
+              '开始新会话',
+              style: TextStyle(
+                color: t.text,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: t.surfaceHi,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: t.borderSubt, width: 0.5),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    project.name,
+                    style: TextStyle(
+                      color: t.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    project.path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: t.textDim,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: t.surfaceHi,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: t.borderSubt, width: 0.5),
+              ),
+              child: Row(
+                children: [
+                  AgentBadge(agent: agent),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              _agentLabel(agent),
+                              style: TextStyle(
+                                color: t.text,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const _MiniBadge('项目默认'),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _runtimeText(agent),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: t.textMuted, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: FilledButton(
+                onPressed: onStart,
+                style: FilledButton.styleFrom(
+                  backgroundColor: t.accent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text('用当前 Agent 开始'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 44,
+              child: OutlinedButton(
+                onPressed: onChangeAgent,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: t.text,
+                  side: BorderSide(color: t.border),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text('换一个 Agent'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _agentLabel(AgentKind agent) => switch (agent) {
+        AgentKind.claude => 'Claude Code',
+        AgentKind.codex => 'Codex',
+        AgentKind.gemini => 'Gemini CLI',
+      };
+
+  static String _runtimeText(AgentKind agent) => switch (agent) {
+        AgentKind.claude => 'Sonnet · acceptEdits',
+        AgentKind.codex => 'GPT · workspace-write · 按需审批',
+        AgentKind.gemini => '默认运行时',
+      };
+}
+
+class _MiniBadge extends StatelessWidget {
+  final String text;
+  const _MiniBadge(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: t.accentSubt,
+        borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: t.accent.withValues(alpha: 0.2)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: t.accent,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );

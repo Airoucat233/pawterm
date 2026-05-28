@@ -4,7 +4,7 @@ import '../api/agents_api.dart';
 import '../theme.dart';
 import 'agent_badge.dart';
 
-class AgentPickerSheet extends StatelessWidget {
+class AgentPickerSheet extends StatefulWidget {
   final List<AgentInfo> agents;
   final AgentKind selected;
   final ValueChanged<AgentKind> onSelected;
@@ -15,6 +15,13 @@ class AgentPickerSheet extends StatelessWidget {
     required this.selected,
     required this.onSelected,
   });
+
+  @override
+  State<AgentPickerSheet> createState() => _AgentPickerSheetState();
+}
+
+class _AgentPickerSheetState extends State<AgentPickerSheet> {
+  late AgentKind _selected = widget.selected;
 
   @override
   Widget build(BuildContext context) {
@@ -43,7 +50,9 @@ class AgentPickerSheet extends StatelessWidget {
                 ),
               ),
             ),
-            Text('选择 Agent', style: TextStyle(color: t.text, fontSize: 17, fontWeight: FontWeight.w700)),
+            Text('选择 Agent',
+                style: TextStyle(
+                    color: t.text, fontSize: 17, fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
             ConstrainedBox(
               constraints: BoxConstraints(
@@ -51,15 +60,33 @@ class AgentPickerSheet extends StatelessWidget {
               ),
               child: ListView.builder(
                 shrinkWrap: true,
-                itemCount: agents.length,
+                itemCount: widget.agents.length,
                 itemBuilder: (context, index) {
-                  final agent = agents[index];
+                  final agent = widget.agents[index];
                   return _AgentOption(
                     info: agent,
-                    selected: agent.kind == selected,
-                    onTap: agent.status == 'ready' ? () => onSelected(agent.kind) : null,
+                    selected: agent.kind == _selected,
+                    onTap: agent.status == 'ready'
+                        ? () => setState(() => _selected = agent.kind)
+                        : null,
                   );
                 },
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: FilledButton(
+                onPressed: () => widget.onSelected(_selected),
+                style: FilledButton.styleFrom(
+                  backgroundColor: t.accent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text('设为本项目默认'),
               ),
             ),
           ],
@@ -74,7 +101,8 @@ class _AgentOption extends StatelessWidget {
   final bool selected;
   final VoidCallback? onTap;
 
-  const _AgentOption({required this.info, required this.selected, required this.onTap});
+  const _AgentOption(
+      {required this.info, required this.selected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -112,19 +140,24 @@ class _AgentOption extends StatelessWidget {
                       info.label,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: t.text, fontWeight: FontWeight.w700, fontSize: 14),
+                      style: TextStyle(
+                          color: t.text,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       info.statusMessage ?? desc,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: t.textMuted, fontSize: 12, height: 1.35),
+                      style: TextStyle(
+                          color: t.textMuted, fontSize: 12, height: 1.35),
                     ),
                   ],
                 ),
               ),
-              if (selected) Icon(Icons.check_rounded, size: 18, color: t.accent),
+              if (selected)
+                Icon(Icons.check_rounded, size: 18, color: t.accent),
             ],
           ),
         ),

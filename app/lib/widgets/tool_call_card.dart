@@ -326,6 +326,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'MultiEdit':
         return t.toolEdit;
       case 'Bash':
+      case 'commandExecution':
         return t.toolBash;
       case 'Read':
         return t.toolRead;
@@ -353,10 +354,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
         return Icons.description_outlined;
       case 'Edit':
       case 'MultiEdit':
+      case 'fileChange':
         return Icons.edit_outlined;
       case 'Write':
         return Icons.note_add_outlined;
       case 'Bash':
+      case 'commandExecution':
         return Icons.terminal;
       case 'Grep':
         return Icons.search;
@@ -391,6 +394,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
         final path = (input['file_path'] ?? '').toString();
         text = path.contains('/') ? '…/${path.split('/').last}' : path;
       case 'Bash':
+      case 'commandExecution':
         // description 字段是人可读的意图描述，比截断命令更适合做标题
         final desc = (input['description'] ?? '').toString().trim();
         if (desc.isNotEmpty) {
@@ -410,6 +414,19 @@ class _ToolCallCardState extends State<ToolCallCard> {
               text = '$head … $tailRaw';
             }
           }
+        }
+      case 'fileChange':
+        final changes = input['changes'];
+        if (changes is List && changes.isNotEmpty) {
+          final first = changes.first;
+          final rawPath = first is Map
+              ? (first['path'] ?? first['file_path'] ?? '').toString()
+              : '';
+          final path =
+              rawPath.contains('/') ? '…/${rawPath.split('/').last}' : rawPath;
+          text = path.isNotEmpty ? path : '${changes.length} changes';
+        } else {
+          text = (input['status'] ?? '').toString();
         }
       case 'Grep':
       case 'Glob':
@@ -452,7 +469,11 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'Write':
         return _FilePreview(content: (input['content'] ?? '').toString());
       case 'Bash':
+      case 'commandExecution':
         return _BashLine(command: (input['command'] ?? '').toString());
+      case 'fileChange':
+        return _CodexFileChange(
+            changes: input['changes'], status: input['status']);
       case 'TodoWrite':
         return _TodoList(todos: input['todos']);
       default:
@@ -635,6 +656,80 @@ class _FilePreview extends StatelessWidget {
         truncated,
         style: TextStyle(fontFamily: 'monospace', fontSize: 11, color: t.text),
       ),
+    );
+  }
+}
+
+class _CodexFileChange extends StatelessWidget {
+  final dynamic changes;
+  final dynamic status;
+  const _CodexFileChange({required this.changes, required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final rows = changes is List ? changes as List : const [];
+    if (rows.isEmpty) {
+      return _KeyValueList(map: {'status': status});
+    }
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: t.bg,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: t.borderSubt, width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (int i = 0; i < rows.length; i++) ...[
+            if (i > 0) Divider(height: 0.5, color: t.borderSubt),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: _fileChangeRow(t, rows[i]),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _fileChangeRow(AppTokens t, dynamic row) {
+    final map = row is Map ? row : const {};
+    final path = (map['path'] ?? map['file_path'] ?? '').toString();
+    final kind =
+        (map['kind'] ?? map['type'] ?? map['operation'] ?? 'change').toString();
+    final summary = [
+      if (map['additions'] != null) '+${map['additions']}',
+      if (map['deletions'] != null) '-${map['deletions']}',
+      if (map['status'] != null) '${map['status']}',
+    ].join(' ');
+    return Row(
+      children: [
+        Icon(Icons.insert_drive_file_outlined, size: 13, color: t.toolEdit),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            path.isEmpty ? row.toString() : path,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 11,
+              color: t.text,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          summary.isEmpty ? kind : summary,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 10.5,
+            color: t.textDim,
+          ),
+        ),
+      ],
     );
   }
 }

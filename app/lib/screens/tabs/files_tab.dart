@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
@@ -77,6 +78,8 @@ _PreviewType _previewTypeFor(String name) {
 enum _FileAction { preview, open, save, install }
 
 bool _isApk(String name) => name.toLowerCase().endsWith('.apk');
+
+const _apkInstallerChannel = MethodChannel('pawterm/apk_installer');
 
 // ── main tab ────────────────────────────────────────────────────────
 
@@ -366,6 +369,9 @@ class _FilesTabState extends ConsumerState<FilesTab> {
         final after = await Permission.requestInstallPackages.status;
         if (!after.isGranted) return;
       }
+
+      await _startApkDownloadInBackground(entry);
+      return;
     }
 
     final dlDir = await _getDownloadsDir();
@@ -377,6 +383,33 @@ class _FilesTabState extends ConsumerState<FilesTab> {
         result.type != ResultType.noAppToOpen) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('安装失败: ${result.message}')),
+      );
+    }
+  }
+
+  Future<void> _startApkDownloadInBackground(FsEntry entry) async {
+    final conn = ref.read(activeConnectionProvider);
+    if (conn == null) return;
+    final api = FilesApi(conn.apiBase, token: conn.token);
+    try {
+      await _apkInstallerChannel.invokeMethod<void>('downloadAndInstallApk', {
+        'url': api.downloadUri(entry.path).toString(),
+        'fileName': entry.name,
+        'headers': api.authHeaders,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${entry.name} 已在通知栏后台下载')),
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('启动后台下载失败: ${e.message ?? e.code}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('启动后台下载失败: $e')),
       );
     }
   }

@@ -17,7 +17,6 @@ import '../../api/protocol.dart';
 import '../../api/sse_client.dart';
 import '../../api/upload_api.dart';
 import '../../i18n/locale_provider.dart';
-import '../../i18n/strings.dart';
 import '../../utils/time_format.dart';
 import '../../state/prefs.dart';
 import '../../state/projects_store.dart';
@@ -27,7 +26,6 @@ import '../../theme.dart';
 import '../../widgets/cc_spinner.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/todo_chip.dart';
-import 'chat_agent_bar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -134,6 +132,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// 在 _sendNow 时重置；AI text block 开始时置 true。
   bool _aiRespondedThisTurn = false;
 
+  /// 本机 optimistic 展示过、但服务端 userMessage 尚未回来的输入。
+  /// 服务端回传后不重复渲染，但用它关闭"重新编辑"入口。
+  final List<String> _localUserEchoes = [];
+
+  /// Realtime SSE can replay or resend the same provider item snapshot.
+  /// Keep rendered wire UUIDs stable per bound session to avoid duplicate cards.
+  final Set<String> _seenRealtimeUuids = {};
+
   /// 上一轮用户消息的原文，仅在 AI 未响应就中断时保留。
   /// 非 null 时在输入框上方显示"重新编辑"快捷条。
   String? _unrespondedUserText;
@@ -232,7 +238,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   String _sessionKey(CurrentSession s) =>
-      '${s.agent.wire}|${s.cwd}|${s.resumeId ?? "new"}';
+      _sessionKeyFor(s.agent, s.cwd, s.resumeId);
+
+  String _sessionKeyFor(AgentKind agent, String cwd, String? resumeId) =>
+      '${agent.wire}|$cwd|${resumeId ?? "new"}';
 
   // Throttle session-start attempts so a dead server doesn't trigger a tight loop.
   // Once api.start() failed, only the user-visible "reconnect" button will retry.
@@ -259,6 +268,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     setState(() {
       _messages.clear();
       _debugRaw.clear();
+      _localUserEchoes.clear();
+      _seenRealtimeUuids.clear();
       _subMsgs.clear();
       _subStreaming.clear();
       _sseClient = null;
@@ -549,16 +560,46 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       );
 
   void _switchModel(ModelOption m) {
+    final session = ref.read(currentSessionProvider);
+    if (session == null) return;
     ref.read(currentModelProvider.notifier).state = m;
-    if (_sessionId != null && _chatApi != null) {
+    if (session.agent == AgentKind.claude) {
+      final nextRuntime = {...session.runtime, 'model': m.id};
+      ref.read(currentSessionProvider.notifier).state =
+          session.copyWith(runtime: nextRuntime);
+    } else if (session.agent == AgentKind.codex) {
+      _patchRuntime({'model': m.id});
+      return;
+    }
+    if (session.agent == AgentKind.claude &&
+        _sessionId != null &&
+        _chatApi != null) {
       unawaited(_chatApi!.model(_sessionId!, m.id));
     }
   }
 
   void _switchPermissionMode(CcPermissionMode m) {
+    final session = ref.read(currentSessionProvider);
+    if (session?.agent != AgentKind.claude) return;
     ref.read(permissionModeProvider.notifier).set(m);
     if (_sessionId != null && _chatApi != null) {
       unawaited(_chatApi!.permission(_sessionId!, m.wire));
+    }
+  }
+
+  void _patchRuntime(Map<String, dynamic> patch) {
+    final session = ref.read(currentSessionProvider);
+    if (session == null) return;
+    final nextRuntime = {...session.runtime, ...patch};
+    final next = session.copyWith(runtime: nextRuntime);
+    ref.read(currentSessionProvider.notifier).state = next;
+    unawaited(ref
+        .read(projectAgentRuntimeProvider.notifier)
+        .setRuntime(next.cwd, next.agent, next.runtime));
+    if (next.agent == AgentKind.claude &&
+        _sessionId != null &&
+        _chatApi != null) {
+      unawaited(_chatApi!.runtime(_sessionId!, next.agent, next.runtime));
     }
   }
 
@@ -585,6 +626,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _messages
             ..clear()
             ..addAll(page.messages);
+          _localUserEchoes.clear();
+          _seenRealtimeUuids.clear();
           _oldestUuid = page.oldestUuid;
           _hasMoreHistory = page.hasMore;
           _loadingHistory = false;
@@ -814,6 +857,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _handleWireMessage(Map<String, dynamic> json) {
     if (!mounted) return;
     final msg = IncomingMessage.fromJson(json);
+    final wireUuid = json['uuid'] as String?;
+    if (wireUuid != null &&
+        wireUuid.isNotEmpty &&
+        !_seenRealtimeUuids.add(wireUuid)) {
+      return;
+    }
 
     // Sub-agent messages carry parent_tool_use_id; route to nested map.
     final parentId = json['parent_tool_use_id'] as String?;
@@ -837,6 +886,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _mode = CcStreamMode.responding;
         }
       } else if (msg is ResultMsg) {
+        final last = _messages.isNotEmpty ? _messages.last : null;
+        if (last is StreamingAssistant) last.stopped = true;
         _busy = false;
         _busyStartedAt = null;
         _mode = CcStreamMode.requesting;
@@ -890,6 +941,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         }
       } else if (msg is StreamDelta) {
         if (msg.kind == 'text') {
+          _mode = CcStreamMode.responding;
+          _aiRespondedThisTurn = true;
+          _unrespondedUserText = null;
           // 追加流式文本；thinking_delta 丢弃（参见 docs/streaming-response.md）。
           final last = _messages.isNotEmpty ? _messages.last : null;
           if (last is StreamingAssistant && !last.stopped) {
@@ -947,6 +1001,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         }
       } else if (msg is PongMsg || msg is SystemMsg) {
         // skip
+      } else if (msg is UserMsg && _consumeLocalUserEcho(msg)) {
+        // 本机 optimistic 气泡已经展示；服务端事件只作为"已记录，不可撤回"信号。
       } else if (msg is CompactBoundaryMsg) {
         // 实时也可能收到（用户在会话中触发了 /compact）。
         _messages.add(msg);
@@ -957,6 +1013,27 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       }
     });
     _scrollToEnd();
+  }
+
+  bool _consumeLocalUserEcho(UserMsg msg) {
+    final text = _plainUserText(msg);
+    if (text == null) return false;
+    final index = _localUserEchoes.indexOf(text);
+    if (index < 0) return false;
+    _localUserEchoes.removeAt(index);
+    if (_unrespondedUserText == text) {
+      _unrespondedUserText = null;
+    }
+    return true;
+  }
+
+  String? _plainUserText(UserMsg msg) {
+    final parts = <String>[];
+    for (final block in msg.content) {
+      if (block is TextBlock) parts.add(block.text);
+    }
+    final text = parts.join('\n').trim();
+    return text.isEmpty ? null : text;
   }
 
   /// 滚动到底部。
@@ -1024,6 +1101,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _sendNow(String text) {
     setState(() {
       _messages.add(LocalUserInput(text));
+      _localUserEchoes.add(text);
       _busy = true;
       _busyStartedAt = DateTime.now();
       _mode = CcStreamMode.requesting;
@@ -1039,21 +1117,48 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (uuid != null && _chatApi != null && config != null && session != null) {
       final model = ref.read(currentModelProvider);
       final permMode = ref.read(permissionModeProvider);
+      final isClaude = session.agent == AgentKind.claude;
       unawaited(_chatApi!
           .stream(
         uuid: uuid,
         cwd: session.cwd,
         text: text,
         deviceId: _deviceId,
-        model: model.id,
-        permissionMode: permMode.wire,
+        model: isClaude ? model.id : null,
+        permissionMode: isClaude ? permMode.wire : null,
         agent: session.agent,
         runtime: session.runtime,
       )
-          .then((_) {
+          .then((started) {
+        var streamUuid = uuid;
+        final actualSessionId = started.sessionId;
+        if (!isClaude &&
+            actualSessionId != null &&
+            actualSessionId.isNotEmpty &&
+            actualSessionId != uuid) {
+          streamUuid = actualSessionId;
+          if (mounted) {
+            final adoptedKey =
+                _sessionKeyFor(session.agent, session.cwd, actualSessionId);
+            setState(() {
+              _sessionId = actualSessionId;
+              _boundKey = adoptedKey;
+              _attemptedKey = adoptedKey;
+            });
+            unawaited(_persistUuid(actualSessionId));
+            final current = ref.read(currentSessionProvider);
+            if (current != null &&
+                current.agent == session.agent &&
+                current.cwd == session.cwd &&
+                current.resumeId == session.resumeId) {
+              ref.read(currentSessionProvider.notifier).state =
+                  current.copyWith(resumeId: actualSessionId);
+            }
+          }
+        }
         // Turn started — connect SSE if not already connected.
         if (mounted && _sseClient == null) {
-          _subscribeSse(config.apiBase, uuid, session.agent);
+          _subscribeSse(config.apiBase, streamUuid, session.agent);
         }
       }).catchError((e) {
         if (mounted) {
@@ -1098,8 +1203,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _reEditLastMessage() {
     final text = _unrespondedUserText;
     if (text == null) return;
+    _interrupt();
     setState(() {
       _unrespondedUserText = null;
+      _busy = false;
+      _busyStartedAt = null;
+      _mode = CcStreamMode.requesting;
+      _currentBlockKind = null;
+      _thinkingStartedAt = null;
+      _thoughtSeconds = null;
+      _thoughtForTimer?.cancel();
+      _error = null;
       // 找到最后一条 LocalUserInput 并移除它
       final idx = _messages.lastIndexWhere((m) => m is LocalUserInput);
       if (idx >= 0) {
@@ -1110,6 +1224,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _messages.removeAt(idx);
       }
     });
+    _closeSse();
     _textController.text = text;
     _textController.selection = TextSelection.fromPosition(
       TextPosition(offset: text.length),
@@ -1218,8 +1333,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     // 这样渲染 ToolUseBlock 时能找到匹配 result 一起折叠显示（参考 cxClaw 的 upsertToolMessage）。
     final toolResults = <String, ToolResultBlock>{};
     for (final m in _messages) {
-      if (m is UserMsg) {
-        for (final b in m.content) {
+      final content = switch (m) {
+        UserMsg(:final content) => content,
+        AssistantMsg(:final content) => content,
+        _ => const <ContentBlock>[],
+      };
+      if (content.isNotEmpty) {
+        for (final b in content) {
           if (b is ToolResultBlock && b.toolUseId.isNotEmpty) {
             toolResults[b.toolUseId] = b;
           }
@@ -1274,8 +1394,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               ],
             ),
           ),
-        Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
-        ChatAgentBar(agent: session.agent, runtime: session.runtime),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         Expanded(
           child: Stack(
@@ -1394,8 +1512,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onStop: _interrupt,
             onSwitchModel: _switchModel,
             onSwitchPermissionMode: _switchPermissionMode,
+            onPatchRuntime: _patchRuntime,
             chatApi: _chatApi,
             agent: session.agent,
+            runtime: session.runtime,
           ),
       ],
     );
@@ -1737,8 +1857,10 @@ class _Composer extends ConsumerWidget {
   final VoidCallback onStop;
   final void Function(ModelOption) onSwitchModel;
   final void Function(CcPermissionMode) onSwitchPermissionMode;
+  final void Function(Map<String, dynamic>) onPatchRuntime;
   final ChatApi? chatApi;
   final AgentKind agent;
+  final Map<String, dynamic> runtime;
   const _Composer({
     required this.controller,
     required this.connected,
@@ -1753,8 +1875,10 @@ class _Composer extends ConsumerWidget {
     required this.onStop,
     required this.onSwitchModel,
     required this.onSwitchPermissionMode,
+    required this.onPatchRuntime,
     this.chatApi,
     required this.agent,
+    required this.runtime,
   });
 
   @override
@@ -1861,12 +1985,20 @@ class _Composer extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: 4),
-                  _PermissionModePicker(
-                    current: ref.watch(permissionModeProvider),
-                    onPick: onSwitchPermissionMode,
+                  _ModelPickerButton(
+                    agent: agent,
+                    model: _modelForRuntime(agent, model, runtime),
+                    chatApi: chatApi,
+                    onSwitchModel: onSwitchModel,
                   ),
-                  _ModelPicker(
-                      current: model, onPick: onSwitchModel, chatApi: chatApi),
+                  const SizedBox(width: 4),
+                  _RuntimeSettingsButton(
+                    agent: agent,
+                    runtime: runtime,
+                    permissionMode: ref.watch(permissionModeProvider),
+                    onSwitchPermissionMode: onSwitchPermissionMode,
+                    onPatchRuntime: onPatchRuntime,
+                  ),
                   const Spacer(),
                 ],
               ),
@@ -1876,6 +2008,693 @@ class _Composer extends ConsumerWidget {
       ),
     );
   }
+
+  ModelOption _modelForRuntime(
+      AgentKind agent, ModelOption fallback, Map<String, dynamic> runtime) {
+    final id = (runtime['model'] ?? '').toString().trim();
+    if (agent == AgentKind.codex && id.isEmpty) {
+      return const ModelOption('', 'codex 默认', 'default', '使用 Codex 本地配置');
+    }
+    if (id.isEmpty || id == fallback.id) return fallback;
+    final candidates =
+        agent == AgentKind.codex ? const <ModelOption>[] : knownModels;
+    for (final candidate in candidates) {
+      if (candidate.id == id) return candidate;
+    }
+    return ModelOption.custom(id);
+  }
+}
+
+class _ModelPickerButton extends StatelessWidget {
+  final AgentKind agent;
+  final ModelOption model;
+  final ChatApi? chatApi;
+  final void Function(ModelOption) onSwitchModel;
+  const _ModelPickerButton({
+    required this.agent,
+    required this.model,
+    required this.chatApi,
+    required this.onSwitchModel,
+  });
+
+  Future<void> _open(BuildContext context) async {
+    ServerModels? serverModels;
+    if (chatApi != null) {
+      try {
+        serverModels = await chatApi!.fetchModels(agent: agent);
+      } catch (_) {}
+    }
+    if (!context.mounted) return;
+
+    final models = serverModels != null
+        ? serverModels.models.map(ModelOption.fromServer).toList()
+        : agent == AgentKind.codex
+            ? <ModelOption>[model]
+            : knownModels;
+    final current = _currentFromServer(model, serverModels, models);
+    final picked = await showModalBottomSheet<ModelOption>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      isScrollControlled: true,
+      builder: (_) => _ModelSheet(
+        current: current,
+        models: models,
+        providerLabel: serverModels?.providerLabel,
+      ),
+    );
+    if (picked != null) onSwitchModel(picked);
+  }
+
+  ModelOption _currentFromServer(ModelOption fallback,
+      ServerModels? serverModels, List<ModelOption> models) {
+    if (fallback.id.isNotEmpty || serverModels == null) return fallback;
+    final currentId = serverModels.current.trim();
+    if (currentId.isEmpty) return fallback;
+    for (final candidate in models) {
+      if (candidate.id == currentId) return candidate;
+    }
+    return ModelOption.custom(currentId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final label = model.label.trim().isNotEmpty ? model.label : model.id;
+    return Tooltip(
+      message: '选择模型',
+      preferBelow: false,
+      child: GestureDetector(
+        onTap: () => _open(context),
+        behavior: HitTestBehavior.opaque,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 168),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.auto_awesome,
+                  size: 18,
+                  color: Color(0xFF7C3AED),
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: t.textMuted,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 2),
+                Icon(Icons.expand_more, size: 13, color: t.textDim),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RuntimeSettingsButton extends StatelessWidget {
+  final AgentKind agent;
+  final Map<String, dynamic> runtime;
+  final CcPermissionMode permissionMode;
+  final void Function(CcPermissionMode) onSwitchPermissionMode;
+  final void Function(Map<String, dynamic>) onPatchRuntime;
+  const _RuntimeSettingsButton({
+    required this.agent,
+    required this.runtime,
+    required this.permissionMode,
+    required this.onSwitchPermissionMode,
+    required this.onPatchRuntime,
+  });
+
+  Future<void> _open(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      isScrollControlled: true,
+      builder: (_) => _RuntimeSettingsSheet(
+        agent: agent,
+        runtime: runtime,
+        permissionMode: permissionMode,
+        onSwitchPermissionMode: onSwitchPermissionMode,
+        onPatchRuntime: onPatchRuntime,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Tooltip(
+      message: '运行设置',
+      preferBelow: false,
+      child: GestureDetector(
+        onTap: () => _open(context),
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          width: 32,
+          height: 32,
+          alignment: Alignment.center,
+          child: Icon(Icons.tune_rounded, size: 18, color: t.textMuted),
+        ),
+      ),
+    );
+  }
+}
+
+class _RuntimeSettingsSheet extends StatelessWidget {
+  final AgentKind agent;
+  final Map<String, dynamic> runtime;
+  final CcPermissionMode permissionMode;
+  final void Function(CcPermissionMode) onSwitchPermissionMode;
+  final void Function(Map<String, dynamic>) onPatchRuntime;
+  const _RuntimeSettingsSheet({
+    required this.agent,
+    required this.runtime,
+    required this.permissionMode,
+    required this.onSwitchPermissionMode,
+    required this.onPatchRuntime,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final title = switch (agent) {
+      AgentKind.claude => 'Claude 运行设置',
+      AgentKind.codex => 'Codex 运行设置',
+      AgentKind.gemini => 'Gemini 运行设置',
+    };
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: t.border),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 4),
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: t.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+              child: Row(
+                children: [
+                  Icon(Icons.tune_rounded, size: 16, color: t.textMuted),
+                  const SizedBox(width: 8),
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: t.text,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(color: t.borderSubt, height: 0.5),
+            if (agent == AgentKind.claude)
+              _RuntimeActionRow(
+                icon: Icons.shield_outlined,
+                title: '权限',
+                value: _permissionLabel(permissionMode),
+                onTap: () async {
+                  final picked = await _pickPermission(context);
+                  if (picked != null) onSwitchPermissionMode(picked);
+                },
+              )
+            else if (agent == AgentKind.codex) ...[
+              _RuntimeActionRow(
+                icon: Icons.rule_folder_outlined,
+                title: '权限',
+                value:
+                    '${_approvalLabel((runtime['approval_policy'] ?? 'on-request').toString())} · ${_sandboxLabel((runtime['sandbox'] ?? 'workspace-write').toString())}',
+                onTap: () => _pickCodexRuntime(context),
+              ),
+            ],
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<CcPermissionMode?> _pickPermission(BuildContext context) {
+    return showModalBottomSheet<CcPermissionMode>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      builder: (_) => _PermissionModeSheet(current: permissionMode),
+    );
+  }
+
+  Future<void> _pickCodexRuntime(BuildContext context) {
+    return showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      isScrollControlled: true,
+      builder: (_) => _CodexRuntimeSheet(
+        approvalPolicy: (runtime['approval_policy'] ?? 'on-request').toString(),
+        sandbox: (runtime['sandbox'] ?? 'workspace-write').toString(),
+        onPatchRuntime: onPatchRuntime,
+      ),
+    );
+  }
+
+  String _permissionLabel(CcPermissionMode m) => switch (m) {
+        CcPermissionMode.defaultMode => 'Default',
+        CcPermissionMode.acceptEdits => 'Accept Edits',
+        CcPermissionMode.plan => 'Plan',
+        CcPermissionMode.bypass => 'Bypass',
+      };
+
+  String _approvalLabel(String value) => switch (value) {
+        'on-request' => '按需审批',
+        'untrusted' => '严格审批',
+        'never' => '不询问',
+        _ => value,
+      };
+
+  String _sandboxLabel(String value) => switch (value) {
+        'workspace-write' => '工作区可写',
+        'read-only' => '只读',
+        'danger-full-access' => '完全访问',
+        _ => value,
+      };
+}
+
+class _RuntimeActionRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String value;
+  final VoidCallback onTap;
+  const _RuntimeActionRow({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 13, 16, 13),
+        child: Row(
+          children: [
+            Icon(icon, size: 17, color: t.textDim),
+            const SizedBox(width: 12),
+            Text(title, style: TextStyle(color: t.text, fontSize: 14)),
+            const Spacer(),
+            Flexible(
+              child: Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: t.textMuted,
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(Icons.chevron_right, size: 17, color: t.textDim),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CodexRuntimeSheet extends StatelessWidget {
+  final String approvalPolicy;
+  final String sandbox;
+  final void Function(Map<String, dynamic>) onPatchRuntime;
+  const _CodexRuntimeSheet({
+    required this.approvalPolicy,
+    required this.sandbox,
+    required this.onPatchRuntime,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: t.border),
+      ),
+      child: SafeArea(
+        top: false,
+        child: DefaultTabController(
+          length: 2,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 10, bottom: 4),
+                child: Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: t.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.rule_folder_outlined,
+                        size: 16, color: t.textMuted),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Codex 权限',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: t.text,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              TabBar(
+                labelColor: t.text,
+                unselectedLabelColor: t.textDim,
+                indicatorColor: t.accent,
+                indicatorSize: TabBarIndicatorSize.tab,
+                dividerColor: t.borderSubt,
+                tabs: const [
+                  Tab(text: '审批'),
+                  Tab(text: '沙箱'),
+                ],
+              ),
+              SizedBox(
+                height: 232,
+                child: TabBarView(
+                  children: [
+                    _CodexRuntimeOptionList(
+                      value: approvalPolicy,
+                      options: const [
+                        _RuntimeOption(
+                          value: 'on-request',
+                          label: '按需审批',
+                          description: '需要越权或高风险操作时询问',
+                          icon: Icons.front_hand_outlined,
+                        ),
+                        _RuntimeOption(
+                          value: 'untrusted',
+                          label: '严格审批',
+                          description: '更保守地请求确认',
+                          icon: Icons.verified_user_outlined,
+                        ),
+                        _RuntimeOption(
+                          value: 'never',
+                          label: '不询问',
+                          description: '不弹审批请求，失败则直接返回',
+                          icon: Icons.not_interested_outlined,
+                        ),
+                      ],
+                      onPick: (v) => onPatchRuntime({'approval_policy': v}),
+                    ),
+                    _CodexRuntimeOptionList(
+                      value: sandbox,
+                      options: const [
+                        _RuntimeOption(
+                          value: 'workspace-write',
+                          label: '工作区可写',
+                          description: '允许修改当前工作区文件',
+                          icon: Icons.folder_copy_outlined,
+                        ),
+                        _RuntimeOption(
+                          value: 'read-only',
+                          label: '只读',
+                          description: '只能读取文件和上下文',
+                          icon: Icons.visibility_outlined,
+                        ),
+                        _RuntimeOption(
+                          value: 'danger-full-access',
+                          label: '完全访问',
+                          description: '不限制文件系统访问',
+                          icon: Icons.warning_amber_rounded,
+                        ),
+                      ],
+                      onPick: (v) => onPatchRuntime({'sandbox': v}),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RuntimeOption {
+  final String value;
+  final String label;
+  final String description;
+  final IconData icon;
+  const _RuntimeOption({
+    required this.value,
+    required this.label,
+    required this.description,
+    required this.icon,
+  });
+}
+
+class _CodexRuntimeOptionList extends StatelessWidget {
+  final String value;
+  final List<_RuntimeOption> options;
+  final void Function(String) onPick;
+  const _CodexRuntimeOptionList({
+    required this.value,
+    required this.options,
+    required this.onPick,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: options.length,
+      separatorBuilder: (context, index) {
+        final t = AppTokens.of(context);
+        return Divider(
+          color: t.borderSubt,
+          height: 0.5,
+          indent: 16,
+          endIndent: 16,
+        );
+      },
+      itemBuilder: (context, index) {
+        final option = options[index];
+        return _CodexRuntimeOptionRow(
+          option: option,
+          selected: option.value == value,
+          onTap: () => onPick(option.value),
+        );
+      },
+    );
+  }
+}
+
+class _CodexRuntimeOptionRow extends StatelessWidget {
+  final _RuntimeOption option;
+  final bool selected;
+  final VoidCallback onTap;
+  const _CodexRuntimeOptionRow({
+    required this.option,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 13, 16, 13),
+        child: Row(
+          children: [
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: selected ? t.accent : Colors.transparent,
+                border: Border.all(
+                  color: selected ? t.accent : t.border,
+                  width: 1.5,
+                ),
+              ),
+              child: selected
+                  ? const Icon(Icons.check, size: 11, color: Colors.white)
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Icon(option.icon, size: 16, color: t.textMuted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    option.label,
+                    style: TextStyle(
+                      color: t.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    option.description,
+                    style: TextStyle(color: t.textDim, fontSize: 11.5),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PermissionModeSheet extends StatelessWidget {
+  final CcPermissionMode current;
+  const _PermissionModeSheet({required this.current});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: t.border),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 4),
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: t.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+              child: Row(
+                children: [
+                  Icon(Icons.shield_outlined, size: 16, color: t.textMuted),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Claude 权限',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: t.text,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            for (final mode in CcPermissionMode.values) ...[
+              Divider(
+                color: t.borderSubt,
+                height: 0.5,
+                indent: 16,
+                endIndent: 16,
+              ),
+              _PermissionModeRow(
+                mode: mode,
+                label: _permissionLabel(mode),
+                description: _permissionDescription(mode),
+                glyph: _permissionGlyph(mode, t),
+                selected: mode == current,
+                onTap: () => Navigator.of(context).pop(mode),
+              ),
+            ],
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _permissionLabel(CcPermissionMode m) => switch (m) {
+        CcPermissionMode.defaultMode => 'Default',
+        CcPermissionMode.acceptEdits => 'Accept Edits',
+        CcPermissionMode.plan => 'Plan',
+        CcPermissionMode.bypass => 'Bypass',
+      };
+
+  String _permissionDescription(CcPermissionMode m) => switch (m) {
+        CcPermissionMode.defaultMode => '按 Claude Code 默认策略询问',
+        CcPermissionMode.acceptEdits => '自动接受文件编辑，高风险操作仍询问',
+        CcPermissionMode.plan => '只规划，不直接修改文件',
+        CcPermissionMode.bypass => '跳过权限检查，完整访问',
+      };
+
+  (IconData, Color) _permissionGlyph(CcPermissionMode m, AppTokens t) =>
+      switch (m) {
+        CcPermissionMode.defaultMode => (Icons.front_hand_outlined, t.warning),
+        CcPermissionMode.acceptEdits => (Icons.edit_note_outlined, t.accent),
+        CcPermissionMode.plan => (Icons.checklist_outlined, t.toolRead),
+        CcPermissionMode.bypass => (Icons.rocket_launch_outlined, t.toolBash),
+      };
 }
 
 /// 输入框右侧的 40×40 圆形按钮（黑白主题，对照 cxclaw）。
@@ -1986,77 +2805,6 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
               child: icon,
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ModelPicker extends StatefulWidget {
-  final ModelOption current;
-  final void Function(ModelOption) onPick;
-  final ChatApi? chatApi;
-  const _ModelPicker(
-      {required this.current, required this.onPick, this.chatApi});
-
-  @override
-  State<_ModelPicker> createState() => _ModelPickerState();
-}
-
-class _ModelPickerState extends State<_ModelPicker> {
-  Future<void> _openSheet() async {
-    // Fetch models from server first; fall back to built-in list on error
-    ServerModels? serverModels;
-    if (widget.chatApi != null) {
-      try {
-        serverModels = await widget.chatApi!.fetchModels();
-      } catch (_) {}
-    }
-
-    final models = serverModels != null
-        ? serverModels.models.map(ModelOption.fromServer).toList()
-        : knownModels;
-    final providerLabel = serverModels?.providerLabel;
-
-    if (!mounted) return;
-
-    final picked = await showModalBottomSheet<ModelOption>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      isScrollControlled: true,
-      builder: (ctx) => _ModelSheet(
-        current: widget.current,
-        models: models,
-        providerLabel: providerLabel,
-      ),
-    );
-    if (picked != null) widget.onPick(picked);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return GestureDetector(
-      onTap: _openSheet,
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.auto_awesome, size: 11, color: t.textDim),
-            const SizedBox(width: 4),
-            Text(
-              widget.current.label.split(' ').first,
-              style: TextStyle(
-                  fontSize: 11.5,
-                  color: t.textMuted,
-                  fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(width: 2),
-            Icon(Icons.expand_more, size: 13, color: t.textDim),
-          ],
         ),
       ),
     );
@@ -2314,146 +3062,6 @@ class _ModelRow extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 权限模式 chip + bottom sheet selector，跟 ModelPicker 同款 UI 语言。
-class _PermissionModePicker extends ConsumerWidget {
-  final CcPermissionMode current;
-  final void Function(CcPermissionMode) onPick;
-  const _PermissionModePicker({required this.current, required this.onPick});
-
-  // 权限名称固定英文，不随语言设置变化
-  String _label(CcPermissionMode m) {
-    switch (m) {
-      case CcPermissionMode.defaultMode:
-        return 'Default';
-      case CcPermissionMode.acceptEdits:
-        return 'Accept Edits';
-      case CcPermissionMode.plan:
-        return 'Plan';
-      case CcPermissionMode.bypass:
-        return 'Bypass';
-    }
-  }
-
-  String _desc(CcPermissionMode m, Strings s) {
-    switch (m) {
-      case CcPermissionMode.defaultMode:
-        return s.permModeDefaultDesc;
-      case CcPermissionMode.acceptEdits:
-        return s.permModeAcceptEditsDesc;
-      case CcPermissionMode.plan:
-        return s.permModePlanDesc;
-      case CcPermissionMode.bypass:
-        return s.permModeBypassDesc;
-    }
-  }
-
-  (IconData, Color) _glyph(CcPermissionMode m, AppTokens t) {
-    switch (m) {
-      case CcPermissionMode.defaultMode:
-        return (Icons.front_hand_outlined, t.warning);
-      case CcPermissionMode.acceptEdits:
-        return (Icons.edit_note_outlined, t.accent);
-      case CcPermissionMode.plan:
-        return (Icons.checklist_outlined, t.toolRead);
-      case CcPermissionMode.bypass:
-        return (Icons.rocket_launch_outlined, t.toolBash);
-    }
-  }
-
-  Future<void> _openSheet(BuildContext context, WidgetRef ref) async {
-    final t = AppTokens.of(context);
-    final s = ref.read(stringsProvider);
-    final picked = await showModalBottomSheet<CcPermissionMode>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      builder: (ctx) => Container(
-        margin: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: t.border),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 10, bottom: 4),
-                child: Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                        color: t.border,
-                        borderRadius: BorderRadius.circular(2)),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.shield_outlined, size: 16, color: t.textMuted),
-                    const SizedBox(width: 8),
-                    Text(
-                      s.permModeTitle,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: t.text,
-                        letterSpacing: -0.1,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              for (final m in CcPermissionMode.values) ...[
-                Divider(
-                    color: t.borderSubt,
-                    height: 0.5,
-                    indent: 16,
-                    endIndent: 16),
-                _PermissionModeRow(
-                  mode: m,
-                  label: _label(m),
-                  description: _desc(m, s),
-                  glyph: _glyph(m, t),
-                  selected: m == current,
-                  onTap: () => Navigator.of(ctx).pop(m),
-                ),
-              ],
-              const SizedBox(height: 6),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (picked != null) onPick(picked);
-  }
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final t = AppTokens.of(context);
-    final (icon, color) = _glyph(current, t);
-    return Tooltip(
-      message: _label(current),
-      preferBelow: false,
-      child: GestureDetector(
-        onTap: () => _openSheet(context, ref),
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          width: 32,
-          height: 32,
-          alignment: Alignment.center,
-          child: Icon(icon, size: 17, color: color),
         ),
       ),
     );
@@ -2846,6 +3454,7 @@ class _StreamingMessage extends StatelessWidget {
     final t = AppTokens.of(context);
     final text = buffer.text.toString();
     final approxTokens = (text.length / 4).round();
+    final dotColor = buffer.stopped ? t.success : t.textMuted;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
@@ -2855,7 +3464,16 @@ class _StreamingMessage extends StatelessWidget {
             width: 18,
             child: Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: _PulsingDot(color: t.textMuted),
+              child: buffer.stopped
+                  ? Text(
+                      '●',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: dotColor,
+                        height: 1.4,
+                      ),
+                    )
+                  : _PulsingDot(color: dotColor),
             ),
           ),
           Expanded(

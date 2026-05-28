@@ -98,6 +98,7 @@ export async function registerSessionsApi(app: FastifyInstance, deps?: {
     const limit = req.query.limit ? Math.max(1, Math.min(500, Number(req.query.limit))) : 50;
     const beforeUuid = req.query.before_uuid;
     const agent = parseAgentQuery(req.query.agent);
+    if (agent === 'all') throw new Error('agent=all is not valid for messages');
 
     return registry.resolve(agent).getSessionMessages({ cwd, sessionId: req.params.id, limit, beforeUuid });
   });

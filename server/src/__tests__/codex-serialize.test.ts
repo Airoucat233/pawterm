@@ -39,6 +39,25 @@ describe('codexThreadItemToWire', () => {
     });
   });
 
+  it('does not synthesize a tool result for in-progress commandExecution', () => {
+    const wire = codexThreadItemToWire({
+      type: 'commandExecution',
+      id: 'cmd_live',
+      command: 'sleep 10',
+      cwd: '/repo',
+      status: 'inProgress',
+      aggregatedOutput: null,
+      exitCode: null,
+    });
+    expect(wire?.type).toBe('assistant');
+    if (wire?.type !== 'assistant') throw new Error('expected assistant message');
+    expect(wire.content).toHaveLength(1);
+    expect(wire.content[0]).toMatchObject({
+      type: 'tool_use',
+      name: 'commandExecution',
+    });
+  });
+
   it('keeps fileChange as the native tool name', () => {
     const item = {
       type: 'fileChange',

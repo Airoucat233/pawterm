@@ -11,18 +11,22 @@ import 'tool_call_card.dart';
 
 class MessageView extends StatelessWidget {
   final IncomingMessage message;
+
   /// tool_use_id → ToolResultBlock 索引（由 ChatTab 提前扫一遍消息列表得到）。
   /// 让 ToolUseBlock 渲染时能找到对应 result，合并成一个折叠卡。
   final Map<String, ToolResultBlock>? toolResults;
+
   /// tool_use_id → sub-agent messages（Task 工具专用）。
   /// ToolCallCard 展开时用于渲染嵌套的子 Agent 对话流。
   final Map<String, List<IncomingMessage>>? subMsgsMap;
+
   /// 提交 AskUserQuestion 答案的回调（仅 AskUserQuestion 工具需要）。
   final void Function(
     String toolUseId,
     Map<String, String> answers,
     Map<String, Map<String, String>>? annotations,
   )? onAnswerQuestion;
+
   /// 原始 SSE event data（仅 debug 打包时传入，release 为 null）。
   /// 长按消息可查看。
   final Map<String, dynamic>? rawJson;
@@ -130,7 +134,7 @@ class MessageView extends StatelessWidget {
     if (msg is AssistantMsg) {
       // 复刻 claude-code 终端样式：不再有 "CLAUDE" 大写头；每个可视 block
       // 用 ⏺ gutter 标记，整轮多条 assistant message 视觉上自然连成一片。
-      final visible = msg.content.where((b) => b is! ThinkingBlock).toList();
+      final visible = msg.content;
       if (visible.isEmpty) return const SizedBox.shrink();
       // 先渲染所有 block，过滤掉完全不可见的（如 TodoWrite 中间状态）
       final rows = <Widget>[];
@@ -139,10 +143,13 @@ class MessageView extends StatelessWidget {
         final content = _renderBlock(context, b);
         final color = _gutterColor(t, b, toolResults);
         // 相邻两个工具卡片之间用更小的间距（1px），其余保持 6px
-        final nextIsTool = i + 1 < visible.length && visible[i + 1] is ToolUseBlock;
+        final nextIsTool =
+            i + 1 < visible.length && visible[i + 1] is ToolUseBlock;
         final bottomSpacing = (b is ToolUseBlock && nextIsTool) ? 1.0 : 6.0;
         final row = _gutterRow(
-          context, content, color,
+          context,
+          content,
+          color,
           dotTopOffset: b is ToolUseBlock ? 13.0 : 2.0,
           bottomSpacing: bottomSpacing,
         );
@@ -205,7 +212,8 @@ class MessageView extends StatelessWidget {
             Icon(Icons.error_outline, color: t.error, size: 16),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(msg.message, style: TextStyle(color: t.error, fontSize: 12)),
+              child: Text(msg.message,
+                  style: TextStyle(color: t.error, fontSize: 12)),
             ),
           ],
         ),
@@ -261,7 +269,7 @@ class MessageView extends StatelessWidget {
     if (block is TextBlock) return t.success;
     if (block is ToolUseBlock) {
       final result = toolResults?[block.id];
-      if (result == null) return t.accent;     // 未返回 / 流式中
+      if (result == null) return t.accent; // 未返回 / 流式中
       if (result.isError) return t.error;
       return t.success;
     }
@@ -272,40 +280,43 @@ class MessageView extends StatelessWidget {
     final t = AppTokens.of(context);
 
     if (block is TextBlock) {
+      if (block.text.trim().isEmpty) return const SizedBox.shrink();
       // 外层 _gutterRow 已经管 bottom 间距，这里不再叠加
       return MarkdownBody(
-          data: block.text,
-          selectable: true,
-          styleSheet: MarkdownStyleSheet(
-            p: TextStyle(color: t.text, fontSize: 13, height: 1.6),
-            code: TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 12,
-              color: t.accent,
-              backgroundColor: t.surfaceHi,
-            ),
-            codeblockDecoration: BoxDecoration(
-              color: t.surfaceHi,
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: t.border, width: 0.5),
-            ),
-            codeblockPadding: const EdgeInsets.all(10),
-            blockquoteDecoration: BoxDecoration(
-              color: t.surfaceHi,
-              border: Border(left: BorderSide(color: t.accent, width: 3)),
-            ),
-            h1: TextStyle(color: t.text, fontSize: 16, fontWeight: FontWeight.w600),
-            h2: TextStyle(color: t.text, fontSize: 14, fontWeight: FontWeight.w600),
-            h3: TextStyle(color: t.text, fontSize: 13, fontWeight: FontWeight.w600),
-            listBullet: TextStyle(color: t.textMuted, fontSize: 13),
+        data: block.text,
+        selectable: true,
+        styleSheet: MarkdownStyleSheet(
+          p: TextStyle(color: t.text, fontSize: 13, height: 1.6),
+          code: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 12,
+            color: t.accent,
+            backgroundColor: t.surfaceHi,
           ),
-        );
+          codeblockDecoration: BoxDecoration(
+            color: t.surfaceHi,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: t.border, width: 0.5),
+          ),
+          codeblockPadding: const EdgeInsets.all(10),
+          blockquoteDecoration: BoxDecoration(
+            color: t.surfaceHi,
+            border: Border(left: BorderSide(color: t.accent, width: 3)),
+          ),
+          h1: TextStyle(
+              color: t.text, fontSize: 16, fontWeight: FontWeight.w600),
+          h2: TextStyle(
+              color: t.text, fontSize: 14, fontWeight: FontWeight.w600),
+          h3: TextStyle(
+              color: t.text, fontSize: 13, fontWeight: FontWeight.w600),
+          listBullet: TextStyle(color: t.textMuted, fontSize: 13),
+        ),
+      );
     }
 
     if (block is ThinkingBlock) {
-      // 历史会话与最终消息里完全不显示 thinking 内容。
-      // claude-code CLI 同样不渲染 thinking_delta（参见 docs/streaming-response.md）。
-      return const SizedBox.shrink();
+      if (block.text.trim().isEmpty) return const SizedBox.shrink();
+      return _ThinkingCard(text: block.text);
     }
 
     if (block is ToolUseBlock) {
@@ -386,7 +397,8 @@ Widget? _tryParseCommandChip(String text) {
   }
   // 4) compact / resume 时 SDK 注入的"上下文摘要" — 不是用户输入，
   //    渲染成可折叠的 system chip 而非用户气泡。
-  if (trimmed.startsWith('This session is being continued from a previous conversation')) {
+  if (trimmed.startsWith(
+      'This session is being continued from a previous conversation')) {
     return _SystemNoteChip(
       icon: Icons.history_outlined,
       label: '上下文摘要',
@@ -532,7 +544,8 @@ class _SystemNoteChip extends StatefulWidget {
   final IconData icon;
   final String label;
   final String detail;
-  const _SystemNoteChip({required this.icon, required this.label, required this.detail});
+  const _SystemNoteChip(
+      {required this.icon, required this.label, required this.detail});
 
   @override
   State<_SystemNoteChip> createState() => _SystemNoteChipState();
@@ -564,7 +577,8 @@ class _SystemNoteChipState extends State<_SystemNoteChip> {
                 InkWell(
                   onTap: () => setState(() => _open = !_open),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -572,7 +586,10 @@ class _SystemNoteChipState extends State<_SystemNoteChip> {
                         const SizedBox(width: 6),
                         Text(
                           widget.label,
-                          style: TextStyle(fontSize: 12, color: t.textMuted, fontWeight: FontWeight.w500),
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: t.textMuted,
+                              fontWeight: FontWeight.w500),
                         ),
                         const SizedBox(width: 4),
                         Icon(
@@ -589,7 +606,8 @@ class _SystemNoteChipState extends State<_SystemNoteChip> {
                     width: double.infinity,
                     decoration: BoxDecoration(
                       color: t.bg,
-                      border: Border(top: BorderSide(color: t.borderSubt, width: 0.5)),
+                      border: Border(
+                          top: BorderSide(color: t.borderSubt, width: 0.5)),
                     ),
                     padding: const EdgeInsets.all(10),
                     child: SelectableText(
@@ -608,6 +626,91 @@ class _SystemNoteChipState extends State<_SystemNoteChip> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ThinkingCard extends StatefulWidget {
+  final String text;
+  const _ThinkingCard({required this.text});
+
+  @override
+  State<_ThinkingCard> createState() => _ThinkingCardState();
+}
+
+class _ThinkingCardState extends State<_ThinkingCard> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        color: t.surfaceHi.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: t.border, width: 0.5),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _open = !_open),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+              child: Row(
+                children: [
+                  Icon(Icons.psychology_alt_outlined,
+                      size: 15, color: t.textDim),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '思考过程',
+                      style: TextStyle(
+                        color: t.textMuted,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _open ? Icons.expand_less : Icons.expand_more,
+                    size: 16,
+                    color: t.textDim,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: t.bg.withValues(alpha: 0.42),
+                border:
+                    Border(top: BorderSide(color: t.borderSubt, width: 0.5)),
+              ),
+              padding: const EdgeInsets.all(10),
+              child: SelectableText(
+                widget.text.trim(),
+                style: TextStyle(
+                  color: t.textMuted,
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  height: 1.5,
+                ),
+              ),
+            ),
+            crossFadeState:
+                _open ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 140),
+            sizeCurve: Curves.easeOut,
+          ),
+        ],
       ),
     );
   }
@@ -666,21 +769,27 @@ class _ResultLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final duration = message.durationMs != null ? '${(message.durationMs! / 1000).toStringAsFixed(1)}s' : '-';
-    final cost = message.totalCostUsd != null ? '\$${message.totalCostUsd!.toStringAsFixed(4)}' : '-';
-    final turns = message.numTurns?.toString() ?? '-';
+    final duration = message.durationMs != null
+        ? '${(message.durationMs! / 1000).toStringAsFixed(1)}s'
+        : null;
+    final cost = message.totalCostUsd != null
+        ? '\$${message.totalCostUsd!.toStringAsFixed(4)}'
+        : null;
+    final turns = message.numTurns != null ? 'turn ${message.numTurns}' : null;
+    final parts = [cost, duration, turns].whereType<String>().toList();
+    if (parts.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(top: 4, bottom: 16),
       child: Row(
         children: [
-          Text(
-            cost,
-            style: TextStyle(fontFamily: 'monospace', fontSize: 10, color: t.textDim),
-          ),
-          _sep(t),
-          Text(duration, style: TextStyle(fontFamily: 'monospace', fontSize: 10, color: t.textDim)),
-          _sep(t),
-          Text('turn $turns', style: TextStyle(fontFamily: 'monospace', fontSize: 10, color: t.textDim)),
+          for (int i = 0; i < parts.length; i++) ...[
+            if (i > 0) _sep(t),
+            Text(
+              parts[i],
+              style: TextStyle(
+                  fontFamily: 'monospace', fontSize: 10, color: t.textDim),
+            ),
+          ],
         ],
       ),
     );
@@ -778,9 +887,9 @@ class _TaskNotificationChip extends StatelessWidget {
 
     final (IconData icon, Color color) = switch (status) {
       'completed' => (Icons.check_circle_outline, t.success),
-      'failed'    => (Icons.error_outline, t.error),
-      'killed'    => (Icons.cancel_outlined, t.error),
-      _           => (Icons.info_outline, t.textMuted),
+      'failed' => (Icons.error_outline, t.error),
+      'killed' => (Icons.cancel_outlined, t.error),
+      _ => (Icons.info_outline, t.textMuted),
     };
 
     return Padding(
@@ -793,7 +902,8 @@ class _TaskNotificationChip extends StatelessWidget {
           decoration: BoxDecoration(
             color: color.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withValues(alpha: 0.25), width: 0.5),
+            border:
+                Border.all(color: color.withValues(alpha: 0.25), width: 0.5),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,

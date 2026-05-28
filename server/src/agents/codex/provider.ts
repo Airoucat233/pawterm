@@ -3,13 +3,24 @@ import { CodexAppServerProcess, type CodexJsonRpcClient } from './client.js';
 import { codexThreadItemToWire } from './serialize.js';
 import type { AgentHistoryPage, AgentProvider, AgentRun } from '../types.js';
 
+type CodexTurn = {
+  id?: string;
+  items?: any[];
+  status?: string;
+  completedAt?: number | null;
+  durationMs?: number | null;
+};
+
 export class CodexAgentProvider implements AgentProvider<'codex'> {
   readonly kind = 'codex' as const;
 
   constructor(private readonly appServer = new CodexAppServerProcess()) {}
 
-  private client(): CodexJsonRpcClient {
-    return this.appServer.start();
+  private async client(): Promise<CodexJsonRpcClient> {
+    const appServer = this.appServer as CodexAppServerProcess & {
+      startInitialized?: () => Promise<CodexJsonRpcClient>;
+    };
+    return appServer.startInitialized ? appServer.startInitialized() : appServer.start();
   }
 
   async getInfo(): Promise<AgentInfo> {
@@ -39,7 +50,8 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
     offset: number;
     includeSubdirs: boolean;
   }): Promise<SessionSummary[]> {
-    const result = await this.client().request('thread/list', {
+    const client = await this.client();
+    const result = await client.request('thread/list', {
       limit: input.limit,
       cursor: input.offset > 0 ? String(input.offset) : null,
       cwd: input.cwd,
@@ -70,17 +82,25 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
     limit: number;
     beforeUuid?: string;
   }): Promise<AgentHistoryPage> {
-    const result = await this.client().request('thread/turns/items/list', {
+    const client = await this.client();
+    const result = await client.request('thread/read', {
       threadId: input.sessionId,
-      limit: input.limit,
-      cursor: input.beforeUuid ?? null,
-    }) as { data?: any[]; nextCursor?: string | null };
-    const data = result.data ?? [];
+      includeTurns: true,
+    }) as { thread?: { turns?: CodexTurn[] } };
+    const all = (result.thread?.turns ?? [])
+      .flatMap((turn) => (turn.items ?? []).map((item) => ({ turn, item })))
+      .filter(({ item }) => !!codexThreadItemToWire(item));
+    const beforeIndex = input.beforeUuid
+      ? all.findIndex(({ item }) => item.id === input.beforeUuid)
+      : -1;
+    const end = beforeIndex >= 0 ? beforeIndex : all.length;
+    const start = Math.max(0, end - input.limit);
+    const data = all.slice(start, end);
     return {
-      messages: data.map((item) => ({
+      messages: data.map(({ turn, item }) => ({
         uuid: item.id ?? null,
         parent_uuid: null,
-        timestamp: null,
+        timestamp: typeof turn.completedAt === 'number' ? turn.completedAt * 1000 : null,
         message: (() => {
           const wire = codexThreadItemToWire(item);
           return wire
@@ -88,8 +108,8 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
             : item;
         })(),
       })),
-      has_more: !!result.nextCursor,
-      total: data.length,
+      has_more: start > 0,
+      total: all.length,
     };
   }
 
@@ -101,7 +121,7 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
     deviceId: string;
   }): Promise<AgentRun> {
     const runtime = input.runtime;
-    const client = this.client();
+    const client = await this.client();
     const startThread = () => client.request('thread/start', {
       cwd: input.cwd,
       model: runtime.model ?? null,
@@ -120,24 +140,29 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
       : await startThread();
     const threadId = thread.thread?.id ?? input.sessionId;
     const stream = this.createNotificationStream(client, threadId);
-    await client.request('turn/start', {
+    const started = await client.request('turn/start', {
       threadId,
       input: [{ type: 'text', text: input.text }],
       model: runtime.model ?? null,
     }).catch((err) => {
       stream.close();
       throw err;
-    });
+    }) as { turn?: { id?: string } };
+    const turnId = started.turn?.id;
     return {
       sessionId: threadId,
       events: stream.events,
-      interrupt: async () => { await client.request('turn/interrupt', { threadId }); },
+      interrupt: async () => {
+        if (!turnId) return;
+        await client.request('turn/interrupt', { threadId, turnId });
+      },
       close: stream.close,
     };
   }
 
   async interrupt(input: { sessionId: string }): Promise<void> {
-    await this.client().request('turn/interrupt', { threadId: input.sessionId });
+    // Codex app-server requires a turnId for interruption. Active turns are
+    // interrupted through the AgentRun closure returned by startTurn().
   }
 
   private createNotificationStream(client: CodexJsonRpcClient, threadId: string): {
@@ -147,12 +172,16 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
     const queue: unknown[] = [];
     let wake: (() => void) | null = null;
     let closed = false;
+    let closeAfterDrain = false;
     let offClose: (() => void) | null = null;
     const off = client.onNotification((notification) => {
       if (closed) return;
       const params = notification.params as { threadId?: string; item?: unknown; turn?: { items?: unknown[] } } | undefined;
       if (params?.threadId && params.threadId !== threadId) return;
       queue.push(notification);
+      if (notification.method === 'turn/completed' || notification.method === 'error') {
+        closeAfterDrain = true;
+      }
       wake?.();
       wake = null;
     });
@@ -169,11 +198,13 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
 
     async function* events() {
       try {
-        while (!closed) {
+        while (true) {
           if (queue.length > 0) {
             yield queue.shift();
+            if (closeAfterDrain && queue.length === 0) break;
             continue;
           }
+          if (closed || closeAfterDrain) break;
           await new Promise<void>((resolve) => { wake = resolve; });
         }
       } finally {

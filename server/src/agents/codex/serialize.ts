@@ -34,6 +34,10 @@ function toolResult(item: CodexItem, content: unknown, isError = false): Content
   };
 }
 
+function isFinishedStatus(status: unknown): boolean {
+  return status !== 'inProgress' && status !== undefined && status !== null;
+}
+
 export function codexThreadItemToWire(item: CodexItem): ChatServerMessage | null {
   switch (item.type) {
     case 'userMessage':
@@ -59,22 +63,40 @@ export function codexThreadItemToWire(item: CodexItem): ChatServerMessage | null
         content: [toolUse(item, { text: String(item.text ?? '') })],
       };
     case 'commandExecution':
+      if (!isFinishedStatus(item.status) && item.exitCode == null && item.aggregatedOutput == null) {
+        return {
+          type: 'assistant',
+          content: [toolUse(item, { command: item.command ?? '', cwd: item.cwd ?? '' })],
+        };
+      }
       return {
         type: 'assistant',
         content: [
           toolUse(item, { command: item.command ?? '', cwd: item.cwd ?? '' }),
-          toolResult(item, item.aggregatedOutput ?? '', item.exitCode != null && item.exitCode !== 0),
+          toolResult(item, item.aggregatedOutput ?? '', item.status === 'failed' || item.exitCode != null && item.exitCode !== 0),
         ],
       };
     case 'fileChange':
+      if (!isFinishedStatus(item.status)) {
+        return {
+          type: 'assistant',
+          content: [toolUse(item, { changes: item.changes ?? [], status: item.status ?? null })],
+        };
+      }
       return {
         type: 'assistant',
         content: [
           toolUse(item, { changes: item.changes ?? [], status: item.status ?? null }),
-          toolResult(item, safeStringify({ changes: item.changes ?? [], status: item.status ?? null }), false),
+          toolResult(item, safeStringify({ changes: item.changes ?? [], status: item.status ?? null }), item.status === 'failed'),
         ],
       };
     case 'mcpToolCall':
+      if (!isFinishedStatus(item.status) && item.result == null && item.error == null) {
+        return {
+          type: 'assistant',
+          content: [toolUse(item, safeInput({ server: item.server, tool: item.tool, arguments: item.arguments }))],
+        };
+      }
       return {
         type: 'assistant',
         content: [
@@ -83,6 +105,12 @@ export function codexThreadItemToWire(item: CodexItem): ChatServerMessage | null
         ],
       };
     case 'dynamicToolCall':
+      if (!isFinishedStatus(item.status) && item.contentItems == null && item.success == null) {
+        return {
+          type: 'assistant',
+          content: [toolUse(item, safeInput({ namespace: item.namespace, tool: item.tool, arguments: item.arguments }))],
+        };
+      }
       return {
         type: 'assistant',
         content: [

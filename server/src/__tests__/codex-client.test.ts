@@ -25,6 +25,19 @@ describe('CodexJsonRpcClient', () => {
     expect(notifications).toEqual([{ method: 'item/agentMessage/delta', params: { delta: 'a' } }]);
   });
 
+  it('writes client notifications without a request id', () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const client = new CodexJsonRpcClient({ input, output });
+
+    client.notify('initialized');
+
+    expect(JSON.parse((output.read()?.toString() ?? '').trim())).toEqual({
+      jsonrpc: '2.0',
+      method: 'initialized',
+    });
+  });
+
   it('ignores malformed lines and keeps resolving later responses', async () => {
     const input = new PassThrough();
     const output = new PassThrough();
@@ -108,5 +121,32 @@ describe('CodexAppServerProcess', () => {
 
     expect(second).not.toBe(first);
     expect(children).toHaveLength(2);
+  });
+
+  it('initializes the app-server before exposing the ready client', async () => {
+    const child = new EventEmitter() as any;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const process = new CodexAppServerProcess(vi.fn(() => child) as any);
+
+    const ready = process.startInitialized();
+    const initialize = JSON.parse((child.stdin.read()?.toString() ?? '').trim());
+    expect(initialize).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'initialize',
+      params: {
+        clientInfo: { name: 'pawterm-server', title: 'PawTerm' },
+        capabilities: null,
+      },
+    });
+
+    child.stdout.write(`${JSON.stringify({ id: initialize.id, result: { capabilities: {} } })}\n`);
+    await expect(ready).resolves.toBeTruthy();
+    expect(JSON.parse((child.stdin.read()?.toString() ?? '').trim())).toEqual({
+      jsonrpc: '2.0',
+      method: 'initialized',
+    });
   });
 });

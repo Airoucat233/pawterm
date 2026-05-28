@@ -14,6 +14,13 @@ class FilesApi {
   Map<String, String> get _auth =>
       _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
+  Map<String, String> get authHeaders => _auth;
+
+  Uri downloadUri(String remotePath) =>
+      Uri.parse('$_apiBase/fs/download').replace(queryParameters: {
+        'path': remotePath,
+      });
+
   /// 列出 [path] 下的文件夹和文件。
   Future<FsListing> ls(String path) async {
     final uri =
@@ -42,8 +49,7 @@ class FilesApi {
     void Function(int received, int? total)? onProgress,
     Completer<void>? cancelToken,
   }) async {
-    final uri = Uri.parse('$_apiBase/fs/download')
-        .replace(queryParameters: {'path': remotePath});
+    final uri = downloadUri(remotePath);
     final client = http.Client();
     try {
       final req = http.Request('GET', uri);

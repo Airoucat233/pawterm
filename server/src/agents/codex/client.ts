@@ -50,6 +50,14 @@ export class CodexJsonRpcClient {
     return promise;
   }
 
+  notify(method: string, params?: unknown): void {
+    if (this.closed) throw new Error('Codex JSON-RPC client is closed');
+    const payload = params === undefined
+      ? { jsonrpc: '2.0', method }
+      : { jsonrpc: '2.0', method, params };
+    this.io.output.write(`${JSON.stringify(payload)}\n`);
+  }
+
   onNotification(handler: NotificationHandler): () => void {
     this.notificationHandlers.add(handler);
     return () => this.notificationHandlers.delete(handler);
@@ -109,6 +117,7 @@ export class CodexJsonRpcClient {
 export class CodexAppServerProcess {
   private child?: ChildProcessWithoutNullStreams;
   private client?: CodexJsonRpcClient;
+  private initPromise?: Promise<CodexJsonRpcClient>;
 
   constructor(private readonly spawnCodex: typeof spawn = spawn) {}
 
@@ -127,7 +136,10 @@ export class CodexAppServerProcess {
     const client = this.client;
     const clear = () => {
       if (this.child === child) this.child = undefined;
-      if (this.client === client) this.client = undefined;
+      if (this.client === client) {
+        this.client = undefined;
+        this.initPromise = undefined;
+      }
     };
     child.on('error', (err) => {
       client.close(err);
@@ -140,10 +152,40 @@ export class CodexAppServerProcess {
     return this.client;
   }
 
+  startInitialized(): Promise<CodexJsonRpcClient> {
+    const client = this.start();
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this.initialize(client).catch((err) => {
+      if (this.client === client) {
+        client.close(err instanceof Error ? err : new Error(String(err)));
+        this.child?.kill('SIGTERM');
+        this.child = undefined;
+        this.client = undefined;
+        this.initPromise = undefined;
+      }
+      throw err;
+    });
+    return this.initPromise;
+  }
+
   stop(): void {
     this.client?.close(new Error('Codex app-server stopped'));
     this.child?.kill('SIGTERM');
     this.child = undefined;
     this.client = undefined;
+    this.initPromise = undefined;
+  }
+
+  private async initialize(client: CodexJsonRpcClient): Promise<CodexJsonRpcClient> {
+    await client.request('initialize', {
+      clientInfo: {
+        name: 'pawterm-server',
+        title: 'PawTerm',
+        version: process.env.npm_package_version ?? '0.0.0',
+      },
+      capabilities: null,
+    });
+    client.notify('initialized');
+    return client;
   }
 }

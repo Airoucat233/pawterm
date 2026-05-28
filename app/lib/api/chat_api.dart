@@ -38,6 +38,14 @@ class ChatApiException implements Exception {
   String toString() => 'ChatApiException($status): $message';
 }
 
+class StreamStartResult {
+  final String? sessionId;
+  const StreamStartResult({this.sessionId});
+
+  factory StreamStartResult.fromJson(Map<String, dynamic> json) =>
+      StreamStartResult(sessionId: json['session_id'] as String?);
+}
+
 /// REST client — mirrors chat-rest.ts endpoints.
 /// SSE stream is handled separately via SseClient.
 class ChatApi {
@@ -52,7 +60,7 @@ class ChatApi {
   /// Send a message and start streaming the response.
   /// Events arrive via GET /chat/events?uuid= (SseClient).
   /// Throws [ChatApiException] with status 409 if a run is already active.
-  Future<void> stream({
+  Future<StreamStartResult> stream({
     required String uuid,
     required String cwd,
     required String text,
@@ -82,6 +90,8 @@ class ChatApi {
     if (resp.statusCode != 200) {
       throw ChatApiException(resp.statusCode, resp.body);
     }
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    return StreamStartResult.fromJson(body);
   }
 
   /// Returns the SSE URL to pass to SseClient for the given session.
@@ -166,9 +176,10 @@ class ChatApi {
   }
 
   /// Fetch available models and current provider from the server.
-  Future<ServerModels> fetchModels() async {
+  Future<ServerModels> fetchModels({AgentKind agent = AgentKind.claude}) async {
     final resp = await http.get(
-      Uri.parse('$_apiBase/models'),
+      Uri.parse('$_apiBase/models')
+          .replace(queryParameters: {'agent': agent.wire}),
       headers: _auth,
     );
     if (resp.statusCode != 200) {
@@ -195,18 +206,24 @@ class ServerModelInfo {
   final String id;
   final String label;
   final String tier;
+  final String? description;
   const ServerModelInfo(
-      {required this.id, required this.label, required this.tier});
+      {required this.id,
+      required this.label,
+      required this.tier,
+      this.description});
 
   factory ServerModelInfo.fromJson(Map<String, dynamic> j) => ServerModelInfo(
         id: j['id'] as String,
         label: j['label'] as String,
         tier: j['tier'] as String? ?? 'fast',
+        description: j['description'] as String?,
       );
 }
 
 class ServerModels {
-  final String provider; // 'anthropic' | 'bedrock' | 'vertex' | 'unknown'
+  final String
+      provider; // 'anthropic' | 'bedrock' | 'vertex' | 'openai' | 'unknown'
   final String current;
   final List<ServerModelInfo> models;
   const ServerModels(
@@ -224,6 +241,7 @@ class ServerModels {
   String get providerLabel => switch (provider) {
         'bedrock' => 'AWS Bedrock',
         'vertex' => 'Vertex AI',
+        'openai' => 'OpenAI',
         _ => 'Anthropic',
       };
 }
