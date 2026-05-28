@@ -185,4 +185,6 @@ echo "  abi     : $([[ $SPLIT_PER_ABI -eq 1 ]] && echo split || echo arm64)"
 echo "  releases: $VERSION_DIR"
 /bin/ls -1 "$VERSION_DIR" | /usr/bin/sed 's/^/    /'
 echo "  latest  : $LATEST"
-[[ "$FLAVOR" == "dev" ]] && echo "  dist    : skipped for local dev build"
+if [[ "$FLAVOR" == "dev" ]]; then
+  echo "  dist    : skipped for local dev build"
+fi
