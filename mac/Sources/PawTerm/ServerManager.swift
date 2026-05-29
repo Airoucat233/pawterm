@@ -71,6 +71,7 @@ class ServerManager: ObservableObject {
     @Published var latestAppVersion: String? = nil
     @Published var latestAppReleaseTag: String? = nil
     @Published var appUpdateChannel: AppUpdateChannel = .stable
+    @Published var serverUpdateChannel: AppUpdateChannel = .stable
     @Published var availableConfigs: [String] = []
 
     var port: Int { config.port }
@@ -82,7 +83,9 @@ class ServerManager: ObservableObject {
     private var updateCheckTimer: Timer?
     private var sseTask: Task<Void, Never>?
     private var stoppingStartedAt: Date?
-    private static let prereleaseChannelKey = "pawterm_prerelease_channel"
+    private static let legacyPrereleaseChannelKey = "pawterm_prerelease_channel"
+    private static let appPrereleaseChannelKey = "pawterm_app_prerelease_channel"
+    private static let serverPrereleaseChannelKey = "pawterm_server_prerelease_channel"
     private static let blockedKey = "pawterm_blocked_devices"
     private var blockedDeviceIds: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: Self.blockedKey) ?? []) }
@@ -95,12 +98,21 @@ class ServerManager: ObservableObject {
         (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
     }
 
-    var prereleaseChannelEnabled: Bool {
+    var appPrereleaseChannelEnabled: Bool {
         get { appUpdateChannel == .prerelease }
         set {
             appUpdateChannel = newValue ? .prerelease : .stable
-            UserDefaults.standard.set(newValue, forKey: Self.prereleaseChannelKey)
+            UserDefaults.standard.set(newValue, forKey: Self.appPrereleaseChannelKey)
             Task { await checkAppUpdate() }
+        }
+    }
+
+    var serverPrereleaseChannelEnabled: Bool {
+        get { serverUpdateChannel == .prerelease }
+        set {
+            serverUpdateChannel = newValue ? .prerelease : .stable
+            UserDefaults.standard.set(newValue, forKey: Self.serverPrereleaseChannelKey)
+            Task { await checkServerUpdate() }
         }
     }
 
@@ -133,7 +145,10 @@ class ServerManager: ObservableObject {
         let active = Self.readActiveConfigPath()
         self.configPath = active
         self.config = PawTermConfig.load(from: active)
-        self.appUpdateChannel = UserDefaults.standard.bool(forKey: Self.prereleaseChannelKey) ? .prerelease : .stable
+        let defaults = UserDefaults.standard
+        let legacyPrerelease = defaults.bool(forKey: Self.legacyPrereleaseChannelKey)
+        self.appUpdateChannel = defaults.bool(forKey: Self.appPrereleaseChannelKey) || legacyPrerelease ? .prerelease : .stable
+        self.serverUpdateChannel = defaults.bool(forKey: Self.serverPrereleaseChannelKey) ? .prerelease : .stable
         refreshAvailableConfigs()
         startPolling()
     }
@@ -236,7 +251,7 @@ class ServerManager: ObservableObject {
 
         let proc = Process()
         proc.executableURL = npmURL
-        let serverPackage = appUpdateChannel == .prerelease ? "pawterm-server@prerelease" : "pawterm-server@latest"
+        let serverPackage = serverUpdateChannel == .prerelease ? "pawterm-server@prerelease" : "pawterm-server@latest"
         proc.arguments = ["install", "-g", serverPackage]
         proc.environment = enrichedEnvironment()
 
@@ -308,7 +323,7 @@ class ServerManager: ObservableObject {
                     ? String(raw.dropFirst("pawterm-server ".count)) : raw
             }
         }
-        let serverTag = appUpdateChannel == .prerelease ? "prerelease" : "latest"
+        let serverTag = serverUpdateChannel == .prerelease ? "prerelease" : "latest"
         guard let url = URL(string: "https://registry.npmjs.org/pawterm-server/\(serverTag)") else { return }
         if let (data, _) = try? await URLSession.shared.data(from: url),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -340,42 +355,64 @@ class ServerManager: ObservableObject {
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let tagName = parseAppReleaseTag(from: data) else {
+              let release = parseMacAppRelease(from: data) else {
             latestAppVersion = nil
             latestAppReleaseTag = nil
             appUpdateAvailable = false
             return
         }
-        let latest = version(fromReleaseTag: tagName)
         let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-        latestAppReleaseTag = tagName
-        latestAppVersion = latest
-        appUpdateAvailable = appUpdateChannel == .prerelease ? true : latest != current
+        latestAppReleaseTag = release.tagName
+        latestAppVersion = release.version
+        appUpdateAvailable = release.version != current
     }
 
-    private func parseAppReleaseTag(from data: Data) -> String? {
+    private func parseMacAppRelease(from data: Data) -> (tagName: String, version: String)? {
         switch appUpdateChannel {
         case .stable:
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tagName = json["tag_name"] as? String,
+                  let version = macAppVersion(fromRelease: json) else {
                 return nil
             }
-            return json["tag_name"] as? String
+            return (tagName, version)
         case .prerelease:
             guard let releases = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
                 return nil
             }
-            return releases.compactMap { $0["tag_name"] as? String }
-                .first { $0.hasPrefix("prerelease-v") }
+            for release in releases {
+                guard (release["draft"] as? Bool) != true,
+                      (release["prerelease"] as? Bool) == true,
+                      let tagName = release["tag_name"] as? String,
+                      tagName.hasPrefix("prerelease-v"),
+                      let version = macAppVersion(fromRelease: release) else {
+                    continue
+                }
+                return (tagName, version)
+            }
+            return nil
         }
     }
 
-    private func version(fromReleaseTag tagName: String) -> String {
-        for prefix in ["release-v", "prerelease-v", "v"] {
-            if tagName.hasPrefix(prefix) {
-                return String(tagName.dropFirst(prefix.count))
+    private func macAppVersion(fromRelease release: [String: Any]) -> String? {
+        guard let assets = release["assets"] as? [[String: Any]] else { return nil }
+        for asset in assets {
+            guard let name = asset["name"] as? String else { continue }
+            if let version = macAppVersion(fromAssetName: name) {
+                return version
             }
         }
-        return tagName
+        return nil
+    }
+
+    private func macAppVersion(fromAssetName name: String) -> String? {
+        let pattern = #"^PawTerm-(?:prerelease-)?(.+)-mac\.zip$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+              let range = Range(match.range(at: 1), in: name) else {
+            return nil
+        }
+        return String(name[range])
     }
 
     // MARK: - Pairing PIN

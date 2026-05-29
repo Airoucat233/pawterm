@@ -17,7 +17,7 @@ cd mac
 bash scripts/build.sh --prod
 ```
 
-Requires Xcode Command Line Tools (`xcode-select --install`). Produces `PawTerm.app` in the `mac/` directory and `dist/PawTerm-*-mac.zip`.
+Requires Xcode Command Line Tools (`xcode-select --install`). Produces `PawTerm.app` in the `mac/` directory and `dist/PawTerm-*-mac.zip`. Prerelease CI renames the uploaded zip to `PawTerm-prerelease-*-mac.zip`.
 
 For the local dev app:
 
@@ -29,7 +29,7 @@ bash scripts/build.sh --dev --install
 This installs `PawTermDev.app` with bundle id `com.airoucat.pawterm.dev`. Do not attach dev apps to GitHub Release.
 `PawTermDev.app` uses `config.dev.json` and does not show official Mac app update prompts.
 
-The production app has a **Prerelease channel** menu toggle. Stable checks use the latest `release-v*` GitHub Release; prerelease checks use the newest `prerelease-v*` GitHub Release.
+The production app has separate **Server prerelease channel** and **App prerelease channel** toggles. Stable app checks use the latest `release-v*` GitHub Release; prerelease app checks use the newest `prerelease-v*` GitHub Release.
 
 ## Install
 

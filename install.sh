@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # install.sh — PawTerm one-liner installer
 #
-# macOS  → downloads PawTerm.app from the latest GitHub release,
-#           installs it to /Applications, and opens it.
-#           The Mac App manages pawterm-server automatically.
+# Installs pawterm-server by default. On macOS, PawTerm.app is optional
+# and acts as a menu bar manager for the server.
 #
-# Linux  → installs pawterm-server via npm, registers it as a
-#           systemd service, and starts it.
-#
-# Usage: curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh | bash
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh | VERSION=prerelease bash
+#   curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh | INSTALL_MAC_APP=1 bash
 set -euo pipefail
 
 GREEN='\033[0;32m'
@@ -22,46 +21,150 @@ warn() { printf "${YELLOW}!${RESET} %s\n" "$*"; }
 err()  { printf "${RED}✗${RESET} %s\n" "$*" >&2; }
 info() { printf "${GREY}  %s${RESET}\n" "$*"; }
 
-printf "\n"
-printf "${GREEN}╔══════════════════════════════════════╗${RESET}\n"
-printf "${GREEN}║       PawTerm — auto installer       ║${RESET}\n"
-printf "${GREEN}╚══════════════════════════════════════╝${RESET}\n"
-printf "\n"
+SERVER_CHANNEL="${VERSION:-latest}"
+INSTALL_MAC_APP="${INSTALL_MAC_APP:-ask}"
 
-OS="$(uname -s)"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --latest)
+      SERVER_CHANNEL="latest"
+      shift
+      ;;
+    --prerelease)
+      SERVER_CHANNEL="prerelease"
+      shift
+      ;;
+    --version|--channel)
+      if [ "$#" -lt 2 ]; then
+        err "$1 requires a value: latest or prerelease"
+        exit 1
+      fi
+      SERVER_CHANNEL="$2"
+      shift 2
+      ;;
+    --version=*|--channel=*)
+      SERVER_CHANNEL="${1#*=}"
+      shift
+      ;;
+    --install-mac-app)
+      INSTALL_MAC_APP="1"
+      shift
+      ;;
+    --no-mac-app)
+      INSTALL_MAC_APP="0"
+      shift
+      ;;
+    *)
+      err "Unknown option: $1"
+      info "Supported options: --latest, --prerelease, --version latest|prerelease, --install-mac-app, --no-mac-app"
+      exit 1
+      ;;
+  esac
+done
 
-# ═══════════════════════════════════════════════════════════════
-# macOS — install pawterm-server via npm, then install PawTerm.app
-# ═══════════════════════════════════════════════════════════════
-if [ "$OS" = "Darwin" ]; then
-  info "Platform: macOS"
-  printf "\n"
+validate_channel() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    latest|prerelease) ;;
+    *)
+      err "Unsupported $name: $value"
+      info "Supported channels: latest, prerelease"
+      exit 1
+      ;;
+  esac
+}
 
-  # 1. Node 20+ check
-  need_node_version=20
-  node_ok() {
-    if command -v node >/dev/null 2>&1; then
-      local v
-      v="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
-      [ "$v" -ge "$need_node_version" ] 2>/dev/null
-    else
-      return 1
-    fi
-  }
+validate_channel VERSION "$SERVER_CHANNEL"
+APP_CHANNEL="${APP_VERSION:-$SERVER_CHANNEL}"
+validate_channel APP_VERSION "$APP_CHANNEL"
 
-  if node_ok; then
-    ok "Node $(node --version) found"
+release_page_url() {
+  local channel="$1"
+  if [ "$channel" = "prerelease" ]; then
+    printf 'https://github.com/Airoucat233/pawterm/releases\n'
   else
-    err "Node $need_node_version+ not found."
-    printf "\n"
-    printf "  Install Node.js via Homebrew:\n"
-    printf "    ${YELLOW}brew install node@20${RESET}\n"
-    printf "  Or download from: ${YELLOW}https://nodejs.org/${RESET}\n"
-    printf "  Then re-run this installer.\n\n"
-    exit 1
+    printf 'https://github.com/Airoucat233/pawterm/releases/latest\n'
+  fi
+}
+
+SERVER_RELEASE_PAGE_URL="$(release_page_url "$SERVER_CHANNEL")"
+APP_RELEASE_PAGE_URL="$(release_page_url "$APP_CHANNEL")"
+
+github_release_asset() {
+  local release_channel="$1"
+  local asset_regex="$2"
+  local release_json
+  if [ "$release_channel" = "latest" ]; then
+    release_json="$(curl -fsSL "https://api.github.com/repos/Airoucat233/pawterm/releases/latest")"
+  else
+    release_json="$(curl -fsSL "https://api.github.com/repos/Airoucat233/pawterm/releases")"
   fi
 
-  # 2. claude CLI check
+  RELEASE_CHANNEL="$release_channel" ASSET_REGEX="$asset_regex" node -e '
+const fs = require("fs");
+const input = fs.readFileSync(0, "utf8");
+const channel = process.env.RELEASE_CHANNEL;
+const assetRegex = new RegExp(process.env.ASSET_REGEX);
+const data = JSON.parse(input);
+const releases = Array.isArray(data) ? data : [data];
+const release = releases.find((item) => {
+  if (item.draft) return false;
+  return channel === "prerelease" ? item.prerelease : true;
+});
+if (!release) process.exit(2);
+const asset = (release.assets || []).find((item) => assetRegex.test(item.name));
+if (!asset) process.exit(3);
+process.stdout.write(`${asset.browser_download_url}\n${release.html_url}\n${release.tag_name}\n`);
+' <<<"$release_json"
+}
+
+node_ok() {
+  local need_node_version=20
+  if command -v node >/dev/null 2>&1; then
+    local v
+    v="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
+    [ "$v" -ge "$need_node_version" ] 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+ensure_node() {
+  if node_ok; then
+    ok "Node $(node --version) found"
+    return 0
+  fi
+
+  if [ "$(uname -s)" = "Linux" ]; then
+    warn "Node 20+ not found — attempting to install via nvm …"
+    if [ -z "${NVM_DIR:-}" ] && ! command -v nvm >/dev/null 2>&1; then
+      curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+      export NVM_DIR="$HOME/.nvm"
+      # shellcheck disable=SC1091
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    else
+      export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+      # shellcheck disable=SC1091
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    fi
+    nvm install 20 && nvm use 20
+    if node_ok; then
+      ok "Node $(node --version) ready"
+      return 0
+    fi
+  fi
+
+  err "Node 20+ not found."
+  printf "\n"
+  printf "  Install Node.js via Homebrew:\n"
+  printf "    ${YELLOW}brew install node@20${RESET}\n"
+  printf "  Or download from: ${YELLOW}https://nodejs.org/${RESET}\n"
+  printf "  Then re-run this installer.\n\n"
+  exit 1
+}
+
+ensure_agent_cli() {
   if command -v claude >/dev/null 2>&1; then
     ok "claude CLI found: $(claude --version 2>/dev/null || true)"
   else
@@ -76,33 +179,76 @@ if [ "$OS" = "Darwin" ]; then
     printf "  Then re-run this installer.\n\n"
     exit 1
   fi
+}
 
-  # 3. Install / upgrade pawterm-server
-  info "Installing pawterm-server@latest …"
-  npm install -g pawterm-server@latest
-  ok "pawterm-server installed: $(pawterm-server --version 2>/dev/null || true)"
+wait_for_server() {
+  local health_url="http://localhost:8765/health"
+  local timeout=30
+  local elapsed=0
+  printf "  Waiting for server to be ready"
+  while true; do
+    if curl -sf "$health_url" >/dev/null 2>&1; then
+      printf "\n"
+      ok "Server is ready at $health_url"
+      break
+    fi
+    if [ "$elapsed" -ge "$timeout" ]; then
+      printf "\n"
+      err "Server did not become ready within ${timeout}s."
+      info "Check logs: pawterm-server logs"
+      exit 1
+    fi
+    printf "."
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+}
 
-  # 4. Register service (do not start — user starts via Mac App or CLI)
-  info "Registering pawterm-server as a launchd service …"
-  pawterm-server install
-  ok "Service registered (auto-starts at login)"
+should_install_mac_app() {
+  case "$INSTALL_MAC_APP" in
+    1|true|yes|y) return 0 ;;
+    0|false|no|n) return 1 ;;
+    ask) ;;
+    *)
+      err "Unsupported INSTALL_MAC_APP: $INSTALL_MAC_APP"
+      info "Use 1, 0, or ask."
+      exit 1
+      ;;
+  esac
 
-  # 5. Install PawTerm.app
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    info "Skipping PawTerm.app install. Set INSTALL_MAC_APP=1 to install it."
+    return 1
+  fi
+
+  printf "\n" > /dev/tty
+  printf "Install PawTerm Mac App for menu bar server management? [y/N] " > /dev/tty
+  local answer
+  read -r answer < /dev/tty
+  case "$answer" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+install_mac_app() {
   printf "\n"
-  info "Installing PawTerm.app from the latest GitHub release …"
+  info "Installing PawTerm.app from the $APP_CHANNEL GitHub release channel …"
   printf "\n"
 
-  RELEASE_API="https://api.github.com/repos/Airoucat233/pawterm/releases/latest"
-  ZIP_URL="$(curl -fsSL "$RELEASE_API" \
-    | grep '"browser_download_url"' \
-    | grep 'mac\.zip"' \
-    | tail -1 \
-    | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')"
+  if ! RELEASE_INFO="$(github_release_asset "$APP_CHANNEL" 'mac\.zip$')"; then
+    err "Could not find a mac.zip in the $APP_CHANNEL release channel."
+    info "Download manually: $APP_RELEASE_PAGE_URL"
+    return 1
+  fi
+  ZIP_URL="$(printf '%s\n' "$RELEASE_INFO" | sed -n '1p')"
+  APP_RELEASE_URL="$(printf '%s\n' "$RELEASE_INFO" | sed -n '2p')"
+  APP_RELEASE_TAG="$(printf '%s\n' "$RELEASE_INFO" | sed -n '3p')"
 
   if [ -z "$ZIP_URL" ]; then
-    err "Could not find a mac.zip in the latest release."
-    info "Download manually: https://github.com/Airoucat233/pawterm/releases/latest"
-    exit 1
+    err "Could not find a mac.zip in the $APP_CHANNEL release channel."
+    info "Download manually: $APP_RELEASE_PAGE_URL"
+    return 1
   fi
 
   ZIP_NAME="$(basename "$ZIP_URL")"
@@ -119,7 +265,8 @@ if [ "$OS" = "Darwin" ]; then
   APP_SRC="$(find "$TMP_DIR" -maxdepth 2 -name "*.app" | head -1)"
   if [ -z "$APP_SRC" ]; then
     err "No .app found in $ZIP_NAME"
-    exit 1
+    rm -rf "$TMP_DIR"
+    return 1
   fi
 
   APP_NAME="$(basename "$APP_SRC")"
@@ -138,150 +285,102 @@ if [ "$OS" = "Darwin" ]; then
   rm -rf "$TMP_DIR"
   ok "$APP_NAME installed"
 
+  if [ "$SERVER_CHANNEL" = "prerelease" ]; then
+    defaults write com.airoucat.pawterm pawterm_server_prerelease_channel -bool true 2>/dev/null || true
+  else
+    defaults write com.airoucat.pawterm pawterm_server_prerelease_channel -bool false 2>/dev/null || true
+  fi
+  if [ "$APP_CHANNEL" = "prerelease" ]; then
+    defaults write com.airoucat.pawterm pawterm_app_prerelease_channel -bool true 2>/dev/null || true
+  else
+    defaults write com.airoucat.pawterm pawterm_app_prerelease_channel -bool false 2>/dev/null || true
+  fi
+
   info "Launching $APP_NAME …"
   open "$APP_DEST"
+  INSTALLED_MAC_APP_VERSION="${APP_RELEASE_TAG:-$(echo "$ZIP_NAME" | sed 's/PawTerm-\(.*\)-mac\.zip/\1/')}"
+  INSTALLED_MAC_APP_RELEASE_URL="$APP_RELEASE_URL"
+}
 
-  SERVER_VER="$(pawterm-server --version 2>/dev/null | sed 's/pawterm-server //' || echo 'unknown')"
-  APP_VER="$(echo "$ZIP_NAME" | sed 's/PawTerm-\(.*\)-mac\.zip/\1/')"
+printf "\n"
+printf "${GREEN}╔══════════════════════════════════════╗${RESET}\n"
+printf "${GREEN}║       PawTerm — auto installer       ║${RESET}\n"
+printf "${GREEN}╚══════════════════════════════════════╝${RESET}\n"
+printf "\n"
 
-  printf "\n"
-  printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
-  printf "${GREEN}  PawTerm is ready!  Next steps:           ${RESET}\n"
-  printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
-  printf "\n"
-  printf "  Installed:\n"
-  printf "    pawterm-server  ${GREEN}%s${RESET}\n" "$SERVER_VER"
-  printf "    PawTerm.app     ${GREEN}%s${RESET}\n" "$APP_VER"
-  printf "\n"
-  printf "  Click the menu bar icon to start the server,\n"
-  printf "  or run: ${YELLOW}pawterm-server start${RESET}\n"
-  printf "\n"
-  printf "  📱  ${YELLOW}Install the phone app:${RESET}\n"
-  printf "      https://github.com/Airoucat233/pawterm/releases/latest\n"
-  printf "      (grab the *-arm64-v8a.apk file)\n"
-  printf "\n"
-  printf "  🔗  Open PawTerm on your phone → tap Scan LAN → Pair\n"
-  printf "\n"
-  ok "Done. Enjoy PawTerm!"
-  printf "\n"
-  exit 0
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# Linux — install pawterm-server as a systemd service via npm
-# ═══════════════════════════════════════════════════════════════
-if [ "$OS" = "Linux" ]; then
-  info "Platform: Linux"
-  printf "\n"
-
-  # 1. Node 20+ check
-  need_node_version=20
-  node_ok() {
-    if command -v node >/dev/null 2>&1; then
-      local v
-      v="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
-      [ "$v" -ge "$need_node_version" ] 2>/dev/null
-    else
-      return 1
-    fi
-  }
-
-  if node_ok; then
-    ok "Node $(node --version) found"
-  else
-    warn "Node $need_node_version+ not found — attempting to install via nvm …"
-    if [ -z "${NVM_DIR:-}" ] && ! command -v nvm >/dev/null 2>&1; then
-      curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-      export NVM_DIR="$HOME/.nvm"
-      # shellcheck disable=SC1091
-      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    else
-      export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-      # shellcheck disable=SC1091
-      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    fi
-    nvm install 20 && nvm use 20
-    if ! node_ok; then
-      err "Node $need_node_version+ still not available."
-      info "Install manually: https://nodejs.org"
-      exit 1
-    fi
-    ok "Node $(node --version) ready"
-  fi
-
-  # 2. claude CLI check
-  if command -v claude >/dev/null 2>&1; then
-    ok "claude CLI found: $(claude --version 2>/dev/null || true)"
-  else
-    warn "claude CLI not found."
-    printf "\n"
-    printf "  PawTerm bridges your phone to Claude Code, so the claude CLI must\n"
-    printf "  be installed and logged in before the server is useful.\n"
-    printf "\n"
-    printf "    ${YELLOW}npm install -g @anthropic-ai/claude-code${RESET}\n"
-    printf "    ${YELLOW}claude login${RESET}\n"
-    printf "\n"
-    printf "  Then re-run this installer.\n\n"
+OS="$(uname -s)"
+case "$OS" in
+  Darwin|Linux) ;;
+  *)
+    err "Unsupported OS: $OS"
+    info "PawTerm supports macOS and Linux. For Windows see install.bat."
     exit 1
-  fi
+    ;;
+esac
 
-  # 3. Install pawterm-server
-  info "Installing pawterm-server@latest …"
-  npm install -g pawterm-server@latest
-  ok "pawterm-server installed: $(pawterm-server --version 2>/dev/null || true)"
+info "Platform: $OS"
+info "Server channel: $SERVER_CHANNEL"
+if [ "$OS" = "Darwin" ]; then
+  info "Mac App channel: $APP_CHANNEL"
+fi
+printf "\n"
 
-  # 4. Register + start service
+ensure_node
+ensure_agent_cli
+
+info "Installing pawterm-server@$SERVER_CHANNEL …"
+npm install -g "pawterm-server@$SERVER_CHANNEL"
+ok "pawterm-server installed: $(pawterm-server --version 2>/dev/null || true)"
+
+if [ "$OS" = "Darwin" ]; then
+  info "Registering pawterm-server as a launchd service …"
+else
   info "Registering pawterm-server as a systemd service …"
-  pawterm-server install
-  ok "Service registered (auto-starts at login)"
-  info "Starting pawterm-server …"
-  pawterm-server start
-  ok "Service started"
+fi
+pawterm-server install
+ok "Service registered (auto-starts at login)"
 
-  # 5. Wait for /health
-  HEALTH_URL="http://localhost:8765/health"
-  TIMEOUT=30
-  elapsed=0
-  printf "  Waiting for server to be ready"
-  while true; do
-    if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
-      printf "\n"
-      ok "Server is ready at $HEALTH_URL"
-      break
-    fi
-    if [ "$elapsed" -ge "$TIMEOUT" ]; then
-      printf "\n"
-      err "Server did not become ready within ${TIMEOUT}s."
-      info "Check logs: pawterm-server logs"
-      exit 1
-    fi
-    printf "."
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
+info "Starting pawterm-server …"
+pawterm-server start
+ok "Service started"
+wait_for_server
 
-  printf "\n"
-  printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
-  printf "${GREEN}  PawTerm server is up!  Next steps:       ${RESET}\n"
-  printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
-  printf "\n"
-  printf "  Installed:\n"
-  printf "    pawterm-server  ${GREEN}%s${RESET}\n" "$(pawterm-server --version 2>/dev/null | sed 's/pawterm-server //' || echo 'unknown')"
-  printf "\n"
-  printf "  📱  ${YELLOW}Install the phone app:${RESET}\n"
-  printf "      https://github.com/Airoucat233/pawterm/releases/latest\n"
-  printf "      (grab the *-arm64-v8a.apk file)\n"
-  printf "\n"
-  printf "  🔗  Open PawTerm on your phone → tap Scan LAN → Pair\n"
-  printf "\n"
-  printf "  ℹ️   Server commands: start / stop / restart / logs / status\n"
-  printf "      Run ${GREY}pawterm-server help${RESET} for the full list.\n"
-  printf "\n"
-  ok "Done. Enjoy PawTerm!"
-  printf "\n"
-  exit 0
+INSTALLED_MAC_APP_VERSION=""
+INSTALLED_MAC_APP_RELEASE_URL=""
+if [ "$OS" = "Darwin" ] && should_install_mac_app; then
+  install_mac_app
 fi
 
-err "Unsupported OS: $OS"
-info "PawTerm supports macOS and Linux. For Windows see install.bat."
-exit 1
+SERVER_VER="$(pawterm-server --version 2>/dev/null | sed 's/pawterm-server //' || echo 'unknown')"
+printf "\n"
+printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
+printf "${GREEN}  PawTerm server is ready!                 ${RESET}\n"
+printf "${GREEN}═══════════════════════════════════════════${RESET}\n"
+printf "\n"
+printf "  Installed:\n"
+printf "    pawterm-server  ${GREEN}%s${RESET}\n" "$SERVER_VER"
+if [ -n "$INSTALLED_MAC_APP_VERSION" ]; then
+  printf "    PawTerm.app     ${GREEN}%s${RESET}\n" "$INSTALLED_MAC_APP_VERSION"
+elif [ "$OS" = "Darwin" ]; then
+  printf "    PawTerm.app     ${GREY}skipped${RESET}\n"
+fi
+printf "\n"
+printf "  Open Web Admin:\n"
+printf "    ${YELLOW}pawterm-server admin${RESET}\n"
+printf "\n"
+printf "  📱  ${YELLOW}Install the phone app:${RESET}\n"
+printf "      %s\n" "$SERVER_RELEASE_PAGE_URL"
+printf "      (grab the *-arm64-v8a.apk file)\n"
+if [ "$OS" = "Darwin" ] && [ -z "$INSTALLED_MAC_APP_VERSION" ]; then
+  printf "\n"
+  printf "  Optional Mac App manager:\n"
+  printf "    ${YELLOW}INSTALL_MAC_APP=1 bash install.sh${RESET}\n"
+fi
+printf "\n"
+printf "  🔗  Open PawTerm on your phone → tap Scan LAN → Pair\n"
+printf "\n"
+printf "  ℹ️   Server commands: start / stop / restart / logs / status\n"
+printf "      Run ${GREY}pawterm-server help${RESET} for the full list.\n"
+printf "\n"
+ok "Done. Enjoy PawTerm!"
+printf "\n"

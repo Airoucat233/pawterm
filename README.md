@@ -13,7 +13,7 @@ A bridge server runs on your dev machine (where `claude` CLI is installed). The 
 
 ## Quick Start
 
-### 🖥️ Install the Server
+### Install the Server
 
 **One-liner (macOS / Linux)**
 
@@ -23,14 +23,53 @@ curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh
 
 Or download [`install.sh`](install.sh), inspect it, then `bash install.sh`.
 
-The script behaves differently per platform:
+The installer checks Node 20+ and the `claude` CLI, installs `pawterm-server` from npm, registers it as a background service, starts it, and waits for `/health` to become ready.
 
-| Platform | What it does |
-|----------|-------------|
-| **macOS** | Downloads `PawTerm.app` from the latest release, installs it to `/Applications`, and opens it. The Mac App manages `pawterm-server` automatically — no Node or npm setup needed. |
-| **Linux** | Checks for Node 20+ and the `claude` CLI, installs `pawterm-server` via npm, registers it as a **systemd** service (auto-starts at login), and waits for it to be ready. |
+| Platform | Service manager |
+|----------|-----------------|
+| **macOS** | `launchd`, auto-starts at login |
+| **Linux** | `systemd`, auto-starts at login |
 
-**🪟 Windows (experimental)**
+After installation, open the local Web Admin with:
+
+```bash
+pawterm-server admin
+```
+
+Run `pawterm-server help` for service commands: `start` / `stop` / `restart` / `update` / `logs` / `status`.
+
+### Optional Mac App
+
+On macOS, the installer can also install `PawTerm.app`, a menu bar manager for starting, stopping, and opening the server. The server does not require the Mac App.
+
+Interactive installs ask whether to install it. For scripted installs:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh |
+  INSTALL_MAC_APP=1 bash
+```
+
+If `APP_VERSION` is not set, the first Mac App install follows the server channel selected by `VERSION`. After that, the Mac App controls its own update channel.
+
+### Prerelease Server
+
+Use the prerelease channel when you want the newest test build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh |
+  VERSION=prerelease bash
+```
+
+To install the prerelease server and also install the matching prerelease Mac App on first setup:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh |
+  VERSION=prerelease INSTALL_MAC_APP=1 bash
+```
+
+You can override only the Mac App channel with `APP_VERSION=latest` or `APP_VERSION=prerelease`.
+
+**Windows (experimental)**
 
 Download [`install.bat`](install.bat) and double-click. **Not tested** — the shell tab feature requires `node-pty` which needs `windows-build-tools`.
 
@@ -46,17 +85,13 @@ npx pawterm-server
 Background service that auto-starts at login:
 ```bash
 npm install -g pawterm-server
-pawterm-server install   # register as system service (launchd / systemd)
+pawterm-server install
 pawterm-server start
 ```
 
-> Run `pawterm-server help` for all service commands: `start` / `stop` / `restart` / `update` / `logs` / `status`
-
 First run creates `~/.config/pawterm/config.json` — edit it to add your project paths, then restart.
 
----
-
-### 📱 Get the Phone App
+### Get the Phone App
 
 Grab the latest APK from [**Releases**](../../releases/latest) and install it on your Android phone.
 
@@ -64,9 +99,7 @@ Grab the latest APK from [**Releases**](../../releases/latest) and install it on
 
 iOS support is planned.
 
----
-
-### 🔗 Connect
+### Connect
 
 Open the app → tap **Scan LAN** → select your computer → tap **Pair** → done.
 

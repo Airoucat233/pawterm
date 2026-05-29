@@ -57,6 +57,14 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
+      - name: Mark APKs as prerelease
+        run: |
+          for apk in dist/pawterm-*.apk; do
+            base="$(basename "$apk")"
+            mv "$apk" "dist/pawterm-prerelease-${base#pawterm-}"
+          done
+          ls -lh dist/*.apk
+
       - uses: actions/upload-artifact@v4
         with:
           name: android-apks
@@ -73,6 +81,13 @@ jobs:
 
       - name: Build Mac app
         run: CI=true bash mac/scripts/build.sh --prod
+
+      - name: Mark Mac zip as prerelease
+        run: |
+          zip=$(ls dist/PawTerm-*-mac.zip | head -1)
+          base="$(basename "$zip")"
+          mv "$zip" "dist/PawTerm-prerelease-${base#PawTerm-}"
+          ls -lh dist/PawTerm-*-mac.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -117,8 +132,8 @@ jobs:
             ## Downloads
 
             **Android APK**
-            - `pawterm-*-arm64-v8a.apk` — modern devices
-            - `pawterm-*-armeabi-v7a.apk` — older devices
+            - `pawterm-prerelease-*-arm64-v8a.apk` — modern devices
+            - `pawterm-prerelease-*-armeabi-v7a.apk` — older devices
 
             **Mac**
-            - `PawTerm-*-mac.zip` — macOS (Apple Silicon)
+            - `PawTerm-prerelease-*-mac.zip` — macOS (Apple Silicon)

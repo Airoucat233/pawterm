@@ -171,12 +171,17 @@ struct MenuBarContent: View {
                 }
             }
 
+            Toggle("Server prerelease channel", isOn: Binding(
+                get: { serverManager.serverPrereleaseChannelEnabled },
+                set: { serverManager.serverPrereleaseChannelEnabled = $0 }
+            ))
+
             if serverManager.isDevBuild {
-                Text("PawTerm Dev: official updates are disabled").disabled(true)
+                Text("PawTerm Dev: official app updates are disabled").disabled(true)
             } else {
-                Toggle("Prerelease channel", isOn: Binding(
-                    get: { serverManager.prereleaseChannelEnabled },
-                    set: { serverManager.prereleaseChannelEnabled = $0 }
+                Toggle("App prerelease channel", isOn: Binding(
+                    get: { serverManager.appPrereleaseChannelEnabled },
+                    set: { serverManager.appPrereleaseChannelEnabled = $0 }
                 ))
             }
 
