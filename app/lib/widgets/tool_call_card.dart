@@ -103,9 +103,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: _summary(t, toolUse.name, toolUse.input),
+                      child: _HeaderSummary(
+                        text: _summaryText(toolUse.name, toolUse.input),
+                        alignEnd: isFileChange,
                       ),
                     ),
                     _statusBadge(t),
@@ -442,7 +442,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
   /// - Bash：主命令（第一个 token）+ … + 尾部（让用户同时看到命令类型和目标）
   /// - 文件操作：仅保留文件名（…/filename），路径可横划查看
   /// - 其他：完整 pattern 或空
-  Widget _summary(AppTokens t, String name, Map<String, dynamic> input) {
+  String _summaryText(String name, Map<String, dynamic> input) {
     final String text;
     switch (name) {
       case 'Edit':
@@ -480,9 +480,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
           final rawPath = first is Map
               ? (first['path'] ?? first['file_path'] ?? '').toString()
               : '';
-          final path =
-              rawPath.contains('/') ? '…/${rawPath.split('/').last}' : rawPath;
-          text = path.isNotEmpty ? path : '${changes.length} changes';
+          text = rawPath.isNotEmpty ? rawPath : '${changes.length} changes';
         } else {
           text = (input['status'] ?? '').toString();
         }
@@ -499,17 +497,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
         text = skill;
         break;
       default:
-        return const SizedBox.shrink();
+        return '';
     }
-    if (text.isEmpty) return const SizedBox.shrink();
-    return Text(
-      text,
-      style: TextStyle(
-        fontFamily: 'monospace',
-        fontSize: 11,
-        color: t.textMuted,
-      ),
-    );
+    return text;
   }
 
   Widget _renderBody(BuildContext context, AppTokens t, String name,
@@ -558,6 +548,71 @@ class _ToolCallCardState extends State<ToolCallCard> {
 }
 
 // ── Segmented control (pretty | raw) ─────────────────────────────────
+
+class _HeaderSummary extends StatefulWidget {
+  final String text;
+  final bool alignEnd;
+
+  const _HeaderSummary({
+    required this.text,
+    required this.alignEnd,
+  });
+
+  @override
+  State<_HeaderSummary> createState() => _HeaderSummaryState();
+}
+
+class _HeaderSummaryState extends State<_HeaderSummary> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleAlignEnd();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HeaderSummary oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text ||
+        oldWidget.alignEnd != widget.alignEnd) {
+      _scheduleAlignEnd();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _scheduleAlignEnd() {
+    if (!widget.alignEnd) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      _controller.jumpTo(_controller.position.maxScrollExtent);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.text.isEmpty) return const SizedBox.shrink();
+    final t = AppTokens.of(context);
+    return SingleChildScrollView(
+      controller: _controller,
+      scrollDirection: Axis.horizontal,
+      child: Text(
+        widget.text,
+        softWrap: false,
+        style: TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 11,
+          color: t.textMuted,
+        ),
+      ),
+    );
+  }
+}
 
 class _SegmentedControl extends StatelessWidget {
   final bool isRaw;
@@ -748,13 +803,6 @@ class _CodexFileChange extends StatelessWidget {
 
   Widget _fileChangeRow(AppTokens t, dynamic row) {
     final map = row is Map ? row : const {};
-    final path = (map['path'] ?? map['file_path'] ?? '').toString();
-    final kind = _fileChangeKind(map);
-    final summary = [
-      if (map['additions'] != null) '+${map['additions']}',
-      if (map['deletions'] != null) '-${map['deletions']}',
-      if (map['status'] != null) '${map['status']}',
-    ].join(' ');
     final diff = _extractUnifiedDiff(map);
     final oldString =
         (map['old_string'] ?? map['oldString'] ?? map['before'])?.toString();
@@ -764,43 +812,11 @@ class _CodexFileChange extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            _KindPill(kind: kind),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                path.isEmpty ? row.toString() : path,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 11,
-                  color: t.text,
-                ),
-              ),
-            ),
-            if (summary.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              Text(
-                summary,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 10.5,
-                  color: t.textDim,
-                ),
-              ),
-            ],
-          ],
-        ),
-        if (diff != null && diff.trim().isNotEmpty) ...[
-          const SizedBox(height: 8),
+        if (diff != null && diff.trim().isNotEmpty)
           _UnifiedDiffBlock(diff: diff),
-        ] else if ((oldString ?? '').isNotEmpty ||
-            (newString ?? '').isNotEmpty) ...[
-          const SizedBox(height: 8),
+        if ((diff == null || diff.trim().isEmpty) &&
+            ((oldString ?? '').isNotEmpty || (newString ?? '').isNotEmpty))
           DiffView(oldString: oldString ?? '', newString: newString ?? ''),
-        ],
       ],
     );
   }
@@ -816,60 +832,6 @@ class _CodexFileChange extends StatelessWidget {
       if (value is String && value.trim().isNotEmpty) return value;
     }
     return null;
-  }
-
-  String _fileChangeKind(Map<dynamic, dynamic> map) {
-    for (final key in const ['kind', 'type', 'operation']) {
-      final value = map[key];
-      if (value == null) continue;
-      if (value is String) {
-        final text = _normalizeFileChangeKind(value);
-        if (text.isNotEmpty) return text;
-      }
-      if (value is Map) {
-        for (final nestedKey in const ['kind', 'type', 'operation', 'name']) {
-          final nested = value[nestedKey]?.toString().trim() ?? '';
-          if (nested.isNotEmpty) return nested;
-        }
-      }
-    }
-    return 'change';
-  }
-
-  String _normalizeFileChangeKind(String raw) {
-    final text = raw.trim();
-    if (!text.startsWith('{')) return text;
-    final match =
-        RegExp(r'(?:type|kind|operation|name)\s*:\s*([^,}]+)').firstMatch(text);
-    return match?.group(1)?.trim() ?? text;
-  }
-}
-
-class _KindPill extends StatelessWidget {
-  final String kind;
-  const _KindPill({required this.kind});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: t.toolEdit.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(4),
-        border:
-            Border.all(color: t.toolEdit.withValues(alpha: 0.35), width: 0.5),
-      ),
-      child: Text(
-        kind,
-        style: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-          color: t.toolEdit,
-        ),
-      ),
-    );
   }
 }
 
