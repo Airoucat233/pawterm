@@ -252,6 +252,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       return;
     }
     if (status.state == TurnState.done || status.state == TurnState.unknown) {
+      _closeSse();
       setState(() {
         _connected = true;
         _busy = false;
@@ -933,6 +934,18 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (!mounted) return;
         _sseClient?.close();
         setState(() => _authFailed = true);
+        return;
+      } else if (ev.type == '__not_found') {
+        if (!mounted) return;
+        _closeSse();
+        setState(() {
+          _error = null;
+          _connected = true;
+          _busy = false;
+          _busyStartedAt = null;
+          _mode = CcStreamMode.requesting;
+        });
+        unawaited(_refreshActiveRunState());
         return;
       } else if (ev.type == '__client_error') {
         // Transient — the SSE client will retry. Surface the latest error.

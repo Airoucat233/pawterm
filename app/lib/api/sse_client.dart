@@ -68,6 +68,11 @@ class SseClient {
       _closed = true;
       return;
     }
+    if (response.statusCode == 404) {
+      _events.add(SseEvent(type: '__not_found', data: 'no active run'));
+      _closed = true;
+      return;
+    }
     if (response.statusCode != 200) {
       throw Exception('SSE HTTP ${response.statusCode}');
     }
