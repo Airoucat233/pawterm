@@ -305,7 +305,7 @@ struct MenuBarContent: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let template: [String: Any] = [
-            "port": 8765,
+            "port": BuildConfig.defaultServerPort,
             "token": "your-token-here"
         ]
         if let data = try? JSONSerialization.data(withJSONObject: template, options: .prettyPrinted) {

@@ -41,7 +41,8 @@ fi
 
 CURRENT=$(/usr/bin/python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$PKG")
 SEMVER="${CURRENT%%+*}"
-IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
+BASE_SEMVER="${SEMVER%%-*}"
+IFS='.' read -r MAJOR MINOR PATCH <<<"$BASE_SEMVER"
 
 echo
 printf "  current: \033[36m%s\033[0m\n" "$CURRENT"
@@ -113,7 +114,28 @@ MENU
     esac
   fi
 else
-  cat <<MENU
+  if [[ "$CURRENT" != "$BASE_SEMVER" ]]; then
+    cat <<MENU
+  Choose bump:
+    1)  stable   $BASE_SEMVER  (promote from $CURRENT)
+    2)  patch    $MAJOR.$MINOR.$((PATCH+1))
+    3)  minor    $MAJOR.$((MINOR+1)).0
+    4)  major    $((MAJOR+1)).0.0
+    q)  quit
+MENU
+    printf "  → [1-4/q, default=1]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-1}"
+    case "$CHOICE" in
+      1|stable|release) NEW="$BASE_SEMVER" ;;
+      2|patch)          NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
+      3|minor)          NEW="$MAJOR.$((MINOR+1)).0" ;;
+      4|major)          NEW="$((MAJOR+1)).0.0" ;;
+      q|quit)           echo "  aborted."; exit 0 ;;
+      *)                echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  else
+    cat <<MENU
   Choose bump:
     1)  same     $CURRENT  (re-publish)
     2)  patch    $MAJOR.$MINOR.$((PATCH+1))
@@ -121,17 +143,18 @@ else
     4)  major    $((MAJOR+1)).0.0
     q)  quit
 MENU
-  printf "  → [1-4/q, default=2]: "
-  read -r CHOICE
-  CHOICE="${CHOICE:-2}"
-  case "$CHOICE" in
-    1|same)  NEW="$CURRENT" ;;
-    2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
-    3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
-    4|major) NEW="$((MAJOR+1)).0.0" ;;
-    q|quit)  echo "  aborted."; exit 0 ;;
-    *)       echo "  invalid choice" >&2; exit 1 ;;
-  esac
+    printf "  → [1-4/q, default=2]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-2}"
+    case "$CHOICE" in
+      1|same)  NEW="$CURRENT" ;;
+      2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
+      3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
+      4|major) NEW="$((MAJOR+1)).0.0" ;;
+      q|quit)  echo "  aborted."; exit 0 ;;
+      *)       echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  fi
 fi
 
 if [[ $PRERELEASE -eq 1 ]]; then

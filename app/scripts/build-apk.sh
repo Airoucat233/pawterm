@@ -39,6 +39,9 @@ for arg in "$@"; do
   esac
 done
 
+DEFAULT_PORT=$([[ "$FLAVOR" == "dev" ]] && echo 8765 || echo 18765)
+DART_DEFINES=(--dart-define=PAWTERM_DEFAULT_PORT=$DEFAULT_PORT)
+
 SPLIT_PER_ABI=1
 if [[ "$FLAVOR" == "dev" && $ALL_ABI -eq 0 ]]; then
   SPLIT_PER_ABI=0
@@ -52,13 +55,14 @@ VERSION=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")
 echo
 echo "  current: \033[36m$VERSION\033[0m"
 echo "  flavor : \033[36m$FLAVOR\033[0m"
+echo "  port   : \033[36m$DEFAULT_PORT\033[0m"
 
 # -------- Debug build (no bump) --------
 
 if [[ $DEBUG -eq 1 ]]; then
   echo
   echo "▶ flutter build apk --debug --flavor $FLAVOR --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a"
-  flutter build apk --debug --flavor "$FLAVOR" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
+  flutter build apk --debug --flavor "$FLAVOR" "${DART_DEFINES[@]}" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
   echo
   echo "\033[32m✓ debug build done\033[0m  →  $OUT_DIR"
   exit 0
@@ -122,10 +126,10 @@ flutter pub get
 echo
 if [[ $SPLIT_PER_ABI -eq 1 ]]; then
   echo "▶ flutter build apk --release --flavor $FLAVOR --split-per-abi"
-  flutter build apk --release --flavor "$FLAVOR" --split-per-abi
+  flutter build apk --release --flavor "$FLAVOR" "${DART_DEFINES[@]}" --split-per-abi
 else
   echo "▶ flutter build apk --release --flavor $FLAVOR --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a"
-  flutter build apk --release --flavor "$FLAVOR" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
+  flutter build apk --release --flavor "$FLAVOR" "${DART_DEFINES[@]}" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
 fi
 
 # -------- Organize into versioned dir --------
@@ -181,6 +185,7 @@ echo
 echo "\033[32m✓ build done\033[0m"
 echo "  version : $VERSION"
 echo "  flavor  : $FLAVOR"
+echo "  port    : $DEFAULT_PORT"
 echo "  abi     : $([[ $SPLIT_PER_ABI -eq 1 ]] && echo split || echo arm64)"
 echo "  releases: $VERSION_DIR"
 /bin/ls -1 "$VERSION_DIR" | /usr/bin/sed 's/^/    /'

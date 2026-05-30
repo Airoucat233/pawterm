@@ -188,7 +188,7 @@ function Shell({ theme, setTheme }: { theme: ThemeMode; setTheme: (mode: ThemeMo
   const [resourcesLoading, setResourcesLoading] = useState(false);
 
   const displayHost = (hostname ?? window.location.hostname) || 'localhost';
-  const displayPort = (port ?? Number(window.location.port)) || 8765;
+  const displayPort = (port ?? Number(window.location.port)) || 18765;
   const accessExpiresAt = useAdminStore((s) => s.tokenExpiresAt);
 
   const showToast = useCallback((message: string) => {

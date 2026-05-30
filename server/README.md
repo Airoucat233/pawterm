@@ -63,7 +63,7 @@ The npm package includes the built Web Admin bundle under `dist-web/`.
 ```json
 {
   "host": "0.0.0.0",
-  "port": 8765,
+  "port": 18765,
   "projects": [
     { "name": "my-project", "path": "~/code/my-project" }
   ]
@@ -81,7 +81,7 @@ Supported `config.json` keys:
 | Key | Required | Notes |
 |---|---:|---|
 | `host` | no | Defaults to `0.0.0.0`. |
-| `port` | no | Defaults to `8765`. |
+| `port` | no | Defaults to `18765` for installed/stable server builds. Local `pnpm dev` uses `server/config.json` on `8765`. |
 | `projects` | no | Project allow-list. Each item is `{ "name"?: string, "path": string }`; `~` is expanded. |
 | `log_level` | no | Defaults to `info`; can be overridden by `PAWTERM_LOG_LEVEL`. |
 | `log_format` | no | `pretty` or `json`; can be overridden by `PAWTERM_LOG_FORMAT`. |
@@ -95,6 +95,8 @@ Supported `config.json` keys:
 | `password` | no | Legacy plaintext password key; accepted on read, replaced by `admin_password_hash` when changed. |
 
 Minimal local development files:
+
+Start from `server/config.dev.example.json` for local development.
 
 `server/config.json`:
 
@@ -128,9 +130,9 @@ APIs. Web Admin renews the access token before expiry; after the maximum
 session lifetime, open Admin again from the CLI or Mac app.
 
 - **Foreground**: run `pawterm-server admin`, or open the printed `/admin` URL and enter the local admin token/password
-- **Background service**: run `pawterm-server logs` to see it, or open PawTerm → Add connection → `http://<your-machine-ip>:8765`
+- **Background service**: run `pawterm-server logs` to see it, or open PawTerm → Add connection → `http://<your-machine-ip>:18765`
 
-Over Tailscale: `http://100.x.x.x:8765`
+Over Tailscale: `http://100.x.x.x:18765`
 
 ## API endpoints
 

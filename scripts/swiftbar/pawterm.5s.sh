@@ -21,7 +21,7 @@ CONFIG="${PAWTERM_CONFIG:-$HOME/.config/pawterm/config.json}"
 
 # Probe localhost — server-side discovery starts at 127.0.0.1:<port>
 PORT=$(/usr/bin/grep -m1 '"port"' "$CONFIG" 2>/dev/null | /usr/bin/awk -F'[:,]' '{gsub(/ /,"",$2); print $2}')
-PORT="${PORT:-8765}"
+PORT="${PORT:-18765}"
 TOKEN=$(/usr/bin/grep -m1 '"token"' "$CONFIG" 2>/dev/null | /usr/bin/sed -E 's/.*"token": *"([^"]+)".*/\1/')
 
 if [ -z "$TOKEN" ]; then
