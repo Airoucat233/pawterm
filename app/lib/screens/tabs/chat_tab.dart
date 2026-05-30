@@ -159,6 +159,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 用户手动收起过的当前审批浮层。消息流里的审批卡仍保留。
   String? _dismissedApprovalPopoverId;
+  final Set<String> _notifiedApprovalIds = {};
 
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
@@ -1549,7 +1550,57 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// 把 Codex app-server approval 决策通过 REST 回给 server。
   void _sendCodexApproval(String requestId, String decision) {
     if (_sessionId == null || _chatApi == null) return;
+    _notifiedApprovalIds.remove(requestId);
     unawaited(_chatApi!.answerCodexApproval(_sessionId!, requestId, decision));
+  }
+
+  void _notifyCodexApprovalIfNeeded(
+    _PendingCodexApproval approval,
+    Connection config,
+  ) {
+    final uuid = _sessionId;
+    final session = ref.read(currentSessionProvider);
+    if (_appInForeground || uuid == null || session == null) return;
+    final requestId = approval.toolUse.id;
+    if (!_notifiedApprovalIds.add(requestId)) return;
+    unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
+      payload: _completionPayloadFor(session),
+      apiBase: config.apiBase,
+      token: config.token,
+      uuid: uuid,
+      requestId: requestId,
+      title: _approvalNotificationTitle(approval.toolUse.name),
+      body: _approvalNotificationBody(approval.toolUse),
+      appInForeground: _appInForeground,
+    ));
+  }
+
+  String _approvalNotificationTitle(String method) {
+    if (method == 'item/commandExecution/requestApproval') {
+      return 'Codex 请求执行命令';
+    }
+    if (method == 'item/fileChange/requestApproval') {
+      return 'Codex 请求修改文件';
+    }
+    if (method == 'item/permissions/requestApproval') {
+      return 'Codex 请求额外权限';
+    }
+    return 'Codex 请求审批';
+  }
+
+  String _approvalNotificationBody(ToolUseBlock toolUse) {
+    final input = toolUse.input;
+    final reason = input['reason']?.toString().trim();
+    if (toolUse.name == 'item/commandExecution/requestApproval') {
+      final command = input['command']?.toString().trim();
+      if (command != null && command.isNotEmpty) return command;
+    }
+    if (toolUse.name == 'item/fileChange/requestApproval') {
+      final grantRoot = input['grantRoot']?.toString().trim();
+      if (grantRoot != null && grantRoot.isNotEmpty) return grantRoot;
+    }
+    if (reason != null && reason.isNotEmpty) return reason;
+    return '需要你确认后继续';
   }
 
   void _syncForegroundStreamService({
@@ -1708,6 +1759,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       }
     }
     final activeApproval = _latestPendingCodexApproval(toolResults);
+    if (activeApproval != null && config != null && _sessionId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _notifyCodexApprovalIfNeeded(activeApproval, config);
+      });
+    }
 
     return Column(
       children: [
