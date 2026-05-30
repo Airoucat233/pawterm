@@ -8,6 +8,7 @@ import 'screens/connections_screen.dart';
 import 'state/chat_completion_notifier.dart';
 import 'state/prefs.dart';
 import 'state/reconnect_service.dart';
+import 'state/streaming_foreground_service.dart';
 import 'theme.dart';
 
 /// 全局 RouteObserver，让需要感知"我被 push 覆盖 / 我从被覆盖回到顶层"的 Screen
@@ -17,7 +18,9 @@ import 'theme.dart';
 final routeObserver = RouteObserver<PageRoute<dynamic>>();
 final navigatorKey = GlobalKey<NavigatorState>();
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await StreamingForegroundService.instance.init();
   runApp(const ProviderScope(child: CcApp()));
 }
 

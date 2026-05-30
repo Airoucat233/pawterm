@@ -21,6 +21,7 @@ import '../../state/chat_completion_notifier.dart';
 import '../../state/prefs.dart';
 import '../../state/projects_store.dart';
 import '../../state/server_config.dart';
+import '../../state/streaming_foreground_service.dart';
 import '../../state/todo_list.dart';
 import '../../theme.dart';
 import '../../utils/time_format.dart';
@@ -203,6 +204,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _syncForegroundStreamService(busy: false);
     _thoughtForTimer?.cancel();
     _observeTimer?.cancel();
     _closeSse();
@@ -216,7 +218,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _appInForeground = state == AppLifecycleState.resumed;
+    unawaited(StreamingForegroundService.instance
+        .setAppInForeground(_appInForeground));
+    if (!_appInForeground) {
+      _syncForegroundStreamService();
+    }
     if (state == AppLifecycleState.resumed) {
+      _syncForegroundStreamService();
       if (_observeMode) return; // observe mode handles its own polling
       unawaited(_refreshActiveRunState());
     }
@@ -249,6 +257,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _mode = CcStreamMode.responding;
         _error = null;
       });
+      _syncForegroundStreamService(session: session, busy: true);
       if (shouldResubscribe) {
         _closeSse();
         _subscribeSse(config.apiBase, uuid, session.agent);
@@ -263,6 +272,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _busyStartedAt = null;
         _error = null;
       });
+      _syncForegroundStreamService();
       if (status.state == TurnState.done) {
         _queuePausedOnUnknown = false;
         unawaited(_reloadCurrentHistory());
@@ -949,6 +959,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _busyStartedAt = null;
           _mode = CcStreamMode.requesting;
         });
+        _syncForegroundStreamService(busy: false);
         unawaited(_refreshActiveRunState());
         return;
       } else if (ev.type == '__client_error') {
@@ -1055,6 +1066,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       } else if (msg is ResultMsg) {
         final shouldNotify = _busy;
         final currentSession = ref.read(currentSessionProvider);
+        final completionPayload = currentSession == null
+            ? null
+            : _completionPayloadFor(currentSession);
         final last = _messages.isNotEmpty ? _messages.last : null;
         if (last is StreamingAssistant) last.stopped = true;
         _busy = false;
@@ -1066,9 +1080,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _messages.add(msg);
         _debugTrack(msg, json);
         _localUserEchoes.removeWhere((echo) => echo.serverAcked);
-        if (shouldNotify && currentSession != null) {
+        if (completionPayload != null) {
+          unawaited(
+              StreamingForegroundService.instance.remove(completionPayload));
+        }
+        if (shouldNotify && completionPayload != null) {
           unawaited(ChatCompletionNotifier.instance.notifyTurnComplete(
-            payload: ChatCompletionPayload.fromSession(currentSession),
+            payload: completionPayload,
             appInForeground: _appInForeground,
           ));
         }
@@ -1339,6 +1357,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final config = ref.read(activeConnectionProvider);
     final session = ref.read(currentSessionProvider);
     if (uuid != null && _chatApi != null && config != null && session != null) {
+      _syncForegroundStreamService(session: session, busy: true);
       final model = ref.read(currentModelProvider);
       final permMode = ref.read(permissionModeProvider);
       final isClaude = session.agent == AgentKind.claude;
@@ -1362,6 +1381,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             actualSessionId != uuid) {
           streamUuid = actualSessionId;
           if (mounted) {
+            final previousForegroundPayload = _completionPayloadFor(session);
             final adoptedKey =
                 _sessionKeyFor(session.agent, session.cwd, actualSessionId);
             final previousPendingKey = _pendingKey;
@@ -1371,6 +1391,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               _attemptedKey = adoptedKey;
               _pendingKey = adoptedKey;
             });
+            unawaited(StreamingForegroundService.instance
+                .remove(previousForegroundPayload));
+            _syncForegroundStreamService(session: session, busy: true);
             unawaited(_persistUuid(actualSessionId));
             if (previousPendingKey != null &&
                 previousPendingKey != adoptedKey) {
@@ -1402,6 +1425,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               _pending.insert(0, text);
             }
           });
+          _syncForegroundStreamService(session: session, busy: false);
           if (requeueOnFailure) unawaited(_persistPendingQueue());
         }
       }));
@@ -1521,6 +1545,31 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _sendCodexApproval(String requestId, String decision) {
     if (_sessionId == null || _chatApi == null) return;
     unawaited(_chatApi!.answerCodexApproval(_sessionId!, requestId, decision));
+  }
+
+  void _syncForegroundStreamService({
+    CurrentSession? session,
+    bool? busy,
+  }) {
+    final current = session ?? ref.read(currentSessionProvider);
+    if (current == null) return;
+    final isBusy = busy ?? _busy;
+    final payload = _completionPayloadFor(current);
+    if (isBusy) {
+      unawaited(StreamingForegroundService.instance.upsert(payload));
+    } else {
+      unawaited(StreamingForegroundService.instance.remove(payload));
+    }
+  }
+
+  ChatCompletionPayload _completionPayloadFor(CurrentSession session) {
+    return ChatCompletionPayload(
+      cwd: session.cwd,
+      resumeId: _sessionId ?? session.resumeId,
+      label: session.label,
+      agent: session.agent,
+      runtime: session.runtime,
+    );
   }
 
   _PendingCodexApproval? _latestPendingCodexApproval(
