@@ -1835,6 +1835,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             color: t.accent,
             dimColor: t.textDim,
             trailing: const TodoChip(),
+            actions: [
+              if (_unrespondedUserText != null)
+                _ReEditAction(onReEdit: _reEditLastMessage),
+            ],
           )
         else if (ref.watch(todoListProvider).isNotEmpty)
           // 非 streaming 也要看到任务进度条 —— 单独占一行
@@ -1851,7 +1855,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onEdit: _editPending,
             onPrioritize: _prioritizePending,
           ),
-        if (_unrespondedUserText != null)
+        if (_unrespondedUserText != null && !_busy)
           _ReEditBar(
             text: _unrespondedUserText!,
             onReEdit: _reEditLastMessage,
@@ -3889,6 +3893,31 @@ class _PendingQueueItemState extends State<_PendingQueueItem>
   }
 }
 
+class _ReEditAction extends StatelessWidget {
+  final VoidCallback onReEdit;
+  const _ReEditAction({required this.onReEdit});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Tooltip(
+      message: '撤回并重新编辑',
+      child: InkResponse(
+        onTap: onReEdit,
+        radius: 18,
+        child: Padding(
+          padding: const EdgeInsets.all(5),
+          child: Icon(
+            Icons.undo_rounded,
+            size: 16,
+            color: t.warning,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// "重新编辑"快捷条：当用户中断且 AI 未响应时显示。
 /// 点击把上一条用户消息放回输入框，撤销那次发送记录。
 class _ReEditBar extends StatelessWidget {
@@ -3905,21 +3934,7 @@ class _ReEditBar extends StatelessWidget {
       child: Row(
         children: [
           const Spacer(),
-          Tooltip(
-            message: '撤回并重新编辑',
-            child: InkResponse(
-              onTap: onReEdit,
-              radius: 18,
-              child: Padding(
-                padding: const EdgeInsets.all(6),
-                child: Icon(
-                  Icons.undo_rounded,
-                  size: 16,
-                  color: t.warning,
-                ),
-              ),
-            ),
-          ),
+          _ReEditAction(onReEdit: onReEdit),
         ],
       ),
     );

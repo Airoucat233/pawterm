@@ -857,13 +857,17 @@ class _UnifiedDiffBlock extends StatelessWidget {
           return Container(
             color: style.$1,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
-            child: SelectableText(
-              line,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 11,
-                color: style.$2,
-                height: 1.4,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SelectableText(
+                line,
+                maxLines: 1,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  color: style.$2,
+                  height: 1.4,
+                ),
               ),
             ),
           );
