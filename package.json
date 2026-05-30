@@ -23,6 +23,8 @@
     "release:local": "zsh scripts/release.sh --local",
     "release:pre": "zsh scripts/release.sh --prerelease",
     "release:pre:local": "zsh scripts/release.sh --prerelease --local",
+    "release:server": "zsh server/scripts/publish.sh",
+    "release:server:pre": "zsh server/scripts/publish.sh --prerelease",
     "start": "pnpm run start:server",
     "start:server": "pnpm --filter pawterm-server run start",
     "preview:web": "pnpm --filter @pawterm/web run preview",
