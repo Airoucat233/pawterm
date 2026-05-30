@@ -1,5 +1,5 @@
-import 'dart:convert';
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -80,6 +80,7 @@ class ChatCompletionNotifier {
 
   final _plugin = FlutterLocalNotificationsPlugin();
   bool _initialized = false;
+  bool _permissionRequested = false;
   WidgetRef? _ref;
   GlobalKey<NavigatorState>? _navigatorKey;
   ChatCompletionPayload? _pendingTap;
@@ -117,6 +118,7 @@ class ChatCompletionNotifier {
             AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(_approvalChannel);
     _initialized = true;
+    unawaited(_requestAndroidPermissionIfForeground());
 
     final launchDetails = await _plugin.getNotificationAppLaunchDetails();
     final response = launchDetails?.notificationResponse;
@@ -132,7 +134,7 @@ class ChatCompletionNotifier {
   }) async {
     _markPulse(payload);
     if (appInForeground || _appIsVisibleNow()) return;
-    await _ensureAndroidPermission();
+    if (!await _canNotifyWithoutPrompt()) return;
     if (_appIsVisibleNow()) return;
     await _plugin.show(
       id: payload.key.hashCode & 0x7fffffff,
@@ -164,7 +166,7 @@ class ChatCompletionNotifier {
     required bool appInForeground,
   }) async {
     if (appInForeground || _appIsVisibleNow()) return;
-    await _ensureAndroidPermission();
+    if (!await _canNotifyWithoutPrompt()) return;
     if (_appIsVisibleNow()) return;
     final approvalPayload = {
       'kind': 'codex_approval',
@@ -216,11 +218,20 @@ class ChatCompletionNotifier {
         state == AppLifecycleState.inactive;
   }
 
-  Future<void> _ensureAndroidPermission() async {
+  Future<void> _requestAndroidPermissionIfForeground() async {
+    if (_permissionRequested || !_appIsVisibleNow()) return;
+    _permissionRequested = true;
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
+  }
+
+  Future<bool> _canNotifyWithoutPrompt() async {
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    final enabled = await android?.areNotificationsEnabled();
+    return enabled ?? true;
   }
 
   void _handlePayload(String? raw) {
