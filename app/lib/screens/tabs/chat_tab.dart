@@ -1412,6 +1412,20 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     unawaited(_persistPendingQueue());
   }
 
+  void _editPending(int index) {
+    if (index < 0 || index >= _pending.length) return;
+    final text = _pending[index];
+    setState(() {
+      _pending.removeAt(index);
+      if (_pending.isEmpty) _queuePausedOnUnknown = false;
+      _textController.text = text;
+      _textController.selection = TextSelection.fromPosition(
+        TextPosition(offset: text.length),
+      );
+    });
+    unawaited(_persistPendingQueue());
+  }
+
   void _interrupt() {
     final session = ref.read(currentSessionProvider);
     if (_busy && _sessionId != null && _chatApi != null && session != null) {
@@ -1730,6 +1744,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _PendingQueueBar(
             messages: _pending,
             onRemove: _removePending,
+            onEdit: _editPending,
             onPrioritize: _prioritizePending,
           ),
         if (_unrespondedUserText != null)
@@ -3501,10 +3516,12 @@ class _AttachmentChip extends StatelessWidget {
 class _PendingQueueBar extends StatelessWidget {
   final List<String> messages;
   final void Function(int) onRemove;
+  final void Function(int) onEdit;
   final void Function(int) onPrioritize;
   const _PendingQueueBar({
     required this.messages,
     required this.onRemove,
+    required this.onEdit,
     required this.onPrioritize,
   });
 
@@ -3548,6 +3565,7 @@ class _PendingQueueBar extends StatelessWidget {
                 key: ValueKey('pending_$i'),
                 text: messages[i],
                 onRemove: () => onRemove(i),
+                onEdit: () => onEdit(i),
                 onPrioritize: () => onPrioritize(i),
               ),
             ),
@@ -3561,11 +3579,13 @@ class _PendingQueueBar extends StatelessWidget {
 class _PendingQueueItem extends StatefulWidget {
   final String text;
   final VoidCallback onRemove;
+  final VoidCallback onEdit;
   final VoidCallback onPrioritize;
   const _PendingQueueItem({
     super.key,
     required this.text,
     required this.onRemove,
+    required this.onEdit,
     required this.onPrioritize,
   });
 
@@ -3627,6 +3647,14 @@ class _PendingQueueItemState extends State<_PendingQueueItem>
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 13, color: t.text, height: 1.3),
+                ),
+              ),
+              InkResponse(
+                onTap: widget.onEdit,
+                radius: 18,
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(Icons.edit_outlined, size: 14, color: t.accent),
                 ),
               ),
               InkResponse(
