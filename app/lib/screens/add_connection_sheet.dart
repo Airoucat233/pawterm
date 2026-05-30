@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../config/build_defaults.dart';
 import '../i18n/locale_provider.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
@@ -49,11 +50,14 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
           text: uri?.host ??
               e.url.replaceFirst(RegExp(r'^https?://'), '').split(':').first);
       _portCtrl = TextEditingController(
-          text: uri?.port != null && uri!.port != 0 ? '${uri.port}' : '8765');
+          text: uri?.port != null && uri!.port != 0
+              ? '${uri.port}'
+              : '${BuildDefaults.defaultServerPort}');
       _phase = _SheetState.detected;
     } else {
       _ipCtrl = TextEditingController();
-      _portCtrl = TextEditingController(text: '8765');
+      _portCtrl =
+          TextEditingController(text: '${BuildDefaults.defaultServerPort}');
     }
     _nameCtrl = TextEditingController(text: e?.name ?? '');
     _emoji = e?.emoji ?? '🖥️';
@@ -69,7 +73,8 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
 
   String get _normalizedUrl {
     var ip = _ipCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim()) ?? 8765;
+    final port =
+        int.tryParse(_portCtrl.text.trim()) ?? BuildDefaults.defaultServerPort;
     if (ip.isEmpty) return '';
     if (!kIsWeb && Platform.isAndroid) {
       ip = ip.replaceFirst(RegExp(r'^localhost$'), '10.0.2.2');
@@ -142,7 +147,8 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
 
   Future<void> _openPairSheet() async {
     final host = _ipCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim()) ?? 8765;
+    final port =
+        int.tryParse(_portCtrl.text.trim()) ?? BuildDefaults.defaultServerPort;
     final scanResult = LanScanResult(
       serverId: '',
       name: _detectedName ?? host,
@@ -413,7 +419,9 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                 ],
               ),
               const SizedBox(height: 6),
-              Text(s.addConnectionPortNote,
+              Text(
+                  s.addConnectionPortNote.replaceAll(
+                      '{port}', '${BuildDefaults.defaultServerPort}'),
                   style: TextStyle(fontSize: 11, color: t.textDim)),
               const SizedBox(height: 14),
 

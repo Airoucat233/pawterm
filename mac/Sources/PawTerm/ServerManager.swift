@@ -26,10 +26,10 @@ struct PawTermConfig {
     static func load(from path: String) -> PawTermConfig {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return PawTermConfig(port: 8765, token: nil, startCommand: nil, stopCommand: nil, filePath: path)
+            return PawTermConfig(port: BuildConfig.defaultServerPort, token: nil, startCommand: nil, stopCommand: nil, filePath: path)
         }
         return PawTermConfig(
-            port: json["port"] as? Int ?? 8765,
+            port: json["port"] as? Int ?? BuildConfig.defaultServerPort,
             token: json["token"] as? String,
             startCommand: json["start_command"] as? [String],
             stopCommand: json["stop_command"] as? [String],

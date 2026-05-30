@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 import 'package:nsd/nsd.dart' as nsd;
 import 'package:permission_handler/permission_handler.dart';
 
+import '../config/build_defaults.dart';
+
 class LanScanResult {
   final String serverId;
   final String name;
@@ -44,7 +46,7 @@ class LanScanner {
   /// [ports] 仅作用于 subnet sweep：每个 IP × 每个 port 都会探一次 `/health`。
   /// mDNS 路径继续用服务声明里的端口，跟这个参数无关。
   static Stream<List<LanScanResult>> scan({
-    Set<int> ports = const {8765},
+    Set<int> ports = const {BuildDefaults.defaultServerPort},
     bool requestNearbyWifiPermission = true,
   }) async* {
     final results = <String, LanScanResult>{}; // keyed by serverId
@@ -67,7 +69,7 @@ class LanScanner {
         );
         discovery.addServiceListener((service, status) async {
           if (status != nsd.ServiceStatus.found) return;
-          final port = service.port ?? 8765;
+          final port = service.port ?? BuildDefaults.defaultServerPort;
           // Prefer IPv4 from the resolved address list; fall back to first.
           final addresses = service.addresses;
           if (addresses == null || addresses.isEmpty) return;

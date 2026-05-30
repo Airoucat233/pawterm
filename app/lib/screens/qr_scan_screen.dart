@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../config/build_defaults.dart';
 import '../i18n/locale_provider.dart';
 
 class PawTermQrResult {
@@ -48,7 +49,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
     final claim = uri.queryParameters['claim'];
     if (claim == null || claim.isEmpty) return null;
     final host = uri.host;
-    final port = uri.hasPort ? uri.port : 8765;
+    final port = uri.hasPort ? uri.port : BuildDefaults.defaultServerPort;
     if (host.isEmpty) return null;
     return PawTermQrResult(url: 'http://$host:$port', claim: claim);
   }
@@ -72,7 +73,8 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
             right: 0,
             child: Center(
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.6),
                   borderRadius: BorderRadius.circular(12),

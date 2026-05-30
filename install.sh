@@ -181,8 +181,14 @@ ensure_agent_cli() {
   fi
 }
 
+server_port() {
+  node -e 'const fs=require("fs"), os=require("os"), path=require("path"); const p=path.join(os.homedir(), ".config", "pawterm", "config.json"); let port=18765; try { const j=JSON.parse(fs.readFileSync(p,"utf8")); if (Number.isInteger(j.port)) port=j.port; } catch {} process.stdout.write(String(port));'
+}
+
 wait_for_server() {
-  local health_url="http://localhost:8765/health"
+  local port
+  port="$(server_port)"
+  local health_url="http://localhost:${port}/health"
   local timeout=30
   local elapsed=0
   printf "  Waiting for server to be ready"

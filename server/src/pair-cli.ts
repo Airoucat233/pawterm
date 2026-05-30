@@ -9,6 +9,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { DEFAULT_SERVER_PORT } from './defaults.js';
 
 const CONFIG_DIR = resolve(homedir(), '.config', 'pawterm');
 const DEFAULT_CONFIG_PATH = resolve(homedir(), '.config', 'pawterm', 'config.json');
@@ -40,7 +41,7 @@ function readConfig(): { adminToken: string; port: number; host: string } {
     console.error('[pair] No token found in config. Please check your config file.');
     process.exit(1);
   }
-  const port = raw.port ?? 8765;
+  const port = raw.port ?? DEFAULT_SERVER_PORT;
   // If host is 0.0.0.0 (listen on all), connect to localhost
   const rawHost = raw.host ?? '127.0.0.1';
   const host = rawHost === '0.0.0.0' ? '127.0.0.1' : rawHost;

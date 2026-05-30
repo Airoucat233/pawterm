@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/build_defaults.dart';
 import 'lan_scanner.dart';
 import 'server_config.dart';
 
@@ -59,7 +60,10 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
     _running = true;
     state = const ReconnectState(status: ReconnectStatus.scanning);
 
-    final sweepPorts = <int>{8765, for (final c in paired) c.port};
+    final sweepPorts = <int>{
+      BuildDefaults.defaultServerPort,
+      for (final c in paired) c.port
+    };
 
     String? foundId;
     try {

@@ -8,6 +8,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { Project, PermissionMode } from '@pawterm/shared';
 import type { StoredAdminAccessToken } from './admin-auth.js';
 import { hashAdminPassword } from './admin-password.js';
+import { DEFAULT_SERVER_PORT } from './defaults.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -111,7 +112,7 @@ function loadConfig(): ServerSettings {
     const serverId = randomUUID();
     const defaultConfig: Required<Pick<RawServerConfig, 'host' | 'port' | 'projects' | 'token' | 'server_id' | 'paired_devices'>> = {
       host: '0.0.0.0',
-      port: 8765,
+      port: DEFAULT_SERVER_PORT,
       projects: [],
       token: adminToken,
       server_id: serverId,
@@ -180,7 +181,7 @@ function loadConfig(): ServerSettings {
 
   return {
     host: raw.host ?? '0.0.0.0',
-    port: raw.port ?? 8765,
+    port: raw.port ?? DEFAULT_SERVER_PORT,
     projects: (raw.projects ?? []).map((p) => {
       const path = expandHome(p.path);
       return { name: p.name?.trim() || basename(path) || path, path };

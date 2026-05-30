@@ -90,7 +90,7 @@ async function ensureAndroidDevice() {
   try {
     const deviceId = await ensureAndroidDevice();
     console.log(`[pawterm android] running PawTerm Dev on ${deviceId}`);
-    const child = start('flutter', ['run', '--flavor', 'dev', '-d', deviceId], { cwd: APP_DIR });
+    const child = start('flutter', ['run', '--flavor', 'dev', '--dart-define=PAWTERM_DEFAULT_PORT=8765', '-d', deviceId], { cwd: APP_DIR });
     child.on('exit', (code, signal) => {
       process.exit(signal ? 1 : (code ?? 0));
     });

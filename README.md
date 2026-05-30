@@ -106,8 +106,8 @@ Open the app → tap **Scan LAN** → select your computer → tap **Pair** → 
 | Network | How to connect |
 |---------|----------------|
 | Same LAN | Auto-discovered via **Scan LAN** |
-| Tailscale | `http://100.x.x.x:8765` |
-| Android emulator | `http://10.0.2.2:8765` |
+| Tailscale | `http://100.x.x.x:18765` |
+| Android emulator | `http://10.0.2.2:18765` |
 
 ---
 
@@ -129,7 +129,7 @@ Open the app → tap **Scan LAN** → select your computer → tap **Pair** → 
 ```json
 {
   "host": "0.0.0.0",
-  "port": 8765,
+  "port": 18765,
   "projects": [
     { "name": "my-project", "path": "~/code/my-project" }
   ]
@@ -147,7 +147,7 @@ Supported `config.json` keys:
 | Key | Required | Notes |
 |---|---:|---|
 | `host` | no | Defaults to `0.0.0.0`. |
-| `port` | no | Defaults to `8765`. |
+| `port` | no | Defaults to `18765` for installed/stable server builds. Local `pnpm dev` uses `server/config.json` on `8765`. |
 | `projects` | no | Project allow-list. Each item is `{ "name"?: string, "path": string }`; `~` is expanded. |
 | `log_level` | no | Defaults to `info`; can be overridden by `PAWTERM_LOG_LEVEL`. |
 | `log_format` | no | `pretty` or `json`; can be overridden by `PAWTERM_LOG_FORMAT`. |
@@ -203,7 +203,7 @@ Minimal local development files:
 ```bash
 git clone https://github.com/Airoucat233/pawterm.git
 cd pawterm && pnpm install
-cp server/config.example.json server/config.json
+cp server/config.dev.example.json server/config.json
 ```
 
 Common root workspace commands:

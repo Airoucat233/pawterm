@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/build_defaults.dart';
 import '../i18n/locale_provider.dart';
 import '../i18n/strings.dart';
 import '../state/lan_scanner.dart';
@@ -29,7 +30,8 @@ class _LanScanSheetState extends ConsumerState<LanScanSheet> {
   bool _done = false;
   List<LanScanResult> _results = [];
   StreamSubscription<List<LanScanResult>>? _sub;
-  final TextEditingController _portCtrl = TextEditingController(text: '8765');
+  final TextEditingController _portCtrl =
+      TextEditingController(text: '${BuildDefaults.defaultServerPort}');
   Map<String, Connection> _connByServerId = {};
 
   @override

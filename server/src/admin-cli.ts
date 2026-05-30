@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { resolve } from 'node:path';
+import { DEFAULT_SERVER_PORT } from './defaults.js';
 
 const CONFIG_DIR = resolve(homedir(), '.config', 'pawterm');
 const DEFAULT_CONFIG_PATH = resolve(CONFIG_DIR, 'config.json');
@@ -42,7 +43,7 @@ function readConfig(): { adminToken: string; port: number; host: string } {
   const rawHost = raw.host ?? '127.0.0.1';
   return {
     adminToken: raw.token,
-    port: raw.port ?? 8765,
+    port: raw.port ?? DEFAULT_SERVER_PORT,
     host: rawHost === '0.0.0.0' ? '127.0.0.1' : rawHost,
   };
 }
