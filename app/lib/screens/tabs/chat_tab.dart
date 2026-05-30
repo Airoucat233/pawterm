@@ -25,6 +25,7 @@ import '../../state/todo_list.dart';
 import '../../theme.dart';
 import '../../utils/time_format.dart';
 import '../../widgets/cc_spinner.dart';
+import '../../widgets/codex_approval_card.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/todo_chip.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -152,6 +153,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// 上一轮用户消息的原文，仅在 AI 未响应就中断时保留。
   /// 非 null 时在输入框上方显示"重新编辑"快捷条。
   String? _unrespondedUserText;
+
+  /// 用户手动收起过的当前审批浮层。消息流里的审批卡仍保留。
+  String? _dismissedApprovalPopoverId;
 
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
@@ -1519,6 +1523,28 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     unawaited(_chatApi!.answerCodexApproval(_sessionId!, requestId, decision));
   }
 
+  _PendingCodexApproval? _latestPendingCodexApproval(
+    Map<String, ToolResultBlock> toolResults,
+  ) {
+    for (final m in _messages.reversed) {
+      final content = switch (m) {
+        UserMsg(:final content) => content,
+        AssistantMsg(:final content) => content,
+        _ => const <ContentBlock>[],
+      };
+      for (final block in content.reversed) {
+        if (block is! ToolUseBlock) continue;
+        if (!_isCodexApprovalRequestName(block.name)) continue;
+        final result = toolResults[block.id];
+        if (result == null && block.id != _dismissedApprovalPopoverId) {
+          return _PendingCodexApproval(toolUse: block, result: result);
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+
   /// 弹文件选择器，把每个选中的文件都登记为 uploading 状态并启动并发上传。
   Future<void> _pickAndUploadAttachments() async {
     final result = await FilePicker.platform.pickFiles(allowMultiple: true);
@@ -1613,6 +1639,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         }
       }
     }
+    final activeApproval = _latestPendingCodexApproval(toolResults);
 
     return Column(
       children: [
@@ -1733,6 +1760,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                     onTap: () => _scrollToEnd(force: true),
                   ),
                 ),
+              if (activeApproval != null &&
+                  activeApproval.toolUse.id != _dismissedApprovalPopoverId)
+                _ApprovalPopoverOverlay(
+                  toolUse: activeApproval.toolUse,
+                  result: activeApproval.result,
+                  onDismiss: () => setState(() {
+                    _dismissedApprovalPopoverId = activeApproval.toolUse.id;
+                  }),
+                  onSubmit: (requestId, decision) {
+                    setState(() {
+                      _dismissedApprovalPopoverId = requestId;
+                    });
+                    _sendCodexApproval(requestId, decision);
+                  },
+                ),
             ],
           ),
         ),
@@ -1787,6 +1829,118 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             runtime: session.runtime,
           ),
       ],
+    );
+  }
+}
+
+class _PendingCodexApproval {
+  final ToolUseBlock toolUse;
+  final ToolResultBlock? result;
+
+  const _PendingCodexApproval({
+    required this.toolUse,
+    required this.result,
+  });
+}
+
+bool _isCodexApprovalRequestName(String name) {
+  return name == 'item/commandExecution/requestApproval' ||
+      name == 'item/fileChange/requestApproval' ||
+      name == 'item/permissions/requestApproval';
+}
+
+class _ApprovalPopoverOverlay extends StatelessWidget {
+  final ToolUseBlock toolUse;
+  final ToolResultBlock? result;
+  final VoidCallback onDismiss;
+  final void Function(String requestId, String decision) onSubmit;
+
+  const _ApprovalPopoverOverlay({
+    required this.toolUse,
+    required this.result,
+    required this.onDismiss,
+    required this.onSubmit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Positioned.fill(
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: onDismiss,
+              child: const SizedBox.expand(),
+            ),
+          ),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {},
+              child: Material(
+                color: Colors.transparent,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: t.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: t.border, width: 0.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.14),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.privacy_tip_outlined,
+                              size: 14, color: t.warning),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '当前会话需要审批',
+                              style: TextStyle(
+                                color: t.text,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          InkResponse(
+                            onTap: onDismiss,
+                            radius: 18,
+                            child: Padding(
+                              padding: const EdgeInsets.all(6),
+                              child: Icon(Icons.close_rounded,
+                                  size: 16, color: t.textDim),
+                            ),
+                          ),
+                        ],
+                      ),
+                      CodexApprovalCard(
+                        toolUse: toolUse,
+                        answeredResult: result,
+                        onSubmit: onSubmit,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

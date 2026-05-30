@@ -37,9 +37,53 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
     final decisionLabel = _decisionLabel(decision);
     final decisionColor = _decisionColor(t, decision);
 
+    if (answered) {
+      return Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border(
+            top: BorderSide(color: t.border, width: 0.5),
+            right: BorderSide(color: t.border, width: 0.5),
+            bottom: BorderSide(color: t.border, width: 0.5),
+            left: BorderSide(color: decisionColor, width: 3),
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
+        child: Row(
+          children: [
+            Icon(Icons.privacy_tip_outlined, size: 15, color: decisionColor),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: t.text,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              decisionLabel ?? '已处理',
+              style: TextStyle(
+                color: decisionColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 160),
-      opacity: answered ? 0.72 : 1,
+      opacity: 1,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         decoration: BoxDecoration(
@@ -80,56 +124,45 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
                 ),
               ],
             ),
-            if (!answered) ...[
-              const SizedBox(height: 8),
-              Text(
-                method,
-                style: TextStyle(
-                  color: t.textDim,
-                  fontSize: 10,
-                  fontFamily: 'monospace',
+            const SizedBox(height: 8),
+            Text(
+              method,
+              style: TextStyle(
+                color: t.textDim,
+                fontSize: 10,
+                fontFamily: 'monospace',
+              ),
+            ),
+            const SizedBox(height: 8),
+            _DetailBox(text: summary, t: t),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _ActionButton(
+                    label: '拒绝',
+                    color: t.error,
+                    onTap: () => _submit('decline'),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              _DetailBox(text: summary, t: t),
-            ] else if (decisionLabel != null) ...[
-              const SizedBox(height: 8),
-              _DecisionReceipt(
-                label: decisionLabel,
-                color: decisionColor,
-                t: t,
-              ),
-            ],
-            if (!answered) ...[
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: _ActionButton(
-                      label: '拒绝',
-                      color: t.error,
-                      onTap: () => _submit('decline'),
-                    ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _ActionButton(
+                    label: '允许本次',
+                    color: t.accent,
+                    onTap: () => _submit('accept'),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _ActionButton(
-                      label: '允许本次',
-                      color: t.accent,
-                      onTap: () => _submit('accept'),
-                    ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _ActionButton(
+                    label: '本会话允许',
+                    color: t.warning,
+                    onTap: () => _submit('acceptForSession'),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _ActionButton(
-                      label: '本会话允许',
-                      color: t.warning,
-                      onTap: () => _submit('acceptForSession'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
           ],
         ),
       ),
@@ -238,45 +271,6 @@ class _DetailBox extends StatelessWidget {
           height: 1.45,
           fontFamily: 'monospace',
         ),
-      ),
-    );
-  }
-}
-
-class _DecisionReceipt extends StatelessWidget {
-  final String label;
-  final Color color;
-  final AppTokens t;
-
-  const _DecisionReceipt({
-    required this.label,
-    required this.color,
-    required this.t,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withValues(alpha: 0.28), width: 0.5),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.check_circle_outline, size: 13, color: color),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 11.5,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
       ),
     );
   }
