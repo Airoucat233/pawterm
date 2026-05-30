@@ -458,17 +458,18 @@ class _ToolCallCardState extends State<ToolCallCard> {
         if (desc.isNotEmpty) {
           text = desc;
         } else {
-          final cmd = (input['command'] ?? '').toString().trim();
-          final firstSpace = cmd.indexOf(' ');
-          if (firstSpace < 0 || firstSpace >= cmd.length - 1) {
-            text = cmd;
+          final display = _displayCommand((input['command'] ?? '').toString());
+          final command = display.command;
+          final firstSpace = command.indexOf(' ');
+          if (firstSpace < 0 || firstSpace >= command.length - 1) {
+            text = command;
           } else {
-            final head = cmd.substring(0, firstSpace);
-            final rest = cmd.substring(firstSpace + 1);
+            final head = command.substring(0, firstSpace);
+            final rest = command.substring(firstSpace + 1);
             if (rest.length <= 28) {
               text = '$head $rest';
             } else {
-              final tailRaw = cmd.substring(cmd.length - 20);
+              final tailRaw = command.substring(command.length - 20);
               text = '$head … $tailRaw';
             }
           }
@@ -521,7 +522,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'Bash':
       case 'commandExecution':
         return _BashLine(
-          command: (input['command'] ?? '').toString(),
+          command: _displayCommand((input['command'] ?? '').toString()),
           cwd: (input['cwd'] ?? '').toString(),
         );
       case 'fileChange':
@@ -533,6 +534,30 @@ class _ToolCallCardState extends State<ToolCallCard> {
         final hasNested = input.values.any((v) => v is Map || v is List);
         return hasNested ? _JsonBlock(value: input) : _KeyValueList(map: input);
     }
+  }
+
+  _DisplayCommand _displayCommand(String raw) {
+    final trimmed = raw.trim();
+    final match = RegExp(
+      r'^(?:(?:/usr)?/bin/)?(zsh|bash|sh)\s+-lc\s+([\s\S]+)$',
+    ).firstMatch(trimmed);
+    if (match == null) return _DisplayCommand(command: raw);
+    final shell = match.group(1)!;
+    final scriptRaw = match.group(2)!.trim();
+    final script = _unquoteShellArg(scriptRaw);
+    if (script.trim().isEmpty) return _DisplayCommand(command: raw);
+    return _DisplayCommand(command: script, wrapper: '$shell -lc');
+  }
+
+  String _unquoteShellArg(String raw) {
+    if (raw.length < 2) return raw;
+    final quote = raw[0];
+    if ((quote != '"' && quote != "'") || raw[raw.length - 1] != quote) {
+      return raw;
+    }
+    final inner = raw.substring(1, raw.length - 1);
+    if (quote == "'") return inner.replaceAll(r"'\''", "'");
+    return inner.replaceAllMapped(RegExp(r'\\(["\\$`])'), (m) => m.group(1)!);
   }
 
   Map<String, dynamic> _rawPayload() {
@@ -703,8 +728,15 @@ class _SectionLabel extends StatelessWidget {
 
 // ── Input body widgets ────────────────────────────────────────────────
 
-class _BashLine extends StatelessWidget {
+class _DisplayCommand {
   final String command;
+  final String? wrapper;
+
+  const _DisplayCommand({required this.command, this.wrapper});
+}
+
+class _BashLine extends StatelessWidget {
+  final _DisplayCommand command;
   final String cwd;
   const _BashLine({required this.command, this.cwd = ''});
   @override
@@ -732,8 +764,19 @@ class _BashLine extends StatelessWidget {
             ),
             const SizedBox(height: 4),
           ],
+          if (command.wrapper != null) ...[
+            Text(
+              'via ${command.wrapper}',
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 10.5,
+                color: t.textDim,
+              ),
+            ),
+            const SizedBox(height: 4),
+          ],
           SelectableText(
-            '\$ $command',
+            '\$ ${command.command}',
             style:
                 TextStyle(fontFamily: 'monospace', fontSize: 11, color: t.text),
           ),
