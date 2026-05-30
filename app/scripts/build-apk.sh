@@ -9,6 +9,7 @@
 # Usage:
 #   ./scripts/build-apk.sh           # prod release build (split-per-abi)
 #   ./scripts/build-apk.sh --prod    # prod release build (split-per-abi)
+#   ./scripts/build-apk.sh --prod --arm64-only # prod release build, arm64 only
 #   ./scripts/build-apk.sh --dev     # local dev release build, arm64 only, app id com.airoucat.pawterm.dev
 #   ./scripts/build-apk.sh --dev --all-abi # local dev release build, split-per-abi
 #   ./scripts/build-apk.sh --debug   # debug build (arm64 only)
@@ -29,12 +30,14 @@ DEBUG=0
 FLAVOR="prod"
 NAME_PREFIX="pawterm"
 ALL_ABI=0
+ARM64_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --debug|-d) DEBUG=1 ;;
     --prod) FLAVOR="prod"; NAME_PREFIX="pawterm" ;;
     --dev) FLAVOR="dev"; NAME_PREFIX="pawterm-dev" ;;
     --all-abi) ALL_ABI=1 ;;
+    --arm64-only) ARM64_ONLY=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -43,7 +46,7 @@ DEFAULT_PORT=$([[ "$FLAVOR" == "dev" ]] && echo 8765 || echo 18765)
 DART_DEFINES=(--dart-define=PAWTERM_DEFAULT_PORT=$DEFAULT_PORT)
 
 SPLIT_PER_ABI=1
-if [[ "$FLAVOR" == "dev" && $ALL_ABI -eq 0 ]]; then
+if [[ $ARM64_ONLY -eq 1 || ( "$FLAVOR" == "dev" && $ALL_ABI -eq 0 ) ]]; then
   SPLIT_PER_ABI=0
 fi
 

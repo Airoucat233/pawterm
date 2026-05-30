@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'i18n/locale_provider.dart';
 import 'screens/connections_screen.dart';
+import 'state/chat_completion_notifier.dart';
 import 'state/prefs.dart';
 import 'state/reconnect_service.dart';
 import 'theme.dart';
@@ -14,21 +15,39 @@ import 'theme.dart';
 /// （从 MainShell 返回）时刷新已展开项目的 session 列表，否则 sessionsProvider
 /// 的缓存会让标题/最近时间停留在用户离开前的状态。
 final routeObserver = RouteObserver<PageRoute<dynamic>>();
+final navigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   runApp(const ProviderScope(child: CcApp()));
 }
 
-class CcApp extends ConsumerWidget {
+class CcApp extends ConsumerStatefulWidget {
   const CcApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<CcApp> createState() => _CcAppState();
+}
+
+class _CcAppState extends ConsumerState<CcApp> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ChatCompletionNotifier.instance.init(
+        ref: ref,
+        navigatorKey: navigatorKey,
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     // Boot the reconnect service (scans LAN on startup + network changes).
     ref.watch(reconnectProvider);
     final themeMode = ref.watch(prefsProvider);
     final locale = ref.watch(materialLocaleProvider);
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'PawTerm',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
@@ -55,10 +74,12 @@ class CcApp extends ConsumerWidget {
         return AnnotatedRegion<SystemUiOverlayStyle>(
           value: SystemUiOverlayStyle(
             statusBarColor: Colors.transparent,
-            statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+            statusBarIconBrightness:
+                isDark ? Brightness.light : Brightness.dark,
             statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
             systemNavigationBarColor: t.bg,
-            systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+            systemNavigationBarIconBrightness:
+                isDark ? Brightness.light : Brightness.dark,
             systemNavigationBarDividerColor: Colors.transparent,
           ),
           child: child!,

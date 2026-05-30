@@ -92,7 +92,7 @@ describe('runMessagesToWire', () => {
   it('maps Codex server request resolved events to tool results', () => {
     const wires = runMessagesToWire('codex', {
       method: 'serverRequest/resolved',
-      params: { threadId: 'thread-1', requestId: 'approval-1' },
+      params: { threadId: 'thread-1', requestId: 'approval-1', decision: 'acceptForSession' },
     });
 
     expect(wires).toEqual([{
@@ -102,13 +102,13 @@ describe('runMessagesToWire', () => {
         content: [{
           type: 'tool_result',
           tool_use_id: 'approval-1',
-          content: 'resolved',
+          content: 'acceptForSession',
           is_error: false,
           native_type: 'serverRequest/resolved',
           native_event: 'serverRequest/resolved',
           raw_payload: {
             method: 'serverRequest/resolved',
-            params: { threadId: 'thread-1', requestId: 'approval-1' },
+            params: { threadId: 'thread-1', requestId: 'approval-1', decision: 'acceptForSession' },
           },
         }],
       },

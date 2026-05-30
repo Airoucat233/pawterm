@@ -22,16 +22,20 @@ class CodexApprovalCard extends StatefulWidget {
 }
 
 class _CodexApprovalCardState extends State<CodexApprovalCard> {
-  bool _submitted = false;
+  String? _localDecision;
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final answered = widget.answeredResult != null || _submitted;
+    final decision =
+        _decisionFromResult(widget.answeredResult) ?? _localDecision;
+    final answered = decision != null;
     final method = widget.toolUse.name;
     final input = widget.toolUse.input;
     final title = _title(method);
     final summary = _summary(method, input);
+    final decisionLabel = _decisionLabel(decision);
+    final decisionColor = _decisionColor(t, decision);
 
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 160),
@@ -67,26 +71,35 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
                   ),
                 ),
                 Text(
-                  answered ? '已处理' : '等待确认',
+                  decisionLabel ?? '等待确认',
                   style: TextStyle(
-                    color: answered ? t.textDim : t.warning,
+                    color: answered ? decisionColor : t.warning,
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Text(
-              method,
-              style: TextStyle(
-                color: t.textDim,
-                fontSize: 10,
-                fontFamily: 'monospace',
+            if (!answered) ...[
+              const SizedBox(height: 8),
+              Text(
+                method,
+                style: TextStyle(
+                  color: t.textDim,
+                  fontSize: 10,
+                  fontFamily: 'monospace',
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            _DetailBox(text: summary, t: t),
+              const SizedBox(height: 8),
+              _DetailBox(text: summary, t: t),
+            ] else if (decisionLabel != null) ...[
+              const SizedBox(height: 8),
+              _DecisionReceipt(
+                label: decisionLabel,
+                color: decisionColor,
+                t: t,
+              ),
+            ],
             if (!answered) ...[
               const SizedBox(height: 10),
               Row(
@@ -124,10 +137,35 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
   }
 
   void _submit(String decision) {
-    if (_submitted || widget.answeredResult != null) return;
-    setState(() => _submitted = true);
+    if (_localDecision != null || widget.answeredResult != null) return;
+    setState(() => _localDecision = decision);
     widget.onSubmit(widget.toolUse.id, decision);
   }
+
+  String? _decisionFromResult(ToolResultBlock? result) {
+    if (result == null) return null;
+    final content = result.content;
+    if (content is String && content.trim().isNotEmpty) {
+      return content.trim();
+    }
+    return 'resolved';
+  }
+
+  String? _decisionLabel(String? decision) => switch (decision) {
+        null => null,
+        'accept' => '已允许本次',
+        'acceptForSession' => '本会话已允许',
+        'decline' => '已拒绝',
+        'cancel' => '已取消',
+        'resolved' => '已处理',
+        _ => '已处理: $decision',
+      };
+
+  Color _decisionColor(AppTokens t, String? decision) => switch (decision) {
+        'decline' || 'cancel' => t.error,
+        'accept' || 'acceptForSession' => t.success,
+        _ => t.textDim,
+      };
 
   String _title(String method) {
     if (method == 'item/commandExecution/requestApproval') {
@@ -200,6 +238,45 @@ class _DetailBox extends StatelessWidget {
           height: 1.45,
           fontFamily: 'monospace',
         ),
+      ),
+    );
+  }
+}
+
+class _DecisionReceipt extends StatelessWidget {
+  final String label;
+  final Color color;
+  final AppTokens t;
+
+  const _DecisionReceipt({
+    required this.label,
+    required this.color,
+    required this.t,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.28), width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle_outline, size: 13, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }
