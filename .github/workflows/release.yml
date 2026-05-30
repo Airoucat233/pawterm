@@ -5,6 +5,9 @@ on:
     tags:
       - 'release-v*'
 
+permissions:
+  contents: write
+
 jobs:
   # ─────────────────────────────────────────────────────────────
   # Check if release already exists (--local flow)
