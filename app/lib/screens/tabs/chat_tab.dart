@@ -6,6 +6,7 @@ import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -113,6 +114,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   // 浮动按钮；用户按按钮或自己滑回底部 → 重新开启。
   bool _stickToBottom = true;
   static const double _stickToBottomThreshold = 80.0;
+  DateTime? _suppressAutoScrollUntil;
+  DateTime? _lastAutoScrollAt;
 
   // 键盘弹出跟随：记录上一帧键盘高度，用于判断键盘是否正在弹出。
   double _prevKeyboardHeight = 0;
@@ -195,6 +198,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _oldestUuid != null) {
       _loadOlderPage();
     }
+  }
+
+  bool _onUserScroll(UserScrollNotification notification) {
+    if (notification.direction != ScrollDirection.idle) {
+      _suppressAutoScrollUntil =
+          DateTime.now().add(const Duration(milliseconds: 900));
+    }
+    return false;
   }
 
   void _closeSse() {
@@ -1285,6 +1296,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// - [force] = false（默认）：仅在当前已经"贴底"时滚（用于流式 delta 自动跟随）
   void _scrollToEnd({bool force = false}) {
     if (!force && !_stickToBottom) return;
+    if (!force) {
+      final now = DateTime.now();
+      final suppressUntil = _suppressAutoScrollUntil;
+      if (suppressUntil != null && now.isBefore(suppressUntil)) return;
+      final last = _lastAutoScrollAt;
+      if (last != null &&
+          now.difference(last) < const Duration(milliseconds: 220)) {
+        return;
+      }
+      _lastAutoScrollAt = now;
+    }
 
     if (force) {
       // force=true 用双帧 jumpTo（同 _loadHistory 的策略）：
@@ -1832,51 +1854,54 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                                   ? s.chatStartTalking
                                   : s.chatConnecting),
                         ))
-                  : Scrollbar(
-                      controller: _scrollController,
-                      thumbVisibility: false,
-                      thickness: 3,
-                      radius: const Radius.circular(1.5),
-                      child: ListView.builder(
+                  : NotificationListener<UserScrollNotification>(
+                      onNotification: _onUserScroll,
+                      child: Scrollbar(
                         controller: _scrollController,
-                        padding: const EdgeInsets.fromLTRB(16, 12, 19, 8),
-                        // +1 用于在顶部插入"加载更早消息"指示
-                        itemCount: _messages.length + 1,
-                        itemBuilder: (_, i) {
-                          if (i == 0) {
-                            if (_loadingOlder) {
-                              return const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 14),
-                                child: Center(
-                                  child: SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 1.5),
+                        thumbVisibility: false,
+                        thickness: 3,
+                        radius: const Radius.circular(1.5),
+                        child: ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.fromLTRB(16, 12, 19, 8),
+                          // +1 用于在顶部插入"加载更早消息"指示
+                          itemCount: _messages.length + 1,
+                          itemBuilder: (_, i) {
+                            if (i == 0) {
+                              if (_loadingOlder) {
+                                return const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 14),
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 1.5),
+                                    ),
                                   ),
-                                ),
-                              );
+                                );
+                              }
+                              // 没在加载也要占位（哪怕高度 0），保证 itemCount 一致
+                              return const SizedBox.shrink();
                             }
-                            // 没在加载也要占位（哪怕高度 0），保证 itemCount 一致
-                            return const SizedBox.shrink();
-                          }
-                          final m = _messages[i - 1];
-                          if (m is LocalUserInput) {
-                            return _UserMessage(
-                                text: m.text, timestamp: m.timestamp);
-                          }
-                          if (m is StreamingAssistant) {
-                            return _StreamingMessage(buffer: m);
-                          }
-                          return MessageView(
-                            message: m,
-                            toolResults: toolResults,
-                            subMsgsMap: _subMsgs,
-                            onAnswerQuestion: _sendAnswerQuestion,
-                            onAnswerCodexApproval: _sendCodexApproval,
-                            rawJson: kDebugMode ? _debugRaw[m] : null,
-                          );
-                        },
+                            final m = _messages[i - 1];
+                            if (m is LocalUserInput) {
+                              return _UserMessage(
+                                  text: m.text, timestamp: m.timestamp);
+                            }
+                            if (m is StreamingAssistant) {
+                              return _StreamingMessage(buffer: m);
+                            }
+                            return MessageView(
+                              message: m,
+                              toolResults: toolResults,
+                              subMsgsMap: _subMsgs,
+                              onAnswerQuestion: _sendAnswerQuestion,
+                              onAnswerCodexApproval: _sendCodexApproval,
+                              rawJson: kDebugMode ? _debugRaw[m] : null,
+                            );
+                          },
+                        ),
                       ),
                     ),
               // Right-bottom "jump to bottom" button — only shown when the user
