@@ -50,6 +50,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final color = _colorFor(t, toolUse.name);
     final icon = _iconFor(toolUse.name);
     final title = _displayName(toolUse.name, toolUse.input);
+    final isFileChange = toolUse.name == 'fileChange';
     final hasInputBody = !_isBodyEmpty(toolUse.name);
     final hasOutput = result != null;
     final hasRawPayload = _rawPayload().isNotEmpty;
@@ -120,7 +121,19 @@ class _ToolCallCardState extends State<ToolCallCard> {
                 ),
                 if (_expanded && canExpand) ...[
                   const SizedBox(height: 10),
-                  if (hasInputBody) ...[
+                  if (isFileChange && !_viewRaw) ...[
+                    Row(
+                      children: [
+                        const Spacer(),
+                        _SegmentedControl(
+                          isRaw: _viewRaw,
+                          onChanged: (v) => setState(() => _viewRaw = v),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    _renderBody(context, t, toolUse.name, toolUse.input),
+                  ] else if (hasInputBody) ...[
                     Row(
                       children: [
                         _SectionLabel('输入', t),
@@ -140,12 +153,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     if (hasInputBody) const SizedBox(height: 10),
                     _SubAgentTranscript(messages: widget.subAgentMsgs!),
                   ],
-                  if (hasOutput) ...[
+                  if (hasOutput && (!isFileChange || _viewRaw)) ...[
                     if (hasInputBody || widget.subAgentMsgs != null)
                       const SizedBox(height: 10),
                     _SectionLabel('输出', t),
                     const SizedBox(height: 4),
-                    _outputBody(t, result!),
+                    _outputBody(t, result!, raw: _viewRaw),
                   ],
                 ],
               ],
@@ -170,8 +183,15 @@ class _ToolCallCardState extends State<ToolCallCard> {
     return Icon(Icons.check_rounded, size: 14, color: t.success);
   }
 
-  Widget _outputBody(AppTokens t, ToolResultBlock r) {
+  Widget _outputBody(AppTokens t, ToolResultBlock r, {bool raw = false}) {
+    if (raw) {
+      return _JsonBlock(value: r.rawPayload ?? {'content': r.content});
+    }
     final text = _extractText(r.content);
+    final json = _tryDecodeJson(text);
+    if (json != null) {
+      return _JsonBlock(value: json);
+    }
     final truncated =
         text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text;
     return Container(
@@ -207,6 +227,17 @@ class _ToolCallCardState extends State<ToolCallCard> {
       }).join('\n');
     }
     return content.toString();
+  }
+
+  Object? _tryDecodeJson(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return null;
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+      return jsonDecode(trimmed);
+    } catch (_) {
+      return null;
+    }
   }
 
   bool _isBodyEmpty(String name) => false;
@@ -311,15 +342,38 @@ class _ToolCallCardState extends State<ToolCallCard> {
     if (changes is List && changes.isNotEmpty) {
       final first = changes.first;
       if (first is Map) {
-        final kind =
-            (first['kind'] ?? first['type'] ?? first['operation'] ?? '')
-                .toString()
-                .trim();
+        final kind = _fileChangeKind(first);
         if (kind.isNotEmpty) return kind;
       }
     }
     final status = (input['status'] ?? '').toString().trim();
     return status.isNotEmpty ? status : 'Edit';
+  }
+
+  String _fileChangeKind(Map<dynamic, dynamic> map) {
+    for (final key in const ['kind', 'type', 'operation']) {
+      final value = map[key];
+      if (value == null) continue;
+      if (value is String) {
+        final text = _normalizeFileChangeKind(value);
+        if (text.isNotEmpty) return text;
+      }
+      if (value is Map) {
+        for (final nestedKey in const ['kind', 'type', 'operation', 'name']) {
+          final nested = value[nestedKey]?.toString().trim() ?? '';
+          if (nested.isNotEmpty) return nested;
+        }
+      }
+    }
+    return '';
+  }
+
+  String _normalizeFileChangeKind(String raw) {
+    final text = raw.trim();
+    if (!text.startsWith('{')) return text;
+    final match =
+        RegExp(r'(?:type|kind|operation|name)\s*:\s*([^,}]+)').firstMatch(text);
+    return match?.group(1)?.trim() ?? text;
   }
 
   Color _colorFor(AppTokens t, String name) {
@@ -462,8 +516,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
       Map<String, dynamic> input) {
     // raw 模式：直接显示 JSON
     if (_viewRaw) {
-      final raw = _rawPayload();
-      return _JsonBlock(value: raw);
+      return _JsonBlock(value: toolUse.rawPayload ?? {'input': input});
     }
 
     switch (name) {
@@ -696,8 +749,7 @@ class _CodexFileChange extends StatelessWidget {
   Widget _fileChangeRow(AppTokens t, dynamic row) {
     final map = row is Map ? row : const {};
     final path = (map['path'] ?? map['file_path'] ?? '').toString();
-    final kind =
-        (map['kind'] ?? map['type'] ?? map['operation'] ?? 'change').toString();
+    final kind = _fileChangeKind(map);
     final summary = [
       if (map['additions'] != null) '+${map['additions']}',
       if (map['deletions'] != null) '-${map['deletions']}',
@@ -764,6 +816,32 @@ class _CodexFileChange extends StatelessWidget {
       if (value is String && value.trim().isNotEmpty) return value;
     }
     return null;
+  }
+
+  String _fileChangeKind(Map<dynamic, dynamic> map) {
+    for (final key in const ['kind', 'type', 'operation']) {
+      final value = map[key];
+      if (value == null) continue;
+      if (value is String) {
+        final text = _normalizeFileChangeKind(value);
+        if (text.isNotEmpty) return text;
+      }
+      if (value is Map) {
+        for (final nestedKey in const ['kind', 'type', 'operation', 'name']) {
+          final nested = value[nestedKey]?.toString().trim() ?? '';
+          if (nested.isNotEmpty) return nested;
+        }
+      }
+    }
+    return 'change';
+  }
+
+  String _normalizeFileChangeKind(String raw) {
+    final text = raw.trim();
+    if (!text.startsWith('{')) return text;
+    final match =
+        RegExp(r'(?:type|kind|operation|name)\s*:\s*([^,}]+)').firstMatch(text);
+    return match?.group(1)?.trim() ?? text;
   }
 }
 
@@ -904,7 +982,7 @@ class _JsonBlock extends StatelessWidget {
       ),
       child: SelectableText.rich(
         TextSpan(
-          children: _jsonSpans(truncated, t),
+          children: _jsonSpans(context, truncated, t),
           style: TextStyle(
             fontFamily: 'monospace',
             fontSize: 11,
@@ -916,7 +994,7 @@ class _JsonBlock extends StatelessWidget {
     );
   }
 
-  List<TextSpan> _jsonSpans(String text, AppTokens t) {
+  List<TextSpan> _jsonSpans(BuildContext context, String text, AppTokens t) {
     final spans = <TextSpan>[];
     final token = RegExp(
       r'"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b',
@@ -928,7 +1006,7 @@ class _JsonBlock extends StatelessWidget {
       }
       final raw = match.group(0)!;
       final color = raw.startsWith('"') && _isJsonKey(text, match.end)
-          ? t.accent
+          ? _jsonKeyColor(context)
           : raw.startsWith('"')
               ? t.success
               : raw == 'true' || raw == 'false'
@@ -959,6 +1037,11 @@ class _JsonBlock extends StatelessWidget {
       i++;
     }
     return i < text.length && text[i] == ':';
+  }
+
+  Color _jsonKeyColor(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? const Color(0xFFB996FF) : const Color(0xFF4F46E5);
   }
 }
 

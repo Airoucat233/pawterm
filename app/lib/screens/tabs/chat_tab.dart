@@ -3696,41 +3696,23 @@ class _ReEditBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final preview = text.length > 60 ? '${text.substring(0, 60)}…' : text;
     return Container(
       color: t.surface,
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       child: Row(
         children: [
-          Icon(Icons.undo_rounded, size: 13, color: t.warning),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              preview,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12, color: t.textMuted),
-            ),
-          ),
-          const SizedBox(width: 8),
-          GestureDetector(
-            onTap: onReEdit,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: t.warning.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                  color: t.warning.withValues(alpha: 0.3),
-                  width: 0.5,
-                ),
-              ),
-              child: Text(
-                '重新编辑',
-                style: TextStyle(
-                  fontSize: 11,
+          const Spacer(),
+          Tooltip(
+            message: '撤回并重新编辑',
+            child: InkResponse(
+              onTap: onReEdit,
+              radius: 18,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(
+                  Icons.undo_rounded,
+                  size: 16,
                   color: t.warning,
-                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
