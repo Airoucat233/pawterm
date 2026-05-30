@@ -27,6 +27,7 @@ class StreamingForegroundService {
   static final instance = StreamingForegroundService._();
 
   final Map<String, ChatCompletionPayload> _active = {};
+  final Map<String, String> _activity = {};
   bool _initialized = false;
   bool _appInForeground = true;
 
@@ -60,13 +61,17 @@ class StreamingForegroundService {
     await _sync();
   }
 
-  Future<void> upsert(ChatCompletionPayload payload) async {
+  Future<void> upsert(ChatCompletionPayload payload, {String? activity}) async {
     _active[payload.key] = payload;
+    if (activity != null && activity.isNotEmpty) {
+      _activity[payload.key] = activity;
+    }
     await _sync();
   }
 
   Future<void> remove(ChatCompletionPayload payload) async {
     _active.remove(payload.key);
+    _activity.remove(payload.key);
     await _sync();
   }
 
@@ -110,20 +115,23 @@ class StreamingForegroundService {
   String _title() {
     if (_active.length == 1) {
       final payload = _active.values.first;
-      return '${_agentLabel(payload.agent)} 正在回复';
+      return '${_agentLabel(payload.agent)} 正在处理';
     }
-    return '${_active.length} 个会话正在回复';
+    return '${_active.length} 个会话正在后台处理';
   }
 
   String _body() {
     if (_active.length == 1) {
       final payload = _active.values.first;
-      return payload.label.isEmpty ? payload.cwd : payload.label;
+      final label = payload.label.isEmpty ? payload.cwd : payload.label;
+      final activity = _activity[payload.key] ?? '保持连接，等待最新进度';
+      return '$label · $activity';
     }
-    return _active.values
-        .take(3)
-        .map((payload) => payload.label.isEmpty ? payload.cwd : payload.label)
-        .join(' · ');
+    return _active.values.take(3).map((payload) {
+      final label = payload.label.isEmpty ? payload.cwd : payload.label;
+      final activity = _activity[payload.key];
+      return activity == null ? label : '$label: $activity';
+    }).join(' · ');
   }
 
   String _agentLabel(AgentKind agent) => switch (agent) {

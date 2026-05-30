@@ -1136,6 +1136,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _mode = CcStreamMode.toolInput;
             break;
         }
+        _syncForegroundStreamService();
       } else if (msg is StreamDelta) {
         _markAiOutputStarted();
         if (msg.kind == 'text') {
@@ -1560,10 +1561,23 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final isBusy = busy ?? _busy;
     final payload = _completionPayloadFor(current);
     if (isBusy) {
-      unawaited(StreamingForegroundService.instance.upsert(payload));
+      unawaited(StreamingForegroundService.instance.upsert(
+        payload,
+        activity: _foregroundActivityLabel(),
+      ));
     } else {
       unawaited(StreamingForegroundService.instance.remove(payload));
     }
+  }
+
+  String _foregroundActivityLabel() {
+    return switch (_mode) {
+      CcStreamMode.requesting => '正在建立请求',
+      CcStreamMode.thinking => '正在思考',
+      CcStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
+      CcStreamMode.responding => '正在生成回复',
+      CcStreamMode.toolInput => '正在准备工具调用',
+    };
   }
 
   ChatCompletionPayload _completionPayloadFor(CurrentSession session) {
@@ -4015,15 +4029,31 @@ class _ReEditAction extends StatelessWidget {
     final t = AppTokens.of(context);
     return Tooltip(
       message: '撤回并重新编辑',
-      child: InkResponse(
+      child: InkWell(
         onTap: onReEdit,
-        radius: 18,
-        child: Padding(
-          padding: const EdgeInsets.all(5),
-          child: Icon(
-            Icons.undo_rounded,
-            size: 16,
-            color: t.warning,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: t.accent.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: t.accent.withValues(alpha: 0.18)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.undo_rounded, size: 14, color: t.accent),
+              const SizedBox(width: 4),
+              Text(
+                '重新编辑',
+                style: TextStyle(
+                  fontSize: 11,
+                  height: 1.1,
+                  color: t.accent,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
         ),
       ),
