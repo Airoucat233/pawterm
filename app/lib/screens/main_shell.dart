@@ -53,18 +53,29 @@ class _MainShellState extends ConsumerState<MainShell> {
               session: session,
               tabIndex: _index,
               onSessionTap: () => _showSessionSwitcher(context),
-              onGitTap: session == null || conn == null
-                  ? null
-                  : () => _showGitPanel(context, conn, session),
             ),
             Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
             Expanded(
               child: _LazyTabSwitcher(
                 index: _index,
-                builders: const [
-                  _LazyBuilder(builder: _buildChat),
-                  _LazyBuilder(builder: _buildShell),
-                  _LazyBuilder(builder: _buildFiles),
+                builders: [
+                  _LazyBuilder(
+                      builder: () => ChatTab(
+                            onGitTap: () {
+                              final currentConn =
+                                  ref.read(activeConnectionProvider);
+                              final currentSession =
+                                  ref.read(currentSessionProvider);
+                              if (currentConn == null ||
+                                  currentSession == null) {
+                                return;
+                              }
+                              _showGitPanel(
+                                  context, currentConn, currentSession);
+                            },
+                          )),
+                  const _LazyBuilder(builder: _buildShell),
+                  const _LazyBuilder(builder: _buildFiles),
                 ],
               ),
             ),
@@ -134,7 +145,6 @@ class _TabSpec {
   const _TabSpec(this.label, this.icon);
 }
 
-Widget _buildChat() => const ChatTab();
 Widget _buildShell() => const ShellTab();
 Widget _buildFiles() => const FilesTab();
 
@@ -198,13 +208,11 @@ class _TopBar extends StatelessWidget {
   final CurrentSession? session;
   final int tabIndex;
   final VoidCallback onSessionTap;
-  final VoidCallback? onGitTap;
   const _TopBar({
     required this.conn,
     required this.session,
     required this.tabIndex,
     required this.onSessionTap,
-    required this.onGitTap,
   });
 
   @override
@@ -314,13 +322,6 @@ class _TopBar extends StatelessWidget {
               tooltip: '切换会话',
             ),
 
-            if (conn != null && session != null)
-              _GitBranchButton(
-                api: GitApi(conn!.apiBase, token: conn!.token),
-                cwd: session!.cwd,
-                onTap: onGitTap,
-              ),
-
             // Right: settings button
             IconButton(
               icon: Icon(Icons.settings_outlined, size: 19, color: t.textMuted),
@@ -342,106 +343,6 @@ class _TopBar extends StatelessWidget {
       AgentKind.codex => 'Codex',
       AgentKind.gemini => 'Gemini',
     };
-  }
-}
-
-class _GitBranchButton extends StatefulWidget {
-  final GitApi api;
-  final String cwd;
-  final VoidCallback? onTap;
-  const _GitBranchButton({
-    required this.api,
-    required this.cwd,
-    required this.onTap,
-  });
-
-  @override
-  State<_GitBranchButton> createState() => _GitBranchButtonState();
-}
-
-class _GitBranchButtonState extends State<_GitBranchButton> {
-  late Future<GitStatus> _future;
-
-  @override
-  void initState() {
-    super.initState();
-    _future = widget.api.status(widget.cwd);
-  }
-
-  @override
-  void didUpdateWidget(covariant _GitBranchButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.cwd != widget.cwd) {
-      _future = widget.api.status(widget.cwd);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return FutureBuilder<GitStatus>(
-      future: _future,
-      builder: (context, snap) {
-        if (snap.hasError) return const SizedBox.shrink();
-        final branch = snap.data?.branch ?? '...';
-        final count = snap.data?.files.length ?? 0;
-        return InkWell(
-          onTap: widget.onTap,
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            height: 30,
-            constraints: const BoxConstraints(maxWidth: 116),
-            margin: const EdgeInsets.only(right: 2),
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            decoration: BoxDecoration(
-              color: t.surfaceHi,
-              border: Border.all(color: t.borderSubt),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.account_tree_outlined, size: 13, color: t.textMuted),
-                const SizedBox(width: 5),
-                Flexible(
-                  child: Text(
-                    branch,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: t.text,
-                    ),
-                  ),
-                ),
-                if (count > 0) ...[
-                  const SizedBox(width: 5),
-                  Container(
-                    constraints: const BoxConstraints(minWidth: 16),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: t.accent.withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(5),
-                    ),
-                    child: Text(
-                      '$count',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: t.accent,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        );
-      },
-    );
   }
 }
 

@@ -13,6 +13,7 @@ import 'package:http/http.dart' as http;
 
 import '../../api/agents_api.dart';
 import '../../api/chat_api.dart';
+import '../../api/git_api.dart';
 import '../../api/protocol.dart';
 import '../../api/sse_client.dart';
 import '../../api/upload_api.dart';
@@ -67,7 +68,8 @@ class _AttachmentState {
 }
 
 class ChatTab extends ConsumerStatefulWidget {
-  const ChatTab({super.key});
+  final VoidCallback? onGitTap;
+  const ChatTab({super.key, this.onGitTap});
 
   @override
   ConsumerState<ChatTab> createState() => _ChatTabState();
@@ -1658,6 +1660,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final t = AppTokens.of(context);
     final s = ref.watch(stringsProvider);
     final session = ref.watch(currentSessionProvider);
+    final config = ref.watch(activeConnectionProvider);
 
     if (session == null) {
       return _EmptyState(
@@ -1704,6 +1707,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             error: _error,
             uuid: _sessionId,
             onReconnect: _manualReconnect,
+            gitApi: config == null
+                ? null
+                : GitApi(config.apiBase, token: config.token),
+            gitCwd: session.cwd,
+            onGitTap: widget.onGitTap,
           ),
         if (_authFailed)
           Container(
@@ -2079,12 +2087,18 @@ class _StatusRow extends StatelessWidget {
   final String? error;
   final String? uuid;
   final VoidCallback onReconnect;
+  final GitApi? gitApi;
+  final String? gitCwd;
+  final VoidCallback? onGitTap;
   const _StatusRow({
     required this.connected,
     required this.busy,
     required this.error,
     required this.onReconnect,
     this.uuid,
+    this.gitApi,
+    this.gitCwd,
+    this.onGitTap,
   });
 
   @override
@@ -2110,6 +2124,14 @@ class _StatusRow extends StatelessWidget {
           const SizedBox(width: 8),
           Text(statusText, style: TextStyle(fontSize: 11, color: t.textMuted)),
           const Spacer(),
+          if (gitApi != null && gitCwd != null) ...[
+            _StatusGitBranchChip(
+              api: gitApi!,
+              cwd: gitCwd!,
+              onTap: onGitTap,
+            ),
+            const SizedBox(width: 6),
+          ],
           if (uuid != null) ...[
             GestureDetector(
               onTap: () {
@@ -2164,6 +2186,95 @@ class _StatusRow extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+class _StatusGitBranchChip extends StatefulWidget {
+  final GitApi api;
+  final String cwd;
+  final VoidCallback? onTap;
+
+  const _StatusGitBranchChip({
+    required this.api,
+    required this.cwd,
+    required this.onTap,
+  });
+
+  @override
+  State<_StatusGitBranchChip> createState() => _StatusGitBranchChipState();
+}
+
+class _StatusGitBranchChipState extends State<_StatusGitBranchChip> {
+  late Future<GitStatus> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.api.status(widget.cwd);
+  }
+
+  @override
+  void didUpdateWidget(covariant _StatusGitBranchChip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cwd != widget.cwd || oldWidget.api != widget.api) {
+      _future = widget.api.status(widget.cwd);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return FutureBuilder<GitStatus>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.hasError) return const SizedBox.shrink();
+        final branch = snap.data?.branch ?? '...';
+        final count = snap.data?.files.length ?? 0;
+        return InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 132),
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: t.surfaceHi,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: t.border, width: 0.5),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.account_tree_outlined, size: 12, color: t.textDim),
+                const SizedBox(width: 5),
+                Flexible(
+                  child: Text(
+                    branch,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: t.textDim,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (count > 0) ...[
+                  const SizedBox(width: 5),
+                  Text(
+                    '$count',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: t.accent,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
