@@ -4,14 +4,14 @@
 # Default: bump Android/Flutter and Mac app versions → push tag → CI builds APK + Mac + GitHub Release
 # --local:  verify exact artifacts in dist/, create GH Release, push tag (no bump)
 #           if tag already exists, prompts whether to replace artifacts
-# --prerelease: prerelease build from any branch (tag: prerelease-v*, GH Release: prerelease)
+# --prerelease: prerelease build from feature/next (tag: prerelease-v*, GH Release: prerelease)
 #               can be combined with --local
 # --dev:    deprecated alias for --prerelease
 #
 # Usage:
 #   ./scripts/release.sh               # CI build (main branch, release-v*)
 #   ./scripts/release.sh --local       # upload local artifacts (main branch)
-#   ./scripts/release.sh --prerelease  # CI build (any branch, prerelease-v*, prerelease)
+#   ./scripts/release.sh --prerelease  # CI build (feature/next, prerelease-v*, prerelease)
 #   ./scripts/release.sh --prerelease --local
 
 set -euo pipefail
@@ -40,9 +40,12 @@ fi
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [[ $PRERELEASE -eq 1 && "$CURRENT_BRANCH" != "feature/next" ]]; then
+  echo "✗ prerelease must be run from feature/next (current: $CURRENT_BRANCH)" >&2
+  exit 1
+fi
 if [[ $PRERELEASE -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
   echo "✗ release must be run from main (current: $CURRENT_BRANCH)" >&2
-  echo "  use --prerelease to release from a non-main branch" >&2
   exit 1
 fi
 
