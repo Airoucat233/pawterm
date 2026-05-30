@@ -137,8 +137,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   final List<String> _localUserEchoes = [];
 
   /// Realtime SSE can replay or resend the same provider item snapshot.
-  /// Keep rendered wire UUIDs stable per bound session to avoid duplicate cards.
+  /// Claude items are final enough to dedupe by UUID. Codex sends progressive
+  /// snapshots (`item/started` -> `item/completed`) with the same item UUID, so
+  /// those must upsert in place to reveal final text/tool results.
   final Set<String> _seenRealtimeUuids = {};
+  final Map<String, IncomingMessage> _codexRealtimeSnapshots = {};
 
   /// 上一轮用户消息的原文，仅在 AI 未响应就中断时保留。
   /// 非 null 时在输入框上方显示"重新编辑"快捷条。
@@ -270,6 +273,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _debugRaw.clear();
       _localUserEchoes.clear();
       _seenRealtimeUuids.clear();
+      _codexRealtimeSnapshots.clear();
       _subMsgs.clear();
       _subStreaming.clear();
       _sseClient = null;
@@ -628,6 +632,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             ..addAll(page.messages);
           _localUserEchoes.clear();
           _seenRealtimeUuids.clear();
+          _codexRealtimeSnapshots.clear();
           _oldestUuid = page.oldestUuid;
           _hasMoreHistory = page.hasMore;
           _loadingHistory = false;
@@ -858,8 +863,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (!mounted) return;
     final msg = IncomingMessage.fromJson(json);
     final wireUuid = json['uuid'] as String?;
+    final isCodexSnapshot = _isCodexRealtimeSnapshot(json, wireUuid);
     if (wireUuid != null &&
         wireUuid.isNotEmpty &&
+        !isCodexSnapshot &&
         !_seenRealtimeUuids.add(wireUuid)) {
       return;
     }
@@ -984,25 +991,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         }
         _aiRespondedThisTurn = true;
         _unrespondedUserText = null;
+        if (_upsertCodexRealtimeSnapshot(wireUuid, msg, json)) {
+          _applyAssistantSideEffects(msg);
+          return;
+        }
         _messages.add(msg);
         _debugTrack(msg, json);
-        // 拦截 TodoWrite 工具调用 → 更新全局 todoListProvider，让顶部 chip 反映进度。
-        // 注意：tool_use 块本身仍保留在 message 里（_buildToolResultIndex 还要用），
-        // tool_call_card 会在渲染时识别 TodoWrite 并跳过卡片显示。
-        for (final block in msg.content) {
-          if (block is ToolUseBlock && block.name == 'TodoWrite') {
-            final next = parseTodos(block.input['todos']);
-            final changed = ref.read(todoListProvider.notifier).replace(next);
-            if (changed) {
-              ref.read(todoUpdatedAtProvider.notifier).state =
-                  DateTime.now().millisecondsSinceEpoch;
-            }
-          }
-        }
+        _applyAssistantSideEffects(msg);
       } else if (msg is PongMsg || msg is SystemMsg) {
         // skip
       } else if (msg is UserMsg && _consumeLocalUserEcho(msg)) {
         // 本机 optimistic 气泡已经展示；服务端事件只作为"已记录，不可撤回"信号。
+      } else if (_upsertCodexRealtimeSnapshot(wireUuid, msg, json)) {
+        // Codex item snapshots are progressive; keep the latest native shape.
       } else if (msg is CompactBoundaryMsg) {
         // 实时也可能收到（用户在会话中触发了 /compact）。
         _messages.add(msg);
@@ -1013,6 +1014,53 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       }
     });
     _scrollToEnd();
+  }
+
+  bool _isCodexRealtimeSnapshot(Map<String, dynamic> json, String? wireUuid) {
+    if (wireUuid == null || wireUuid.isEmpty) return false;
+    if (json['agent'] != 'codex') return false;
+    final nativeEvent = json['native_event'];
+    return nativeEvent is String && nativeEvent.startsWith('item/');
+  }
+
+  bool _upsertCodexRealtimeSnapshot(
+    String? wireUuid,
+    IncomingMessage msg,
+    Map<String, dynamic> json,
+  ) {
+    if (!_isCodexRealtimeSnapshot(json, wireUuid)) return false;
+    final uuid = wireUuid!;
+    final existing = _codexRealtimeSnapshots[uuid];
+    if (existing != null) {
+      final index = _messages.indexOf(existing);
+      if (index >= 0) {
+        _debugRaw.remove(existing);
+        _messages[index] = msg;
+        _debugTrack(msg, json);
+        _codexRealtimeSnapshots[uuid] = msg;
+        return true;
+      }
+    }
+    _messages.add(msg);
+    _debugTrack(msg, json);
+    _codexRealtimeSnapshots[uuid] = msg;
+    return true;
+  }
+
+  void _applyAssistantSideEffects(AssistantMsg msg) {
+    // 拦截 TodoWrite 工具调用 → 更新全局 todoListProvider，让顶部 chip 反映进度。
+    // 注意：tool_use 块本身仍保留在 message 里（_buildToolResultIndex 还要用），
+    // tool_call_card 会在渲染时识别 TodoWrite 并跳过卡片显示。
+    for (final block in msg.content) {
+      if (block is ToolUseBlock && block.name == 'TodoWrite') {
+        final next = parseTodos(block.input['todos']);
+        final changed = ref.read(todoListProvider.notifier).replace(next);
+        if (changed) {
+          ref.read(todoUpdatedAtProvider.notifier).state =
+              DateTime.now().millisecondsSinceEpoch;
+        }
+      }
+    }
   }
 
   bool _consumeLocalUserEcho(UserMsg msg) {
@@ -2362,7 +2410,7 @@ class _RuntimeActionRow extends StatelessWidget {
   }
 }
 
-class _CodexRuntimeSheet extends StatelessWidget {
+class _CodexRuntimeSheet extends StatefulWidget {
   final String approvalPolicy;
   final String sandbox;
   final void Function(Map<String, dynamic>) onPatchRuntime;
@@ -2371,6 +2419,14 @@ class _CodexRuntimeSheet extends StatelessWidget {
     required this.sandbox,
     required this.onPatchRuntime,
   });
+
+  @override
+  State<_CodexRuntimeSheet> createState() => _CodexRuntimeSheetState();
+}
+
+class _CodexRuntimeSheetState extends State<_CodexRuntimeSheet> {
+  late String _approvalPolicy = widget.approvalPolicy;
+  late String _sandbox = widget.sandbox;
 
   @override
   Widget build(BuildContext context) {
@@ -2436,7 +2492,7 @@ class _CodexRuntimeSheet extends StatelessWidget {
                 child: TabBarView(
                   children: [
                     _CodexRuntimeOptionList(
-                      value: approvalPolicy,
+                      value: _approvalPolicy,
                       options: const [
                         _RuntimeOption(
                           value: 'on-request',
@@ -2457,10 +2513,13 @@ class _CodexRuntimeSheet extends StatelessWidget {
                           icon: Icons.not_interested_outlined,
                         ),
                       ],
-                      onPick: (v) => onPatchRuntime({'approval_policy': v}),
+                      onPick: (v) {
+                        setState(() => _approvalPolicy = v);
+                        widget.onPatchRuntime({'approval_policy': v});
+                      },
                     ),
                     _CodexRuntimeOptionList(
-                      value: sandbox,
+                      value: _sandbox,
                       options: const [
                         _RuntimeOption(
                           value: 'workspace-write',
@@ -2481,7 +2540,10 @@ class _CodexRuntimeSheet extends StatelessWidget {
                           icon: Icons.warning_amber_rounded,
                         ),
                       ],
-                      onPick: (v) => onPatchRuntime({'sandbox': v}),
+                      onPick: (v) {
+                        setState(() => _sandbox = v);
+                        widget.onPatchRuntime({'sandbox': v});
+                      },
                     ),
                   ],
                 ),
