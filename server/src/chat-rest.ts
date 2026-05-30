@@ -145,13 +145,17 @@ export function runMessagesToWire(agent: AgentKind, msg: unknown): WireWithId[] 
       const requestId = notification.params?.requestId;
       if (requestId === undefined || requestId === null) return [];
       const id = String(requestId);
+      const decision = notification.params?.decision;
+      const content = typeof decision === 'string' && decision.length > 0
+        ? decision
+        : 'resolved';
       return [{
         wire: {
           type: 'assistant',
           content: [{
             type: 'tool_result',
             tool_use_id: id,
-            content: 'resolved',
+            content,
             is_error: false,
             native_type: notification.method,
             native_event: notification.method,

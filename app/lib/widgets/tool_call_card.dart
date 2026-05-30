@@ -36,9 +36,8 @@ class ToolCallCard extends StatefulWidget {
 }
 
 class _ToolCallCardState extends State<ToolCallCard> {
-  bool _expanded = false;
+  late bool _expanded = toolUse.name == 'fileChange';
   bool _viewRaw = false;
-  bool _showRawPayload = false;
 
   ToolUseBlock get toolUse => widget.toolUse;
   ToolResultBlock? get result => widget.result;
@@ -50,6 +49,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final t = AppTokens.of(context);
     final color = _colorFor(t, toolUse.name);
     final icon = _iconFor(toolUse.name);
+    final title = _displayName(toolUse.name, toolUse.input);
     final hasInputBody = !_isBodyEmpty(toolUse.name);
     final hasOutput = result != null;
     final hasRawPayload = _rawPayload().isNotEmpty;
@@ -89,7 +89,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 128),
                         child: Text(
-                          toolUse.name,
+                          title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -146,21 +146,6 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     _SectionLabel('输出', t),
                     const SizedBox(height: 4),
                     _outputBody(t, result!),
-                  ],
-                  if (hasRawPayload) ...[
-                    if (hasInputBody ||
-                        hasOutput ||
-                        widget.subAgentMsgs != null)
-                      const SizedBox(height: 10),
-                    _RawPayloadToggle(
-                      expanded: _showRawPayload,
-                      onTap: () =>
-                          setState(() => _showRawPayload = !_showRawPayload),
-                    ),
-                    if (_showRawPayload) ...[
-                      const SizedBox(height: 4),
-                      _JsonBlock(value: _rawPayload()),
-                    ],
                   ],
                 ],
               ],
@@ -319,11 +304,30 @@ class _ToolCallCardState extends State<ToolCallCard> {
   /// 保证用户始终能看到原始 JSON 输入。
   bool _showViewToggle(String name) => name != 'TodoWrite';
 
+  String _displayName(String name, Map<String, dynamic> input) {
+    if (name == 'commandExecution') return 'Bash';
+    if (name != 'fileChange') return name;
+    final changes = input['changes'];
+    if (changes is List && changes.isNotEmpty) {
+      final first = changes.first;
+      if (first is Map) {
+        final kind =
+            (first['kind'] ?? first['type'] ?? first['operation'] ?? '')
+                .toString()
+                .trim();
+        if (kind.isNotEmpty) return kind;
+      }
+    }
+    final status = (input['status'] ?? '').toString().trim();
+    return status.isNotEmpty ? status : 'Edit';
+  }
+
   Color _colorFor(AppTokens t, String name) {
     switch (name) {
       case 'Edit':
       case 'Write':
       case 'MultiEdit':
+      case 'fileChange':
         return t.toolEdit;
       case 'Bash':
       case 'commandExecution':
@@ -457,7 +461,10 @@ class _ToolCallCardState extends State<ToolCallCard> {
   Widget _renderBody(BuildContext context, AppTokens t, String name,
       Map<String, dynamic> input) {
     // raw 模式：直接显示 JSON
-    if (_viewRaw) return _JsonBlock(value: input);
+    if (_viewRaw) {
+      final raw = _rawPayload();
+      return _JsonBlock(value: raw);
+    }
 
     switch (name) {
       case 'Edit':
@@ -470,7 +477,10 @@ class _ToolCallCardState extends State<ToolCallCard> {
         return _FilePreview(content: (input['content'] ?? '').toString());
       case 'Bash':
       case 'commandExecution':
-        return _BashLine(command: (input['command'] ?? '').toString());
+        return _BashLine(
+          command: (input['command'] ?? '').toString(),
+          cwd: (input['cwd'] ?? '').toString(),
+        );
       case 'fileChange':
         return _CodexFileChange(
             changes: input['changes'], status: input['status']);
@@ -583,40 +593,12 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
-class _RawPayloadToggle extends StatelessWidget {
-  final bool expanded;
-  final VoidCallback onTap;
-  const _RawPayloadToggle({required this.expanded, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(4),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Row(
-          children: [
-            _SectionLabel('原始事件', t),
-            const SizedBox(width: 6),
-            Icon(
-              expanded ? Icons.expand_less : Icons.expand_more,
-              size: 14,
-              color: t.textDim,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 // ── Input body widgets ────────────────────────────────────────────────
 
 class _BashLine extends StatelessWidget {
   final String command;
-  const _BashLine({required this.command});
+  final String cwd;
+  const _BashLine({required this.command, this.cwd = ''});
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
@@ -628,9 +610,26 @@ class _BashLine extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
         border: Border.all(color: t.borderSubt, width: 0.5),
       ),
-      child: SelectableText(
-        '\$ $command',
-        style: TextStyle(fontFamily: 'monospace', fontSize: 11, color: t.text),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (cwd.trim().isNotEmpty) ...[
+            SelectableText(
+              'cwd: $cwd',
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 10.5,
+                color: t.textMuted,
+              ),
+            ),
+            const SizedBox(height: 4),
+          ],
+          SelectableText(
+            '\$ $command',
+            style:
+                TextStyle(fontFamily: 'monospace', fontSize: 11, color: t.text),
+          ),
+        ],
       ),
     );
   }
@@ -704,33 +703,149 @@ class _CodexFileChange extends StatelessWidget {
       if (map['deletions'] != null) '-${map['deletions']}',
       if (map['status'] != null) '${map['status']}',
     ].join(' ');
-    return Row(
+    final diff = _extractUnifiedDiff(map);
+    final oldString =
+        (map['old_string'] ?? map['oldString'] ?? map['before'])?.toString();
+    final newString =
+        (map['new_string'] ?? map['newString'] ?? map['after'])?.toString();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(Icons.insert_drive_file_outlined, size: 13, color: t.toolEdit),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            path.isEmpty ? row.toString() : path,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 11,
-              color: t.text,
+        Row(
+          children: [
+            _KindPill(kind: kind),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                path.isEmpty ? row.toString() : path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  color: t.text,
+                ),
+              ),
             ),
-          ),
+            if (summary.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Text(
+                summary,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 10.5,
+                  color: t.textDim,
+                ),
+              ),
+            ],
+          ],
         ),
-        const SizedBox(width: 8),
-        Text(
-          summary.isEmpty ? kind : summary,
-          style: TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 10.5,
-            color: t.textDim,
-          ),
-        ),
+        if (diff != null && diff.trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _UnifiedDiffBlock(diff: diff),
+        ] else if ((oldString ?? '').isNotEmpty ||
+            (newString ?? '').isNotEmpty) ...[
+          const SizedBox(height: 8),
+          DiffView(oldString: oldString ?? '', newString: newString ?? ''),
+        ],
       ],
     );
+  }
+
+  String? _extractUnifiedDiff(Map<dynamic, dynamic> map) {
+    for (final key in const [
+      'diff',
+      'patch',
+      'unified_diff',
+      'unifiedDiff',
+    ]) {
+      final value = map[key];
+      if (value is String && value.trim().isNotEmpty) return value;
+    }
+    return null;
+  }
+}
+
+class _KindPill extends StatelessWidget {
+  final String kind;
+  const _KindPill({required this.kind});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: t.toolEdit.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(4),
+        border:
+            Border.all(color: t.toolEdit.withValues(alpha: 0.35), width: 0.5),
+      ),
+      child: Text(
+        kind,
+        style: TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: t.toolEdit,
+        ),
+      ),
+    );
+  }
+}
+
+class _UnifiedDiffBlock extends StatelessWidget {
+  final String diff;
+  const _UnifiedDiffBlock({required this.diff});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      width: double.infinity,
+      clipBehavior: Clip.hardEdge,
+      decoration: BoxDecoration(
+        color: t.bg,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: t.borderSubt, width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: diff.split('\n').map((line) {
+          final style = _styleForLine(context, t, line);
+          return Container(
+            color: style.$1,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
+            child: SelectableText(
+              line,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 11,
+                color: style.$2,
+                height: 1.4,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  (Color, Color) _styleForLine(BuildContext context, AppTokens t, String line) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final addText = isDark ? const Color(0xFF6EE787) : const Color(0xFF14773A);
+    final delText = isDark ? const Color(0xFFFF8585) : const Color(0xFFB32A2A);
+    if (line.startsWith('+')) {
+      return (t.success.withValues(alpha: 0.10), addText);
+    }
+    if (line.startsWith('-')) {
+      return (t.error.withValues(alpha: 0.08), delText);
+    }
+    if (line.startsWith('@@')) {
+      return (t.accent.withValues(alpha: 0.08), t.accent);
+    }
+    return (Colors.transparent, t.textMuted);
   }
 }
 
@@ -787,16 +902,63 @@ class _JsonBlock extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
         border: Border.all(color: t.borderSubt, width: 0.5),
       ),
-      child: SelectableText(
-        truncated,
-        style: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 11,
-          color: t.textMuted,
-          height: 1.5,
+      child: SelectableText.rich(
+        TextSpan(
+          children: _jsonSpans(truncated, t),
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 11,
+            color: t.textMuted,
+            height: 1.5,
+          ),
         ),
       ),
     );
+  }
+
+  List<TextSpan> _jsonSpans(String text, AppTokens t) {
+    final spans = <TextSpan>[];
+    final token = RegExp(
+      r'"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b',
+    );
+    var index = 0;
+    for (final match in token.allMatches(text)) {
+      if (match.start > index) {
+        spans.add(TextSpan(text: text.substring(index, match.start)));
+      }
+      final raw = match.group(0)!;
+      final color = raw.startsWith('"') && _isJsonKey(text, match.end)
+          ? t.accent
+          : raw.startsWith('"')
+              ? t.success
+              : raw == 'true' || raw == 'false'
+                  ? t.toolBash
+                  : raw == 'null'
+                      ? t.textDim
+                      : t.toolWebFetch;
+      spans.add(TextSpan(
+        text: raw,
+        style: TextStyle(
+          color: color,
+          fontWeight: raw.startsWith('"') && _isJsonKey(text, match.end)
+              ? FontWeight.w600
+              : FontWeight.normal,
+        ),
+      ));
+      index = match.end;
+    }
+    if (index < text.length) {
+      spans.add(TextSpan(text: text.substring(index)));
+    }
+    return spans;
+  }
+
+  bool _isJsonKey(String text, int end) {
+    var i = end;
+    while (i < text.length && RegExp(r'\s').hasMatch(text[i])) {
+      i++;
+    }
+    return i < text.length && text[i] == ':';
   }
 }
 

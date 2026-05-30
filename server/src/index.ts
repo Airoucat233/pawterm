@@ -4,7 +4,7 @@ import websocketPlugin from '@fastify/websocket';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { execFile } from 'node:child_process';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
-import { mkdir, readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
 import { hostname, homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -517,6 +517,77 @@ async function main(): Promise<void> {
 
   // REST: filesystem — list and download files under whitelisted project roots.
   // Both endpoints accept absolute paths and reject anything outside isPathAllowed().
+  api.get<{ Querystring: { cwd?: string } }>('/git/status', async (req, reply) => {
+    const cwd = resolve((req.query.cwd ?? '').replace(/^~/, homedir()));
+    if (!req.query.cwd) { reply.code(400); return { error: 'cwd required' }; }
+    if (!isPathAllowed(cwd)) { reply.code(403); return { error: 'path not allowed' }; }
+    try {
+      const [branchResult, statusResult] = await Promise.all([
+        execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 3000 }),
+        execFileAsync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+          cwd,
+          timeout: 5000,
+          maxBuffer: 4 * 1024 * 1024,
+        }),
+      ]);
+      const branch = branchResult.stdout.trim() || 'HEAD';
+      const files = statusResult.stdout
+        .split('\n')
+        .filter((line) => line.length >= 4)
+        .map((line) => ({
+          xy: line.slice(0, 2),
+          path: line.slice(3).trim().split(' -> ').pop() ?? '',
+        }))
+        .filter((item) => item.path.length > 0);
+      return { cwd, branch, files };
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      reply.code(500);
+      return { error: e.message };
+    }
+  });
+
+  api.get<{ Querystring: { cwd?: string; path?: string } }>('/git/diff', async (req, reply) => {
+    const cwd = resolve((req.query.cwd ?? '').replace(/^~/, homedir()));
+    const filePath = req.query.path;
+    if (!req.query.cwd) { reply.code(400); return { error: 'cwd required' }; }
+    if (!filePath) { reply.code(400); return { error: 'path required' }; }
+    if (!isPathAllowed(cwd)) { reply.code(403); return { error: 'path not allowed' }; }
+    const absFile = resolve(cwd, filePath);
+    if (!absFile.startsWith(`${cwd}/`) && absFile !== cwd) {
+      reply.code(403);
+      return { error: 'file outside cwd' };
+    }
+    try {
+      const untracked = await execFileAsync('git', ['ls-files', '--others', '--exclude-standard', '--', filePath], {
+        cwd,
+        timeout: 3000,
+      }).then((r) => r.stdout.split('\n').some((line) => line.trim() === filePath)).catch(() => false);
+      if (untracked) {
+        const text = await readFile(absFile, 'utf8');
+        const diff = [
+          `diff --git a/${filePath} b/${filePath}`,
+          'new file mode 100644',
+          'index 0000000..0000000',
+          '--- /dev/null',
+          `+++ b/${filePath}`,
+          ...text.split('\n').map((line) => `+${line}`),
+        ].join('\n');
+        return { cwd, path: filePath, diff };
+      }
+      const { stdout } = await execFileAsync('git', ['diff', 'HEAD', '--', filePath], {
+        cwd,
+        timeout: 5000,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      return { cwd, path: filePath, diff: stdout };
+    } catch (err) {
+      const e = err as Error;
+      reply.code(500);
+      return { error: e.message };
+    }
+  });
+
   api.get<{ Querystring: { path?: string } }>('/fs/ls', async (req, reply) => {
     const p = req.query.path;
     if (!p) { reply.code(400); return { error: 'path required' }; }

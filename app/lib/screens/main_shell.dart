@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../api/agents_api.dart';
+import '../api/git_api.dart';
 import '../api/sessions_api.dart';
 import '../i18n/locale_provider.dart';
 import '../state/agents_store.dart';
@@ -51,6 +53,9 @@ class _MainShellState extends ConsumerState<MainShell> {
               session: session,
               tabIndex: _index,
               onSessionTap: () => _showSessionSwitcher(context),
+              onGitTap: session == null || conn == null
+                  ? null
+                  : () => _showGitPanel(context, conn, session),
             ),
             Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
             Expanded(
@@ -86,6 +91,37 @@ class _MainShellState extends ConsumerState<MainShell> {
           ..addAll(updated),
         onPop: () => Navigator.of(ctx).pop(),
       ),
+    );
+  }
+
+  void _showGitPanel(
+    BuildContext context,
+    Connection conn,
+    CurrentSession session,
+  ) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Git',
+      barrierColor: Colors.black.withValues(alpha: 0.28),
+      transitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (ctx, _, __) => Align(
+        alignment: Alignment.centerRight,
+        child: _GitSidePanel(
+          api: GitApi(conn.apiBase, token: conn.token),
+          cwd: session.cwd,
+          title: session.label,
+        ),
+      ),
+      transitionBuilder: (_, animation, __, child) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: animation, curve: Curves.easeOut)),
+          child: child,
+        );
+      },
     );
   }
 }
@@ -162,11 +198,13 @@ class _TopBar extends StatelessWidget {
   final CurrentSession? session;
   final int tabIndex;
   final VoidCallback onSessionTap;
+  final VoidCallback? onGitTap;
   const _TopBar({
     required this.conn,
     required this.session,
     required this.tabIndex,
     required this.onSessionTap,
+    required this.onGitTap,
   });
 
   @override
@@ -276,6 +314,13 @@ class _TopBar extends StatelessWidget {
               tooltip: '切换会话',
             ),
 
+            if (conn != null && session != null)
+              _GitBranchButton(
+                api: GitApi(conn!.apiBase, token: conn!.token),
+                cwd: session!.cwd,
+                onTap: onGitTap,
+              ),
+
             // Right: settings button
             IconButton(
               icon: Icon(Icons.settings_outlined, size: 19, color: t.textMuted),
@@ -297,6 +342,437 @@ class _TopBar extends StatelessWidget {
       AgentKind.codex => 'Codex',
       AgentKind.gemini => 'Gemini',
     };
+  }
+}
+
+class _GitBranchButton extends StatefulWidget {
+  final GitApi api;
+  final String cwd;
+  final VoidCallback? onTap;
+  const _GitBranchButton({
+    required this.api,
+    required this.cwd,
+    required this.onTap,
+  });
+
+  @override
+  State<_GitBranchButton> createState() => _GitBranchButtonState();
+}
+
+class _GitBranchButtonState extends State<_GitBranchButton> {
+  late Future<GitStatus> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.api.status(widget.cwd);
+  }
+
+  @override
+  void didUpdateWidget(covariant _GitBranchButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cwd != widget.cwd) {
+      _future = widget.api.status(widget.cwd);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return FutureBuilder<GitStatus>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.hasError) return const SizedBox.shrink();
+        final branch = snap.data?.branch ?? '...';
+        final count = snap.data?.files.length ?? 0;
+        return InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            height: 30,
+            constraints: const BoxConstraints(maxWidth: 116),
+            margin: const EdgeInsets.only(right: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: t.surfaceHi,
+              border: Border.all(color: t.borderSubt),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.account_tree_outlined, size: 13, color: t.textMuted),
+                const SizedBox(width: 5),
+                Flexible(
+                  child: Text(
+                    branch,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: t.text,
+                    ),
+                  ),
+                ),
+                if (count > 0) ...[
+                  const SizedBox(width: 5),
+                  Container(
+                    constraints: const BoxConstraints(minWidth: 16),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: t.accent.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                    child: Text(
+                      '$count',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: t.accent,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _GitSidePanel extends StatefulWidget {
+  final GitApi api;
+  final String cwd;
+  final String title;
+  const _GitSidePanel({
+    required this.api,
+    required this.cwd,
+    required this.title,
+  });
+
+  @override
+  State<_GitSidePanel> createState() => _GitSidePanelState();
+}
+
+class _GitSidePanelState extends State<_GitSidePanel> {
+  late Future<GitStatus> _statusFuture;
+  GitChangedFile? _selected;
+  Future<String>? _diffFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _statusFuture = widget.api.status(widget.cwd);
+  }
+
+  void _refresh() {
+    setState(() {
+      _selected = null;
+      _diffFuture = null;
+      _statusFuture = widget.api.status(widget.cwd);
+    });
+  }
+
+  void _select(GitChangedFile file) {
+    setState(() {
+      _selected = file;
+      _diffFuture = widget.api.diff(cwd: widget.cwd, path: file.path);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final width = min(MediaQuery.of(context).size.width * 0.92, 420.0);
+    return Material(
+      color: t.surface,
+      child: SafeArea(
+        child: SizedBox(
+          width: width,
+          height: double.infinity,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+                child: Row(
+                  children: [
+                    Icon(Icons.account_tree_outlined,
+                        size: 18, color: t.accent),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Git',
+                            style: TextStyle(
+                              color: t.text,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15,
+                            ),
+                          ),
+                          Text(
+                            widget.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: t.textDim, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _refresh,
+                      icon: Icon(Icons.refresh, size: 18, color: t.textMuted),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: Icon(Icons.close, size: 18, color: t.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(color: t.borderSubt, height: 0.5),
+              Expanded(
+                child: FutureBuilder<GitStatus>(
+                  future: _statusFuture,
+                  builder: (context, snap) {
+                    if (snap.connectionState != ConnectionState.done) {
+                      return const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      );
+                    }
+                    if (snap.hasError) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Text(
+                            '${snap.error}',
+                            style: TextStyle(color: t.error, fontSize: 12),
+                          ),
+                        ),
+                      );
+                    }
+                    final status = snap.data!;
+                    return Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+                          child: Row(
+                            children: [
+                              Text(
+                                status.branch,
+                                style: TextStyle(
+                                  color: t.text,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '${status.files.length} files',
+                                style:
+                                    TextStyle(color: t.textDim, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(
+                          height: 180,
+                          child: status.files.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    '工作区干净',
+                                    style: TextStyle(
+                                        color: t.textDim, fontSize: 13),
+                                  ),
+                                )
+                              : ListView.builder(
+                                  itemCount: status.files.length,
+                                  itemBuilder: (context, i) {
+                                    final file = status.files[i];
+                                    final active = _selected?.path == file.path;
+                                    return _GitFileRow(
+                                      file: file,
+                                      active: active,
+                                      onTap: () => _select(file),
+                                    );
+                                  },
+                                ),
+                        ),
+                        Divider(color: t.borderSubt, height: 0.5),
+                        Expanded(
+                          child: _selected == null
+                              ? Center(
+                                  child: Text(
+                                    '选择文件查看 diff',
+                                    style: TextStyle(
+                                        color: t.textDim, fontSize: 13),
+                                  ),
+                                )
+                              : FutureBuilder<String>(
+                                  future: _diffFuture,
+                                  builder: (context, diffSnap) {
+                                    if (diffSnap.connectionState !=
+                                        ConnectionState.done) {
+                                      return const Center(
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2),
+                                      );
+                                    }
+                                    if (diffSnap.hasError) {
+                                      return Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(16),
+                                          child: Text(
+                                            '${diffSnap.error}',
+                                            style: TextStyle(
+                                                color: t.error, fontSize: 12),
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                    final diff = diffSnap.data ?? '';
+                                    if (diff.trim().isEmpty) {
+                                      return Center(
+                                        child: Text(
+                                          '没有可显示的 diff',
+                                          style: TextStyle(
+                                              color: t.textDim, fontSize: 13),
+                                        ),
+                                      );
+                                    }
+                                    return _UnifiedDiffView(diff: diff);
+                                  },
+                                ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GitFileRow extends StatelessWidget {
+  final GitChangedFile file;
+  final bool active;
+  final VoidCallback onTap;
+  const _GitFileRow({
+    required this.file,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        color: active ? t.accent.withValues(alpha: 0.08) : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 28,
+              child: Text(
+                file.label,
+                style: TextStyle(
+                  color: _statusColor(t, file.label),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                file.path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: t.text, fontSize: 12.5),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Color _statusColor(AppTokens t, String label) {
+    if (label.contains('?') || label.contains('A')) return t.success;
+    if (label.contains('D')) return t.error;
+    if (label.contains('M')) return t.warning;
+    return t.textMuted;
+  }
+}
+
+class _UnifiedDiffView extends StatelessWidget {
+  final String diff;
+  const _UnifiedDiffView({required this.diff});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        for (final line in diff.split('\n')) _DiffLine(line: line, tokens: t),
+      ],
+    );
+  }
+}
+
+class _DiffLine extends StatelessWidget {
+  final String line;
+  final AppTokens tokens;
+  const _DiffLine({required this.line, required this.tokens});
+
+  @override
+  Widget build(BuildContext context) {
+    final isAdd = line.startsWith('+') && !line.startsWith('+++');
+    final isDel = line.startsWith('-') && !line.startsWith('---');
+    final isMeta = line.startsWith('diff ') ||
+        line.startsWith('@@') ||
+        line.startsWith('+++') ||
+        line.startsWith('---') ||
+        line.startsWith('index ');
+    final bg = isAdd
+        ? tokens.success.withValues(alpha: 0.10)
+        : isDel
+            ? tokens.error.withValues(alpha: 0.09)
+            : Colors.transparent;
+    final fg = isAdd
+        ? tokens.success
+        : isDel
+            ? tokens.error
+            : isMeta
+                ? tokens.textDim
+                : tokens.text;
+    return Container(
+      color: bg,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      child: SelectableText(
+        line,
+        style: TextStyle(
+          color: fg,
+          fontSize: 11,
+          height: 1.35,
+          fontFamily: 'monospace',
+          fontWeight: isMeta ? FontWeight.w700 : FontWeight.w400,
+        ),
+      ),
+    );
   }
 }
 

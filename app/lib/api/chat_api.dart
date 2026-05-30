@@ -25,7 +25,7 @@ class TurnStatus {
         'running' => TurnState.running,
         _ => TurnState.unknown,
       },
-      holderDeviceId: j['holder_device_id'] as String?,
+      holderDeviceId: (j['holder_device_id'] ?? j['holder']) as String?,
     );
   }
 }

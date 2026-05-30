@@ -6,8 +6,10 @@ import '../theme.dart';
 
 class AskUserQuestionWidget extends StatefulWidget {
   final ToolUseBlock toolUse;
+
   /// 已配对的 tool_result；非空 = answered 态
   final ToolResultBlock? answeredResult;
+
   /// 提交回调：把答案 + annotations 通过 REST 发回 server
   final void Function(
     String toolUseId,
@@ -32,8 +34,10 @@ class _AskUserQuestionWidgetState extends State<AskUserQuestionWidget> {
   /// 用户当前选择：questionIdx → 选中的 option label 集合
   /// 单选时集合 size ≤ 1；多选时可多。
   final List<Set<String>> _selections = [];
+
   /// 自定义文本（"Other" 输入），questionIdx → 文本
   final Map<int, String> _customTexts = {};
+  Map<String, String>? _localAnswers;
   bool _submitted = false;
 
   @override
@@ -53,7 +57,9 @@ class _AskUserQuestionWidgetState extends State<AskUserQuestionWidget> {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final answered = widget.answeredResult != null;
+    final answeredAnswers =
+        _answersFromResult(widget.answeredResult) ?? _localAnswers;
+    final answered = answeredAnswers != null;
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.all(16),
@@ -67,18 +73,21 @@ class _AskUserQuestionWidgetState extends State<AskUserQuestionWidget> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (int i = 0; i < _questions.length; i++) ...[
-              _QuestionInteractivePanel(
-                index: i,
-                question: _questions[i],
-                readOnly: answered || _submitted,
-                selected: _selections[i],
-                customText: _customTexts[i],
-                onTapOption: (label) => _onTapOption(i, label),
-                onCustomTextSubmitted: (text) => _onCustomText(i, text),
-              ),
-              if (i < _questions.length - 1) const SizedBox(height: 24),
-            ],
+            if (answered)
+              _AnswerReceipt(answers: answeredAnswers, t: t)
+            else
+              for (int i = 0; i < _questions.length; i++) ...[
+                _QuestionInteractivePanel(
+                  index: i,
+                  question: _questions[i],
+                  readOnly: _submitted,
+                  selected: _selections[i],
+                  customText: _customTexts[i],
+                  onTapOption: (label) => _onTapOption(i, label),
+                  onCustomTextSubmitted: (text) => _onCustomText(i, text),
+                ),
+                if (i < _questions.length - 1) const SizedBox(height: 24),
+              ],
             if (!answered && _isFormMode && !_submitted) ...[
               const SizedBox(height: 16),
               _SubmitButton(
@@ -86,14 +95,6 @@ class _AskUserQuestionWidgetState extends State<AskUserQuestionWidget> {
                 onTap: _submit,
               ),
             ],
-            if (answered)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  '（已答）',
-                  style: TextStyle(color: t.textDim, fontSize: 12),
-                ),
-              ),
           ],
         ),
       ),
@@ -173,12 +174,45 @@ class _AskUserQuestionWidgetState extends State<AskUserQuestionWidget> {
         }
       }
     }
-    setState(() => _submitted = true);
+    setState(() {
+      _submitted = true;
+      _localAnswers = answers;
+    });
     widget.onSubmit(
       widget.toolUse.id,
       answers,
       annotations.isEmpty ? null : annotations,
     );
+  }
+
+  Map<String, String>? _answersFromResult(ToolResultBlock? result) {
+    if (result == null) return null;
+    final text = _extractText(result.content);
+    if (text.trim().isEmpty) return const {};
+    final matches = RegExp(
+            r'Q: ([\s\S]*?)\nA: ([\s\S]*?)(?=\n(?:selected preview:|notes:|Q: )|$)')
+        .allMatches(text);
+    final answers = <String, String>{};
+    for (final match in matches) {
+      final q = match.group(1)?.trim();
+      final a = match.group(2)?.trim();
+      if (q != null && q.isNotEmpty && a != null && a.isNotEmpty) {
+        answers[q] = a;
+      }
+    }
+    return answers.isEmpty ? null : answers;
+  }
+
+  String _extractText(dynamic content) {
+    if (content == null) return '';
+    if (content is String) return content;
+    if (content is List) {
+      return content.map((item) {
+        if (item is Map && item['text'] != null) return item['text'].toString();
+        return item.toString();
+      }).join('\n');
+    }
+    return content.toString();
   }
 }
 
@@ -195,6 +229,70 @@ class _Question {
     required this.multiSelect,
     required this.options,
   });
+}
+
+class _AnswerReceipt extends StatelessWidget {
+  final Map<String, String> answers;
+  final AppTokens t;
+
+  const _AnswerReceipt({required this.answers, required this.t});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: t.success.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: t.success.withValues(alpha: 0.25), width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.check_circle_outline, size: 14, color: t.success),
+              const SizedBox(width: 6),
+              Text(
+                '已回答',
+                style: TextStyle(
+                  color: t.success,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          if (answers.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            for (final entry in answers.entries)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: RichText(
+                  text: TextSpan(
+                    style: TextStyle(fontSize: 12, color: t.textMuted),
+                    children: [
+                      TextSpan(
+                        text: '${entry.key}: ',
+                        style: TextStyle(
+                          color: t.textDim,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      TextSpan(
+                        text: entry.value,
+                        style: TextStyle(color: t.text),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 class _Option {
@@ -358,7 +456,9 @@ class _OptionTile extends StatelessWidget {
             color: selected ? t.accentSubt : t.surfaceHi,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: selected ? t.accent.withValues(alpha: 0.5) : Colors.transparent,
+              color: selected
+                  ? t.accent.withValues(alpha: 0.5)
+                  : Colors.transparent,
               width: 1,
             ),
           ),
@@ -380,7 +480,10 @@ class _OptionTile extends StatelessWidget {
                   children: [
                     Text(
                       option.label,
-                      style: TextStyle(fontSize: 14, color: t.text, fontWeight: FontWeight.w500),
+                      style: TextStyle(
+                          fontSize: 14,
+                          color: t.text,
+                          fontWeight: FontWeight.w500),
                     ),
                     if (option.description.isNotEmpty)
                       Padding(
@@ -399,10 +502,12 @@ class _OptionTile extends StatelessWidget {
               if (option.preview != null)
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => _showPreview(context, option.label, option.preview!),
+                  onTap: () =>
+                      _showPreview(context, option.label, option.preview!),
                   child: Padding(
                     padding: const EdgeInsets.only(left: 8),
-                    child: Icon(Icons.visibility_outlined, size: 18, color: t.textMuted),
+                    child: Icon(Icons.visibility_outlined,
+                        size: 18, color: t.textMuted),
                   ),
                 ),
             ],
@@ -430,7 +535,8 @@ class _OptionTile extends StatelessWidget {
             return Container(
               decoration: BoxDecoration(
                 color: t.surface,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(18)),
               ),
               child: Column(
                 children: [
@@ -490,7 +596,8 @@ class _OptionTile extends StatelessWidget {
                                   ),
                                   child: Text(
                                     'Preview 含 HTML，显示原文：',
-                                    style: TextStyle(fontSize: 11, color: t.warning),
+                                    style: TextStyle(
+                                        fontSize: 11, color: t.warning),
                                   ),
                                 ),
                                 SelectableText(
@@ -506,7 +613,8 @@ class _OptionTile extends StatelessWidget {
                             )
                           : MarkdownBody(
                               data: preview,
-                              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(ctx2)),
+                              styleSheet:
+                                  MarkdownStyleSheet.fromTheme(Theme.of(ctx2)),
                             ),
                     ),
                   ),
@@ -547,7 +655,9 @@ class _OtherTile extends StatelessWidget {
             color: selected ? t.accentSubt : t.surfaceHi,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: selected ? t.accent.withValues(alpha: 0.5) : Colors.transparent,
+              color: selected
+                  ? t.accent.withValues(alpha: 0.5)
+                  : Colors.transparent,
               width: 1,
             ),
           ),
@@ -660,7 +770,8 @@ class _SubmitButton extends StatelessWidget {
         alignment: Alignment.center,
         child: Text(
           '提交',
-          style: TextStyle(color: fg, fontSize: 14, fontWeight: FontWeight.w600),
+          style:
+              TextStyle(color: fg, fontSize: 14, fontWeight: FontWeight.w600),
         ),
       ),
     );
