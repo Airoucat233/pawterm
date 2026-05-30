@@ -122,7 +122,45 @@ export function runMessagesToWire(agent: AgentKind, msg: unknown): WireWithId[] 
     return fromClaude ? [{ wire: fromClaude, uuid: (msg as { uuid?: string }).uuid ?? null }] : [];
   }
   if (agent === 'codex') {
-    const notification = msg as { method?: string; params?: any };
+    const notification = msg as { id?: string | number; method?: string; params?: any };
+    if (notification.method && isCodexApprovalRequest(notification.method) && notification.id !== undefined) {
+      const requestId = String(notification.id);
+      return [{
+        wire: {
+          type: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: requestId,
+            name: notification.method,
+            input: notification.params ?? {},
+            native_type: notification.method,
+            native_event: notification.method,
+            raw_payload: notification,
+          }],
+        },
+        uuid: requestId,
+      }];
+    }
+    if (notification.method === 'serverRequest/resolved') {
+      const requestId = notification.params?.requestId;
+      if (requestId === undefined || requestId === null) return [];
+      const id = String(requestId);
+      return [{
+        wire: {
+          type: 'assistant',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: id,
+            content: 'resolved',
+            is_error: false,
+            native_type: notification.method,
+            native_event: notification.method,
+            raw_payload: notification,
+          }],
+        },
+        uuid: `${id}:resolved`,
+      }];
+    }
     if (notification.method === 'item/agentMessage/delta') {
       const delta = notification.params?.delta;
       if (typeof delta !== 'string' || delta.length === 0) return [];
@@ -175,6 +213,12 @@ export function runMessagesToWire(agent: AgentKind, msg: unknown): WireWithId[] 
       .filter(Boolean);
   }
   return [];
+}
+
+function isCodexApprovalRequest(method: string): boolean {
+  return method === 'item/commandExecution/requestApproval' ||
+    method === 'item/fileChange/requestApproval' ||
+    method === 'item/permissions/requestApproval';
 }
 
 function shouldLogWireMessage(wire: ReturnType<typeof messageToWire>): boolean {
@@ -556,6 +600,25 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
       if (!entry.session) { reply.code(400); return { error: 'permission switch is only available for claude sessions' }; }
       await entry.session.setPermissionMode(mode);
+      return { ok: true };
+    },
+  );
+
+  /** POST /chat/codex-approval — answer a pending Codex app-server approval request. */
+  app.post<{ Body: { uuid?: string; request_id?: string; decision?: 'accept' | 'acceptForSession' | 'decline' | 'cancel' } }>(
+    '/chat/codex-approval',
+    async (req, reply) => {
+      const { uuid, request_id: requestId, decision } = req.body ?? {};
+      if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
+      if (!requestId) { reply.code(400); return { error: 'request_id required' }; }
+      if (!decision || !['accept', 'acceptForSession', 'decline', 'cancel'].includes(decision)) {
+        reply.code(400);
+        return { error: 'valid decision required' };
+      }
+      const entry = activeRuns.get(runKey('codex', uuid));
+      if (!entry) { reply.code(404); return { error: 'no active codex run' }; }
+      if (!entry.run?.answerApproval) { reply.code(400); return { error: 'codex approvals are not available for this run' }; }
+      await entry.run.answerApproval(requestId, decision);
       return { ok: true };
     },
   );

@@ -1,12 +1,12 @@
 #!/usr/bin/env zsh
 # Bump server version, commit, push, push release tag, then npm publish.
 #
-# --prerelease: prerelease publish from any branch (tag: prerelease-server-v*, npm tag: prerelease)
+# --prerelease: prerelease publish from feature/next (tag: prerelease-server-v*, npm tag: prerelease)
 # --dev: deprecated alias for --prerelease
 #
 # Usage:
 #   ./scripts/publish.sh               # publish to npm latest (main branch)
-#   ./scripts/publish.sh --prerelease  # publish to npm prerelease tag (any branch)
+#   ./scripts/publish.sh --prerelease  # publish to npm prerelease tag (feature/next)
 
 set -euo pipefail
 
@@ -31,9 +31,12 @@ fi
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [[ $PRERELEASE -eq 1 && "$CURRENT_BRANCH" != "feature/next" ]]; then
+  echo "✗ prerelease must be run from feature/next (current: $CURRENT_BRANCH)" >&2
+  exit 1
+fi
 if [[ $PRERELEASE -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
   echo "✗ release must be run from main (current: $CURRENT_BRANCH)" >&2
-  echo "  use --prerelease to publish from a non-main branch" >&2
   exit 1
 fi
 

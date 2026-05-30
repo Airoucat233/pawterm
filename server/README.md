@@ -103,6 +103,7 @@ Start from `server/config.dev.example.json` for local development.
 ```json
 {
   "port": 8765,
+  "log_file": "../local/pawterm-server-dev.log",
   "projects": [
     { "path": "/Users/you/code/my-project" }
   ]

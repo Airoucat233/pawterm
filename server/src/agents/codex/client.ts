@@ -2,17 +2,26 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 
+import { buildAgentEnv } from '../../agent-env.js';
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 };
+export type CodexServerRequest = {
+  id: string | number;
+  method: string;
+  params?: unknown;
+};
 type NotificationHandler = (notification: { method: string; params?: unknown }) => void;
+type RequestHandler = (request: CodexServerRequest) => void;
 type CloseHandler = (error: Error) => void;
 
 export class CodexJsonRpcClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationHandlers = new Set<NotificationHandler>();
+  private readonly requestHandlers = new Set<RequestHandler>();
   private readonly closeHandlers = new Set<CloseHandler>();
   private readonly rl: Interface;
   private closed = false;
@@ -58,6 +67,21 @@ export class CodexJsonRpcClient {
     this.io.output.write(`${JSON.stringify(payload)}\n`);
   }
 
+  respond(id: string | number, result: unknown): void {
+    if (this.closed) throw new Error('Codex JSON-RPC client is closed');
+    this.io.output.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
+  }
+
+  reject(id: string | number, code: number, message: string): void {
+    if (this.closed) throw new Error('Codex JSON-RPC client is closed');
+    this.io.output.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
+  }
+
+  onRequest(handler: RequestHandler): () => void {
+    this.requestHandlers.add(handler);
+    return () => this.requestHandlers.delete(handler);
+  }
+
   onNotification(handler: NotificationHandler): () => void {
     this.notificationHandlers.add(handler);
     return () => this.notificationHandlers.delete(handler);
@@ -96,10 +120,18 @@ export class CodexJsonRpcClient {
     }
     if (typeof msg.id === 'number') {
       const pending = this.pending.get(msg.id);
+      if (!pending && msg.method) {
+        this.handleRequest(msg);
+        return;
+      }
       if (!pending) return;
       this.pending.delete(msg.id);
       if (msg.error) pending.reject(new Error(JSON.stringify(msg.error)));
       else pending.resolve(msg.result);
+      return;
+    }
+    if (msg.id !== undefined && msg.method) {
+      this.handleRequest(msg);
       return;
     }
     if (msg.method) {
@@ -109,6 +141,20 @@ export class CodexJsonRpcClient {
         } catch {
           // Isolate handler bugs from the transport read loop.
         }
+      }
+    }
+  }
+
+  private handleRequest(msg: { id: string | number; method: string; params?: unknown }): void {
+    if (this.requestHandlers.size === 0) {
+      this.reject(msg.id, -32601, `Unhandled Codex app-server request: ${msg.method}`);
+      return;
+    }
+    for (const handler of this.requestHandlers) {
+      try {
+        handler({ id: msg.id, method: msg.method, params: msg.params });
+      } catch (err) {
+        this.reject(msg.id, -32603, err instanceof Error ? err.message : String(err));
       }
     }
   }
@@ -125,7 +171,7 @@ export class CodexAppServerProcess {
     if (this.client) return this.client;
     const child = this.spawnCodex('codex', ['app-server', '--listen', 'stdio://'], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: buildAgentEnv(),
     }) as ChildProcessWithoutNullStreams;
     this.child = child;
     child.stderr.on('data', () => {});

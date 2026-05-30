@@ -25,6 +25,35 @@ describe('CodexJsonRpcClient', () => {
     expect(notifications).toEqual([{ method: 'item/agentMessage/delta', params: { delta: 'a' } }]);
   });
 
+  it('routes app-server requests and writes responses by id', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const client = new CodexJsonRpcClient({ input, output });
+    const requests: unknown[] = [];
+    client.onRequest((request) => {
+      requests.push(request);
+      client.respond(request.id, { decision: 'accept' });
+    });
+
+    input.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'approval-1',
+      method: 'item/commandExecution/requestApproval',
+      params: { threadId: 'thread-1', itemId: 'item-1' },
+    })}\n`);
+
+    expect(requests).toEqual([{
+      id: 'approval-1',
+      method: 'item/commandExecution/requestApproval',
+      params: { threadId: 'thread-1', itemId: 'item-1' },
+    }]);
+    expect(JSON.parse((output.read()?.toString() ?? '').trim())).toEqual({
+      jsonrpc: '2.0',
+      id: 'approval-1',
+      result: { decision: 'accept' },
+    });
+  });
+
   it('writes client notifications without a request id', () => {
     const input = new PassThrough();
     const output = new PassThrough();
