@@ -850,28 +850,31 @@ class _UnifiedDiffBlock extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
         border: Border.all(color: t.borderSubt, width: 0.5),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: diff.split('\n').map((line) {
-          final style = _styleForLine(context, t, line);
-          return Container(
-            color: style.$1,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SelectableText(
-                line,
-                maxLines: 1,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 11,
-                  color: style.$2,
-                  height: 1.4,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: IntrinsicWidth(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: diff.split('\n').map((line) {
+              final style = _styleForLine(context, t, line);
+              return Container(
+                color: style.$1,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
+                child: SelectableText(
+                  line,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    color: style.$2,
+                    height: 1.4,
+                  ),
                 ),
-              ),
-            ),
-          );
-        }).toList(),
+              );
+            }).toList(),
+          ),
+        ),
       ),
     );
   }
