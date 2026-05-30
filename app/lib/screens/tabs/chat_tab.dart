@@ -240,6 +240,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _syncForegroundStreamService();
     }
     if (state == AppLifecycleState.resumed) {
+      unawaited(ChatCompletionNotifier.instance.refreshForegroundPermission());
       _syncForegroundStreamService();
       if (_observeMode) return; // observe mode handles its own polling
       unawaited(_refreshActiveRunState());

@@ -80,7 +80,6 @@ class ChatCompletionNotifier {
 
   final _plugin = FlutterLocalNotificationsPlugin();
   bool _initialized = false;
-  bool _permissionRequested = false;
   WidgetRef? _ref;
   GlobalKey<NavigatorState>? _navigatorKey;
   ChatCompletionPayload? _pendingTap;
@@ -126,6 +125,10 @@ class ChatCompletionNotifier {
       _handlePayload(response.payload);
     }
     _flushPendingTap();
+  }
+
+  Future<void> refreshForegroundPermission() async {
+    await _requestAndroidPermissionIfForeground();
   }
 
   Future<void> notifyTurnComplete({
@@ -219,8 +222,11 @@ class ChatCompletionNotifier {
   }
 
   Future<void> _requestAndroidPermissionIfForeground() async {
-    if (_permissionRequested || !_appIsVisibleNow()) return;
-    _permissionRequested = true;
+    if (!_appIsVisibleNow()) return;
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    final enabled = await android?.areNotificationsEnabled();
+    if (enabled == true) return;
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
