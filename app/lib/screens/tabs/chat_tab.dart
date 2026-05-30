@@ -1097,15 +1097,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _messages.add(msg);
         _debugTrack(msg, json);
         _localUserEchoes.removeWhere((echo) => echo.serverAcked);
-        if (completionPayload != null) {
-          unawaited(
-              StreamingForegroundService.instance.remove(completionPayload));
-        }
         if (shouldNotify && completionPayload != null) {
           unawaited(ChatCompletionNotifier.instance.notifyTurnComplete(
             payload: completionPayload,
             appInForeground: _appInForeground,
           ));
+        }
+        if (completionPayload != null) {
+          unawaited(
+              StreamingForegroundService.instance.remove(completionPayload));
         }
         // 如果 AI 这一轮根本没有响应（中断发生在响应之前），
         // 保留 _unrespondedUserText，让"重新编辑"条出现。
