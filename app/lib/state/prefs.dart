@@ -22,11 +22,13 @@ class PrefsNotifier extends StateNotifier<ThemeMode> {
   Future<void> setTheme(ThemeMode mode) async {
     state = mode;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_themeKey, switch (mode) {
-      ThemeMode.light => 'light',
-      ThemeMode.dark => 'dark',
-      _ => 'system',
-    });
+    await prefs.setString(
+        _themeKey,
+        switch (mode) {
+          ThemeMode.light => 'light',
+          ThemeMode.dark => 'dark',
+          _ => 'system',
+        });
   }
 }
 
@@ -77,11 +79,12 @@ final permissionModeProvider =
   (_) => PermissionModeNotifier(),
 );
 
-class DevChannelNotifier extends StateNotifier<bool> {
-  DevChannelNotifier() : super(false) {
+class PrereleaseChannelNotifier extends StateNotifier<bool> {
+  PrereleaseChannelNotifier() : super(false) {
     _load();
   }
 
+  // Keep the old key so existing users do not lose their channel preference.
   static const _key = 'dev_channel';
 
   Future<void> _load() async {
@@ -96,5 +99,6 @@ class DevChannelNotifier extends StateNotifier<bool> {
   }
 }
 
-final devChannelProvider =
-    StateNotifierProvider<DevChannelNotifier, bool>((_) => DevChannelNotifier());
+final prereleaseChannelProvider =
+    StateNotifierProvider<PrereleaseChannelNotifier, bool>(
+        (_) => PrereleaseChannelNotifier());

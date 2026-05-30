@@ -1,11 +1,14 @@
 /** REST schema for session management endpoints. */
 
+import type { AgentKind } from './protocol.js';
+
 export interface Project {
   name: string;
   path: string;
 }
 
 export interface SessionSummary {
+  agent: AgentKind;
   session_id: string;
   summary?: string | null;
   title?: string | null;

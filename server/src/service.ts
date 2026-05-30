@@ -1,9 +1,11 @@
 import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const LABEL = 'com.airoucat.pawterm-server';
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOME = homedir();
 const PLIST_PATH = resolve(HOME, 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const SYSTEMD_DIR = resolve(HOME, '.config', 'systemd', 'user');

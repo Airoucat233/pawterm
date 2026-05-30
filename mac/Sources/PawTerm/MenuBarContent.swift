@@ -79,7 +79,7 @@ struct MenuBarContent: View {
                 }
                 .disabled(true)
                 Button("Download App…") {
-                    NSWorkspace.shared.open(URL(string: "https://github.com/Airoucat233/pawterm/releases/latest")!)
+                    NSWorkspace.shared.open(serverManager.appReleasePageURL)
                 }
                 Divider()
             }
@@ -171,6 +171,20 @@ struct MenuBarContent: View {
                 }
             }
 
+            Toggle("Server prerelease channel", isOn: Binding(
+                get: { serverManager.serverPrereleaseChannelEnabled },
+                set: { serverManager.serverPrereleaseChannelEnabled = $0 }
+            ))
+
+            if serverManager.isDevBuild {
+                Text("PawTerm Dev: official app updates are disabled").disabled(true)
+            } else {
+                Toggle("App prerelease channel", isOn: Binding(
+                    get: { serverManager.appPrereleaseChannelEnabled },
+                    set: { serverManager.appPrereleaseChannelEnabled = $0 }
+                ))
+            }
+
             Menu("About PawTerm") {
                 Text(appVersionString).disabled(true)
                 Divider()
@@ -229,24 +243,25 @@ struct MenuBarContent: View {
     // MARK: - Admin actions
 
     private func openAdmin() {
-        guard let token = token, let url = AdminURL.adminURL(port: serverManager.port, token: token) else { return }
-        NSWorkspace.shared.open(url)
+        Task {
+            guard let code = await serverManager.requestAdminLoginCode(),
+                  let url = AdminURL.adminURL(port: serverManager.port, loginCode: code) else {
+                Alerts.info("无法打开 Admin", "Server 未响应或认证失败。")
+                return
+            }
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func openAdminQR() {
-        guard let token = token,
-              let base = AdminURL.adminURL(port: serverManager.port, token: token),
-              var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return }
-        comps.fragment = "qr"
-        if let url = comps.url { NSWorkspace.shared.open(url) }
-    }
-
-    private var token: String? {
-        // Read fresh from config file so token changes after restart are picked up
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: serverManager.configPath)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let t = json["token"] as? String, !t.isEmpty else { return nil }
-        return t
+        Task {
+            guard let code = await serverManager.requestAdminLoginCode(),
+                  let url = AdminURL.adminURL(port: serverManager.port, loginCode: code, view: "qr") else {
+                Alerts.info("无法打开 QR", "Server 未响应或认证失败。")
+                return
+            }
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func showPin() {
@@ -290,7 +305,7 @@ struct MenuBarContent: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let template: [String: Any] = [
-            "port": 8765,
+            "port": BuildConfig.defaultServerPort,
             "token": "your-token-here"
         ]
         if let data = try? JSONSerialization.data(withJSONObject: template, options: .prettyPrinted) {

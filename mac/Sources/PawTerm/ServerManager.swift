@@ -26,10 +26,10 @@ struct PawTermConfig {
     static func load(from path: String) -> PawTermConfig {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return PawTermConfig(port: 8765, token: nil, startCommand: nil, stopCommand: nil, filePath: path)
+            return PawTermConfig(port: BuildConfig.defaultServerPort, token: nil, startCommand: nil, stopCommand: nil, filePath: path)
         }
         return PawTermConfig(
-            port: json["port"] as? Int ?? 8765,
+            port: json["port"] as? Int ?? BuildConfig.defaultServerPort,
             token: json["token"] as? String,
             startCommand: json["start_command"] as? [String],
             stopCommand: json["stop_command"] as? [String],
@@ -44,6 +44,11 @@ struct PairedDeviceInfo: Identifiable {
     let deviceId: String
     let name: String
     var id: String { deviceId }
+}
+
+enum AppUpdateChannel {
+    case stable
+    case prerelease
 }
 
 // MARK: - ServerManager
@@ -64,6 +69,9 @@ class ServerManager: ObservableObject {
     // App update
     @Published var appUpdateAvailable: Bool = false
     @Published var latestAppVersion: String? = nil
+    @Published var latestAppReleaseTag: String? = nil
+    @Published var appUpdateChannel: AppUpdateChannel = .stable
+    @Published var serverUpdateChannel: AppUpdateChannel = .stable
     @Published var availableConfigs: [String] = []
 
     var port: Int { config.port }
@@ -75,6 +83,9 @@ class ServerManager: ObservableObject {
     private var updateCheckTimer: Timer?
     private var sseTask: Task<Void, Never>?
     private var stoppingStartedAt: Date?
+    private static let legacyPrereleaseChannelKey = "pawterm_prerelease_channel"
+    private static let appPrereleaseChannelKey = "pawterm_app_prerelease_channel"
+    private static let serverPrereleaseChannelKey = "pawterm_server_prerelease_channel"
     private static let blockedKey = "pawterm_blocked_devices"
     private var blockedDeviceIds: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: Self.blockedKey) ?? []) }
@@ -82,6 +93,35 @@ class ServerManager: ObservableObject {
     }
 
     private static let activeConfigPtrPath = "\(NSHomeDirectory())/.config/pawterm/active-config"
+
+    var isDevBuild: Bool {
+        (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
+    }
+
+    var appPrereleaseChannelEnabled: Bool {
+        get { appUpdateChannel == .prerelease }
+        set {
+            appUpdateChannel = newValue ? .prerelease : .stable
+            UserDefaults.standard.set(newValue, forKey: Self.appPrereleaseChannelKey)
+            Task { await checkAppUpdate() }
+        }
+    }
+
+    var serverPrereleaseChannelEnabled: Bool {
+        get { serverUpdateChannel == .prerelease }
+        set {
+            serverUpdateChannel = newValue ? .prerelease : .stable
+            UserDefaults.standard.set(newValue, forKey: Self.serverPrereleaseChannelKey)
+            Task { await checkServerUpdate() }
+        }
+    }
+
+    var appReleasePageURL: URL {
+        if let tag = latestAppReleaseTag {
+            return URL(string: "https://github.com/Airoucat233/pawterm/releases/tag/\(tag)")!
+        }
+        return URL(string: "https://github.com/Airoucat233/pawterm/releases/latest")!
+    }
 
     private static func readActiveConfigPath() -> String {
         if let ptr = try? String(contentsOfFile: activeConfigPtrPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
@@ -105,6 +145,10 @@ class ServerManager: ObservableObject {
         let active = Self.readActiveConfigPath()
         self.configPath = active
         self.config = PawTermConfig.load(from: active)
+        let defaults = UserDefaults.standard
+        let legacyPrerelease = defaults.bool(forKey: Self.legacyPrereleaseChannelKey)
+        self.appUpdateChannel = defaults.bool(forKey: Self.appPrereleaseChannelKey) || legacyPrerelease ? .prerelease : .stable
+        self.serverUpdateChannel = defaults.bool(forKey: Self.serverPrereleaseChannelKey) ? .prerelease : .stable
         refreshAvailableConfigs()
         startPolling()
     }
@@ -207,7 +251,8 @@ class ServerManager: ObservableObject {
 
         let proc = Process()
         proc.executableURL = npmURL
-        proc.arguments = ["install", "-g", "pawterm-server@latest"]
+        let serverPackage = serverUpdateChannel == .prerelease ? "pawterm-server@prerelease" : "pawterm-server@latest"
+        proc.arguments = ["install", "-g", serverPackage]
         proc.environment = enrichedEnvironment()
 
         let outPipe = Pipe(), errPipe = Pipe()
@@ -278,7 +323,8 @@ class ServerManager: ObservableObject {
                     ? String(raw.dropFirst("pawterm-server ".count)) : raw
             }
         }
-        guard let url = URL(string: "https://registry.npmjs.org/pawterm-server/latest") else { return }
+        let serverTag = serverUpdateChannel == .prerelease ? "prerelease" : "latest"
+        guard let url = URL(string: "https://registry.npmjs.org/pawterm-server/\(serverTag)") else { return }
         if let (data, _) = try? await URLSession.shared.data(from: url),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let latest = json["version"] as? String {
@@ -290,23 +336,90 @@ class ServerManager: ObservableObject {
     }
 
     private func checkAppUpdate() async {
-        guard let url = URL(string: "https://api.github.com/repos/Airoucat233/pawterm/releases/latest") else { return }
+        if isDevBuild {
+            latestAppVersion = nil
+            latestAppReleaseTag = nil
+            appUpdateAvailable = false
+            return
+        }
+
+        let urlString: String
+        switch appUpdateChannel {
+        case .stable:
+            urlString = "https://api.github.com/repos/Airoucat233/pawterm/releases/latest"
+        case .prerelease:
+            urlString = "https://api.github.com/repos/Airoucat233/pawterm/releases"
+        }
+
+        guard let url = URL(string: urlString) else { return }
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tagName = json["tag_name"] as? String else { return }
-        let latest = tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
+              let release = parseMacAppRelease(from: data) else {
+            latestAppVersion = nil
+            latestAppReleaseTag = nil
+            appUpdateAvailable = false
+            return
+        }
         let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-        latestAppVersion = latest
-        appUpdateAvailable = latest != current
+        latestAppReleaseTag = release.tagName
+        latestAppVersion = release.version
+        appUpdateAvailable = release.version != current
+    }
+
+    private func parseMacAppRelease(from data: Data) -> (tagName: String, version: String)? {
+        switch appUpdateChannel {
+        case .stable:
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tagName = json["tag_name"] as? String,
+                  let version = macAppVersion(fromRelease: json) else {
+                return nil
+            }
+            return (tagName, version)
+        case .prerelease:
+            guard let releases = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return nil
+            }
+            for release in releases {
+                guard (release["draft"] as? Bool) != true,
+                      (release["prerelease"] as? Bool) == true,
+                      let tagName = release["tag_name"] as? String,
+                      tagName.hasPrefix("prerelease-v"),
+                      let version = macAppVersion(fromRelease: release) else {
+                    continue
+                }
+                return (tagName, version)
+            }
+            return nil
+        }
+    }
+
+    private func macAppVersion(fromRelease release: [String: Any]) -> String? {
+        guard let assets = release["assets"] as? [[String: Any]] else { return nil }
+        for asset in assets {
+            guard let name = asset["name"] as? String else { continue }
+            if let version = macAppVersion(fromAssetName: name) {
+                return version
+            }
+        }
+        return nil
+    }
+
+    private func macAppVersion(fromAssetName name: String) -> String? {
+        let pattern = #"^PawTerm-(?:prerelease-)?(.+)-mac\.zip$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+              let range = Range(match.range(at: 1), in: name) else {
+            return nil
+        }
+        return String(name[range])
     }
 
     // MARK: - Pairing PIN
 
     func requestPairWindow() async -> (pin: String, expiresAt: Int)? {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/pair-window") else { return nil }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/pair-window") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -317,6 +430,21 @@ class ServerManager: ObservableObject {
               let pin = json["pin"] as? String,
               let expiresAt = json["expiresAt"] as? Int else { return nil }
         return (pin, expiresAt)
+    }
+
+    func requestAdminLoginCode() async -> String? {
+        guard let token = config.token, !token.isEmpty,
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/login-codes") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "{}".data(using: .utf8)
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let code = json["admin_login_code"] as? String,
+              !code.isEmpty else { return nil }
+        return code
     }
 
     // MARK: - Node Installation
@@ -438,9 +566,11 @@ class ServerManager: ObservableObject {
 
     private func runSSE() async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/events?token=\(token)") else { return }
+              let url = URL(string: "http://127.0.0.1:\(config.port)/api/admin/events") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 86400
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         guard let (bytes, _) = try? await URLSession.shared.bytes(for: request) else { return }
 
         var eventType = ""
@@ -522,7 +652,7 @@ class ServerManager: ObservableObject {
 
     func approvePairRequest(requestId: String) async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/pair-approve") else { return }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/pair-approve") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -533,7 +663,7 @@ class ServerManager: ObservableObject {
 
     func denyPairRequest(requestId: String) async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/pair-deny") else { return }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/pair-deny") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -544,7 +674,7 @@ class ServerManager: ObservableObject {
 
     func revokeDevice(_ deviceId: String) async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/admin/devices/\(deviceId)") else { return }
+              let url = URL(string: "http://localhost:\(config.port)/api/admin/devices/\(deviceId)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "DELETE"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -556,7 +686,7 @@ class ServerManager: ObservableObject {
 
     private func fetchPairedDevices() async {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://127.0.0.1:\(config.port)/admin/devices") else { return }
+              let url = URL(string: "http://127.0.0.1:\(config.port)/api/admin/devices") else { return }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         guard let (data, _) = try? await URLSession.shared.data(for: req),

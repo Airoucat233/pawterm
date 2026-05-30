@@ -1,17 +1,28 @@
 /**
  * pair-cli.ts — implements `pawterm-server pair`
  *
- * Reads config to get adminToken + port + host, calls POST /admin/pair-window,
- * displays the PIN in a box, polls /admin/devices until a new device appears,
+ * Reads config to get adminToken + port + host, calls POST /api/admin/pair-window,
+ * displays the PIN in a box, polls /api/admin/devices until a new device appears,
  * then exits.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { DEFAULT_SERVER_PORT } from './defaults.js';
 
+const CONFIG_DIR = resolve(homedir(), '.config', 'pawterm');
 const DEFAULT_CONFIG_PATH = resolve(homedir(), '.config', 'pawterm', 'config.json');
-const configPath = process.env.PAWTERM_CONFIG ?? process.env.CC_CONFIG ?? DEFAULT_CONFIG_PATH;
+const ACTIVE_CONFIG_PTR = resolve(CONFIG_DIR, 'active-config');
+
+const configPath = (() => {
+  if (process.env.PAWTERM_CONFIG) return process.env.PAWTERM_CONFIG;
+  if (existsSync(ACTIVE_CONFIG_PTR)) {
+    const ptr = readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim();
+    if (ptr) return resolve(ptr.replace(/^~/, homedir()));
+  }
+  return DEFAULT_CONFIG_PATH;
+})();
 
 interface RawConfig {
   token?: string;
@@ -30,7 +41,7 @@ function readConfig(): { adminToken: string; port: number; host: string } {
     console.error('[pair] No token found in config. Please check your config file.');
     process.exit(1);
   }
-  const port = raw.port ?? 8765;
+  const port = raw.port ?? DEFAULT_SERVER_PORT;
   // If host is 0.0.0.0 (listen on all), connect to localhost
   const rawHost = raw.host ?? '127.0.0.1';
   const host = rawHost === '0.0.0.0' ? '127.0.0.1' : rawHost;
@@ -74,7 +85,7 @@ export async function runPairCli(): Promise<void> {
 
   try {
     const result = await fetchJson<{ pin?: string; expiresAt?: number; error?: string }>(
-      `${base}/admin/pair-window`,
+      `${base}/api/admin/pair-window`,
       { method: 'POST', headers, body: '{}' },
     );
     if (!result.ok || !result.data.pin) {
@@ -97,7 +108,7 @@ export async function runPairCli(): Promise<void> {
   let knownDeviceIds = new Set<string>();
   try {
     const devResult = await fetchJson<Array<{ deviceId: string }>>(
-      `${base}/admin/devices`,
+      `${base}/api/admin/devices`,
       { headers },
     );
     if (devResult.ok) {
@@ -117,7 +128,7 @@ export async function runPairCli(): Promise<void> {
 
     try {
       const devResult = await fetchJson<Array<{ deviceId: string; name: string }>>(
-        `${base}/admin/devices`,
+        `${base}/api/admin/devices`,
         { headers },
       );
       if (!devResult.ok) return;

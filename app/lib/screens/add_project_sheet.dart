@@ -81,7 +81,7 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
     if (conn == null) return;
     setState(() => _loadingDirs = true);
     try {
-      final api = ProjectsApi(conn.httpBase, token: conn.token);
+      final api = ProjectsApi(conn.apiBase, token: conn.token);
       final dirs = await api.browse(path);
       if (!mounted) return;
       setState(() {
@@ -127,7 +127,7 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
     final name = await _promptNewFolderName(context);
     if (name == null || name.trim().isEmpty) return;
     final conn = ref.read(activeConnectionProvider)!;
-    final api = ProjectsApi(conn.httpBase, token: conn.token);
+    final api = ProjectsApi(conn.apiBase, token: conn.token);
     try {
       final created = await api.mkdir(parent: _currentPath, name: name.trim());
       await _browse(_currentPath);
@@ -143,7 +143,9 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
       if (!mounted) return;
       final s = ref.read(stringsProvider);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(s.addProjectCreateFailedTpl.replaceAll('{err}', '$e'))),
+        SnackBar(
+            content:
+                Text(s.addProjectCreateFailedTpl.replaceAll('{err}', '$e'))),
       );
     }
   }
@@ -161,7 +163,7 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
     });
     try {
       final conn = ref.read(activeConnectionProvider)!;
-      final api = ProjectsApi(conn.httpBase, token: conn.token);
+      final api = ProjectsApi(conn.apiBase, token: conn.token);
       await api.addProject(name: name, path: path);
       widget.onAdded();
       if (mounted) Navigator.of(context).pop();
@@ -192,11 +194,13 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
     final effectiveLabel = effective.isEmpty
         ? s.addProjectNoDirSelected
         : (_selectedPath != null
-            ? s.addProjectAddNamedTpl.replaceAll('{name}', _basename(_selectedPath!))
+            ? s.addProjectAddNamedTpl
+                .replaceAll('{name}', _basename(_selectedPath!))
             : s.addProjectAddThisDir);
 
     return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         decoration: BoxDecoration(
           color: t.surface,
@@ -210,8 +214,10 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
               padding: const EdgeInsets.only(top: 14, bottom: 4),
               child: Center(
                 child: Container(
-                  width: 36, height: 4,
-                  decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2)),
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: t.border, borderRadius: BorderRadius.circular(2)),
                 ),
               ),
             ),
@@ -224,13 +230,19 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
                       onTap: _goUp,
                       borderRadius: BorderRadius.circular(8),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 4),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.arrow_back_ios_new, size: 13, color: t.accent),
+                            Icon(Icons.arrow_back_ios_new,
+                                size: 13, color: t.accent),
                             const SizedBox(width: 2),
-                            Text(s.addProjectGoParent, style: TextStyle(fontSize: 13, color: t.accent, fontWeight: FontWeight.w500)),
+                            Text(s.addProjectGoParent,
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: t.accent,
+                                    fontWeight: FontWeight.w500)),
                           ],
                         ),
                       ),
@@ -243,7 +255,10 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 12, color: t.textMuted, fontFamily: 'monospace'),
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: t.textMuted,
+                            fontFamily: 'monospace'),
                       ),
                     ),
                   ),
@@ -251,17 +266,21 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
                     onTap: _currentPath.isEmpty ? null : _newFolder,
                     borderRadius: BorderRadius.circular(8),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 4),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.create_new_folder_outlined, size: 14,
-                              color: _currentPath.isEmpty ? t.textDim : t.accent),
+                          Icon(Icons.create_new_folder_outlined,
+                              size: 14,
+                              color:
+                                  _currentPath.isEmpty ? t.textDim : t.accent),
                           const SizedBox(width: 4),
                           Text(s.addProjectNewFolder,
                               style: TextStyle(
                                 fontSize: 13,
-                                color: _currentPath.isEmpty ? t.textDim : t.accent,
+                                color:
+                                    _currentPath.isEmpty ? t.textDim : t.accent,
                                 fontWeight: FontWeight.w500,
                               )),
                         ],
@@ -276,9 +295,13 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
             SizedBox(
               height: 220,
               child: _loadingDirs
-                  ? Center(child: CircularProgressIndicator(strokeWidth: 2, color: t.accent))
+                  ? Center(
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: t.accent))
                   : _dirs.isEmpty
-                      ? Center(child: Text(s.addProjectEmptyDir, style: TextStyle(color: t.textDim, fontSize: 13)))
+                      ? Center(
+                          child: Text(s.addProjectEmptyDir,
+                              style: TextStyle(color: t.textDim, fontSize: 13)))
                       : ListView.builder(
                           padding: EdgeInsets.zero,
                           itemCount: _dirs.length,
@@ -303,20 +326,28 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
                   if (_error != null) ...[
                     Container(
                       margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 9),
                       decoration: BoxDecoration(
                         color: t.error.withValues(alpha: 0.08),
-                        border: Border.all(color: t.error.withValues(alpha: 0.25)),
+                        border:
+                            Border.all(color: t.error.withValues(alpha: 0.25)),
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Text(_error!, style: TextStyle(fontSize: 12, color: t.error)),
+                      child: Text(_error!,
+                          style: TextStyle(fontSize: 12, color: t.error)),
                     ),
                   ],
                   Row(
                     children: [
-                      Text(s.addProjectName, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: t.textMuted)),
+                      Text(s.addProjectName,
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: t.textMuted)),
                       const SizedBox(width: 6),
-                      Text(s.addProjectNameOptional, style: TextStyle(fontSize: 10, color: t.textDim)),
+                      Text(s.addProjectNameOptional,
+                          style: TextStyle(fontSize: 10, color: t.textDim)),
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -337,15 +368,19 @@ class _AddProjectSheetState extends ConsumerState<AddProjectSheet> {
                       onPressed: (_saving || effective.isEmpty) ? null : _save,
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
                       ),
                       child: _saving
                           ? const SizedBox(
-                              width: 18, height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white),
                             )
                           : Text(effectiveLabel,
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                              style: const TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w600)),
                     ),
                   ),
                 ],
@@ -429,7 +464,8 @@ Future<String?> _promptNewFolderName(BuildContext context) async {
     builder: (ctx) => AlertDialog(
       backgroundColor: t.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: Text(s.addProjectNewFolderDialogTitle, style: TextStyle(fontSize: 16, color: t.text)),
+      title: Text(s.addProjectNewFolderDialogTitle,
+          style: TextStyle(fontSize: 16, color: t.text)),
       content: TextField(
         controller: ctrl,
         autofocus: true,
@@ -441,7 +477,9 @@ Future<String?> _promptNewFolderName(BuildContext context) async {
         onSubmitted: (v) => Navigator.of(ctx).pop(v),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text(s.genericCancel)),
+        TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.genericCancel)),
         FilledButton(
           onPressed: () => Navigator.of(ctx).pop(ctrl.text),
           child: Text(s.addProjectCreateBtn),

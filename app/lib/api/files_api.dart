@@ -9,14 +9,25 @@ class FilesApi {
   final String baseUrl;
   final String? _token;
   FilesApi(this.baseUrl, {String? token}) : _token = token;
+  String get _apiBase => baseUrl.endsWith('/api') ? baseUrl : '$baseUrl/api';
 
   Map<String, String> get _auth =>
       _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
+  Map<String, String> get authHeaders => _auth;
+
+  Uri downloadUri(String remotePath) =>
+      Uri.parse('$_apiBase/fs/download').replace(queryParameters: {
+        'path': remotePath,
+      });
+
   /// 列出 [path] 下的文件夹和文件。
   Future<FsListing> ls(String path) async {
-    final uri = Uri.parse('$baseUrl/fs/ls').replace(queryParameters: {'path': path});
-    final resp = await http.get(uri, headers: _auth).timeout(const Duration(seconds: 10));
+    final uri =
+        Uri.parse('$_apiBase/fs/ls').replace(queryParameters: {'path': path});
+    final resp = await http
+        .get(uri, headers: _auth)
+        .timeout(const Duration(seconds: 10));
     if (resp.statusCode == 403) {
       throw FsForbiddenException(path);
     }
@@ -38,13 +49,13 @@ class FilesApi {
     void Function(int received, int? total)? onProgress,
     Completer<void>? cancelToken,
   }) async {
-    final uri = Uri.parse('$baseUrl/fs/download')
-        .replace(queryParameters: {'path': remotePath});
+    final uri = downloadUri(remotePath);
     final client = http.Client();
     try {
       final req = http.Request('GET', uri);
       req.headers.addAll(_auth);
-      final streamed = await client.send(req).timeout(const Duration(seconds: 15));
+      final streamed =
+          await client.send(req).timeout(const Duration(seconds: 15));
       if (streamed.statusCode == 403) throw FsForbiddenException(remotePath);
       if (streamed.statusCode == 404) throw FsNotFoundException(remotePath);
       if (streamed.statusCode != 200) {

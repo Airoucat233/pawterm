@@ -7,6 +7,73 @@
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 
+export type AgentKind = 'claude' | 'codex' | 'gemini';
+
+export type AgentStatus =
+  | 'ready'
+  | 'not_installed'
+  | 'not_logged_in'
+  | 'disabled'
+  | 'error';
+
+export interface AgentCapabilities {
+  streaming: boolean;
+  history: boolean;
+  approvals: boolean;
+  modelSwitch: boolean;
+  runtimeSwitch: boolean;
+  rawEvents: boolean;
+}
+
+export interface AgentSessionRef {
+  agent: AgentKind;
+  id: string;
+}
+
+export interface ClaudeRuntime {
+  agent: 'claude';
+  model?: string;
+  permission_mode: PermissionMode;
+}
+
+export interface CodexRuntime {
+  agent: 'codex';
+  model?: string;
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+  approval_policy: 'untrusted' | 'on-request' | 'never';
+}
+
+export interface GeminiRuntime {
+  agent: 'gemini';
+  model?: string;
+  approval_policy?: string;
+}
+
+export type AgentRuntime = ClaudeRuntime | CodexRuntime | GeminiRuntime;
+
+export interface AgentInfo {
+  kind: AgentKind;
+  label: string;
+  status: AgentStatus;
+  statusMessage?: string;
+  defaultRuntime: AgentRuntime;
+  capabilities: AgentCapabilities;
+}
+
+export interface AgentsResponse {
+  agents: AgentInfo[];
+}
+
+export interface AgentEventMeta {
+  agent?: AgentKind;
+  session_ref?: AgentSessionRef;
+  native_type?: string;
+  native_name?: string;
+  native_event?: string;
+  raw_payload?: unknown;
+}
+
 // ============== Health ==============
 
 export interface HealthResponse {
@@ -15,25 +82,29 @@ export interface HealthResponse {
   hostname: string;
   serverId?: string;
   pairingOpen?: boolean;
+  advertisedAddress?: {
+    name: string;
+    address: string;
+  };
 }
 
 // ============== Pairing ==============
 
-// POST /admin/pair-window — requires adminToken
+// POST /api/admin/pair-window — requires adminToken
 export interface PairWindowRequest {}
 export interface PairWindowResponse { pin: string; expiresAt: number }
 
-// POST /pair/start — no auth; PIN is the out-of-band credential
+// POST /api/pair/start — no auth; PIN is the out-of-band credential
 export interface PairStartRequest { deviceId: string; deviceName: string; pin: string }
 export type PairStartResponse =
   | { ok: true; deviceToken: string; serverId: string }
   | { ok: false; error: 'bad_pin' | 'pairing_closed' | 'rate_limited' };
 
-// POST /pair/qr-claim — requires adminToken
+// POST /api/pair/qr-claim — no auth; QR claim is the credential
 export interface PairQrClaimRequest { deviceId: string; deviceName: string }
 export interface PairQrClaimResponse { deviceToken: string; serverId: string }
 
-// GET /admin/devices — list; DELETE /admin/devices/:id — revoke; requires adminToken
+// GET /api/admin/devices — list; DELETE /api/admin/devices/:id — revoke; requires admin auth
 export interface PairedDevice {
   deviceId: string;
   name: string;
@@ -41,20 +112,24 @@ export interface PairedDevice {
   lastSeen: number | null;
 }
 
-// GET /admin/qr — requires adminToken
-export interface QrResponse { content: string; svg: string }
+export interface AdminLoginCodeResponse { admin_login_code: string; expires_at: number }
+export interface AdminAccessTokenResponse { admin_access_token: string; expires_at: number }
+export interface AdminPasswordRequest { password: string }
 
-// POST /pair/request — no auth
+// GET /api/admin/qr — requires admin auth
+export interface QrResponse { content: string; svg: string; expiresAt?: number }
+
+// POST /api/pair/request — no auth
 export interface PairRequestRequest { deviceId: string; deviceName: string }
 export interface PairRequestResponse { requestId: string; pollUrl: string }
 
-// GET /pair/poll/:requestId — no auth, long-poll
+// GET /api/pair/poll/:requestId — no auth, long-poll
 export type PairPollResponse =
   | { status: 'pending' }
   | { status: 'approved'; deviceToken: string; serverId: string }
   | { status: 'denied' | 'expired' };
 
-// GET /admin/events — SSE stream, requires adminToken
+// GET /api/admin/events — SSE stream, requires admin Bearer auth
 export type AdminEvent =
   | { type: 'pair_request'; requestId: string; deviceId: string; deviceName: string; ip: string; createdAt: number }
   | { type: 'device_paired'; deviceId: string; name: string }
@@ -84,13 +159,14 @@ export const KNOWN_MODELS = [
 
 // ============== Models ==============
 
-export type ModelTier = 'fast' | 'powerful' | 'cheap';
-export type ModelProvider = 'anthropic' | 'bedrock' | 'vertex' | 'unknown';
+export type ModelTier = 'fast' | 'powerful' | 'cheap' | 'coding' | 'default';
+export type ModelProvider = 'anthropic' | 'bedrock' | 'vertex' | 'openai' | 'unknown';
 
 export interface ModelInfo {
   id: string;
   label: string;
   tier: ModelTier;
+  description?: string;
 }
 
 export interface ModelsResponse {
@@ -100,32 +176,48 @@ export interface ModelsResponse {
 }
 
 export type ChatServerMessage =
-  | { type: 'session_ready'; session_key: string; cwd: string; permission_mode: PermissionMode; resumed?: string | null; busy?: boolean }
-  | { type: 'assistant'; model?: string; content: ContentBlock[]; timestamp?: number }
-  | { type: 'user'; content: ContentBlock[]; timestamp?: number }
-  | { type: 'system'; subtype?: string; data?: unknown; timestamp?: number }
-  | { type: 'result'; subtype?: string; duration_ms?: number; duration_api_ms?: number; is_error: boolean; num_turns?: number; session_id?: string; total_cost_usd?: number; usage?: unknown; timestamp?: number }
-  | { type: 'stream_block_start'; index: number; kind: string }
-  | { type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string }
-  | { type: 'stream_block_stop'; index: number }
-  | { type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number }
-  | { type: 'error'; message: string }
+  | ({ type: 'session_ready'; session_key: string; cwd: string; permission_mode: PermissionMode; resumed?: string | null; busy?: boolean } & AgentEventMeta)
+  | ({ type: 'assistant'; model?: string; content: ContentBlock[]; timestamp?: number; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'user'; content: ContentBlock[]; timestamp?: number; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'system'; subtype?: string; data?: unknown; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'result'; subtype?: string; duration_ms?: number; duration_api_ms?: number; is_error: boolean; num_turns?: number; session_id?: string; total_cost_usd?: number; usage?: unknown; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'stream_block_start'; index: number; kind: string; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'stream_block_stop'; index: number; parent_tool_use_id?: string | null } & AgentEventMeta)
+  | ({ type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
 
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: ToolResultContent; is_error: boolean };
+  | {
+      type: 'tool_use';
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      native_type?: string;
+      native_event?: string;
+      raw_payload?: unknown;
+    }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: ToolResultContent;
+      is_error: boolean;
+      native_type?: string;
+      native_event?: string;
+      raw_payload?: unknown;
+    };
 
 export type ToolResultContent =
   | string
   | Array<{ type: 'text'; text: string } | { type: string; [k: string]: unknown }>
   | null;
 
-// ============== Chat REST: POST /chat/answer ==============
+// ============== Chat REST: POST /api/chat/answer ==============
 
-/** POST /chat/answer 请求 body */
+/** POST /api/chat/answer 请求 body */
 export interface AnswerQuestionRequest {
   uuid: string;
   tool_use_id: string;

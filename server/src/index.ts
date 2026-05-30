@@ -1,23 +1,30 @@
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import websocketPlugin from '@fastify/websocket';
-import Fastify from 'fastify';
-import { createReadStream, readFileSync } from 'node:fs';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import { execFile } from 'node:child_process';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
-import { hostname, homedir, networkInterfaces } from 'node:os';
+import { hostname, homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-import type { HealthResponse, Project, PairedDevice, ModelsResponse, ModelInfo, ModelProvider } from '@pawterm/shared';
+import type { AgentsResponse, HealthResponse, Project, PairedDevice, ModelsResponse, ModelInfo, ModelProvider } from '@pawterm/shared';
 
+import { AdminAccessManager } from './admin-auth.js';
+import { verifyAdminPassword } from './admin-password.js';
+import { parseAgentQuery } from './agents/http-helpers.js';
+import { defaultAgentRegistry } from './agents/registry.js';
 import { registerChatRest } from './chat-rest.js';
-import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices } from './config.js';
+import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices, persistAdminAccessTokens } from './config.js';
 import { adminEventBus } from './event-bus.js';
 import { buildLoggerOptions, SILENT_PATHS } from './logger.js';
 import { startMdns } from './mdns.js';
+import { createNetworkAddressService, type AdvertisedAddress } from './network-address.js';
 import { pairingManager } from './pair.js';
 import { registerSessionsApi } from './sessions-api.js';
 import { registerUpload } from './upload.js';
@@ -29,6 +36,12 @@ const VERSION: string = typeof __SERVER_VERSION__ !== 'undefined' ? __SERVER_VER
   catch { return 'dev'; }
 })();
 
+const adminAccessManager = new AdminAccessManager({
+  initialAccessTokens: settings.adminAccessTokens,
+});
+
+const execFileAsync = promisify(execFile);
+
 // Extract a short human label from a model ID, falling back to the provided default.
 // e.g. "global.anthropic.claude-sonnet-4-6" → "Sonnet 4.6"
 //      "anthropic.claude-opus-4-7-20260101" → "Opus 4.7"
@@ -38,14 +51,75 @@ function _modelLabel(id: string, fallback: string): string {
   return fallback;
 }
 
-function getLanIp(): string {
-  const ifaces = networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    for (const iface of (ifaces[name] ?? [])) {
-      if (!iface.internal && iface.family === 'IPv4') return iface.address;
-    }
-  }
-  return 'localhost';
+type CodexDebugModel = {
+  slug?: unknown;
+  display_name?: unknown;
+  description?: unknown;
+  visibility?: unknown;
+};
+
+function _codexModelTier(id: string): ModelInfo['tier'] {
+  if (id.includes('mini')) return 'cheap';
+  if (id.includes('codex')) return 'coding';
+  if (id === 'gpt-5.5') return 'powerful';
+  return 'fast';
+}
+
+function _codexFallbackModels(): ModelInfo[] {
+  return [
+    {
+      id: 'gpt-5.5',
+      label: 'gpt-5.5',
+      tier: 'powerful',
+      description: 'Frontier model for complex coding, research, and real-world work.',
+    },
+    {
+      id: 'gpt-5.4',
+      label: 'gpt-5.4',
+      tier: 'fast',
+      description: 'Strong model for everyday coding.',
+    },
+    {
+      id: 'gpt-5.4-mini',
+      label: 'gpt-5.4-mini',
+      tier: 'cheap',
+      description: 'Small, fast, and cost-efficient model for simpler coding tasks.',
+    },
+    {
+      id: 'gpt-5.3-codex',
+      label: 'gpt-5.3-codex',
+      tier: 'coding',
+      description: 'Coding-optimized model.',
+    },
+    {
+      id: 'gpt-5.2',
+      label: 'gpt-5.2',
+      tier: 'fast',
+      description: 'Optimized for professional work and long-running agents.',
+    },
+  ];
+}
+
+async function _codexModelsFromCli(): Promise<ModelInfo[]> {
+  const { stdout } = await execFileAsync('codex', ['debug', 'models'], {
+    timeout: 2000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const parsed = JSON.parse(stdout) as { models?: CodexDebugModel[] };
+  const models = (parsed.models ?? [])
+    .filter((m) => m.visibility === 'list' && typeof m.slug === 'string')
+    .map((m): ModelInfo => {
+      const id = String(m.slug);
+      return {
+        id,
+        label: id,
+        tier: _codexModelTier(id),
+        ...(typeof m.description === 'string' && m.description.trim()
+          ? { description: m.description.trim() }
+          : {}),
+      };
+    });
+  return models.length > 0 ? models : _codexFallbackModels();
 }
 
 function isValidPassword(pw: string): boolean {
@@ -100,12 +174,12 @@ async function runPasswordCommand(): Promise<void> {
     console.log('Usage: pawterm-server password <set|clear|show>');
     console.log('  set [password]  Set a memorable password (prompts if omitted)');
     console.log('  clear           Remove the password');
-    console.log('  show            Show the current password / token');
+    console.log('  show            Show password status / token');
     process.exit(0);
   }
   if (action === 'show') {
-    if (settings.password) {
-      console.log(`Password : ${settings.password}`);
+    if (settings.adminPasswordHash || settings.password) {
+      console.log(`Password : set (${settings.adminPasswordHash ? 'hashed' : 'legacy plaintext'})`);
     } else {
       console.log('No password set. Auth uses the random token only.');
     }
@@ -156,6 +230,49 @@ async function firstRunSetup(): Promise<void> {
 
 async function main(): Promise<void> {
   const app = Fastify({ logger: buildLoggerOptions(), disableRequestLogging: true });
+  let stopMdns: (() => void) | null = null;
+  const mdnsOptions = () => ({
+    port: settings.port,
+    serverId: settings.serverId,
+    hostname: hostname(),
+    version: VERSION,
+    getPairingState: () => pairingManager.getState(),
+  });
+  const formatAddress = (address: AdvertisedAddress | null): string =>
+    address ? `${address.address} (${address.name})` : 'none';
+  const restartMdns = (reason: string): void => {
+    if (!stopMdns) return;
+    try {
+      stopMdns();
+      stopMdns = startMdns(mdnsOptions());
+      app.log.info(`mDNS advertisement restarted: ${reason}`);
+    } catch (err) {
+      app.log.warn({ err }, `Failed to restart mDNS advertisement: ${reason}`);
+    }
+  };
+  const networkAddressService = createNetworkAddressService({
+    onChange: (current, previous) => {
+      app.log.info(
+        `LAN address changed: ${formatAddress(previous)} -> ${formatAddress(current)}`,
+      );
+      restartMdns('LAN address changed');
+    },
+  });
+  const advertisedHost = () => networkAddressService.getCurrent()?.address ?? 'localhost';
+  const unsubscribePairRequestLog = adminEventBus.subscribe((event) => {
+    if (event.type !== 'pair_request') return;
+    app.log.info(
+      [
+        '',
+        '┌─ Pairing request',
+        `│  device : ${event.deviceName}`,
+        `│  ip     : ${event.ip}`,
+        `│  approve: http://${advertisedHost()}:${settings.port}/admin`,
+        '│  PIN    : run `cd server && PAWTERM_CONFIG=$(pwd)/config.json pnpm exec tsx src/index.ts pair`',
+        '└─ waiting for approval',
+      ].join('\n'),
+    );
+  });
 
   await app.register(cors, { origin: true });
   await app.register(websocketPlugin);
@@ -165,12 +282,19 @@ async function main(): Promise<void> {
   const BODY_LIMIT = 512;
   const truncate = (s: string) =>
     s.length <= BODY_LIMIT ? s : `${s.slice(0, BODY_LIMIT)} …(+${s.length - BODY_LIMIT} bytes)`;
+  const redactUrl = (url: string) =>
+    url.replace(/([?&]admin_login_code=)[^&\s]+/g, '$1<redacted>');
+  const redactSecrets = (text: string) =>
+    text
+      .replace(/("(?:admin_login_code|admin_access_token|access_token|deviceToken|device_token|token)"\s*:\s*")[^"]+/g, '$1<redacted>')
+      .replace(/("(?:password|admin_password)"\s*:\s*")[^"]+/g, '$1<redacted>')
+      .replace(/(Bearer\s+)(?:sk|aat|alc|dt)-[0-9a-f]+/g, '$1<redacted>');
 
   app.addHook('preHandler', async (req) => {
     const path = req.url.split('?')[0];
     if (SILENT_PATHS.has(path)) return;
-    const body = req.body != null ? ` ${truncate(JSON.stringify(req.body))}` : '';
-    req.log.info(`→ ${req.method} ${req.url}${body}`);
+    const body = req.body != null ? ` ${redactSecrets(truncate(JSON.stringify(req.body)))}` : '';
+    req.log.info(`→ ${req.method} ${redactUrl(req.url)}${body}`);
   });
 
   app.addHook('onSend', async (req, reply, payload) => {
@@ -179,34 +303,41 @@ async function main(): Promise<void> {
     const ms = Math.round(reply.elapsedTime);
     const isStream = typeof (payload as { pipe?: unknown })?.pipe === 'function';
     const bodyStr = (!isStream && typeof payload === 'string')
-      ? ` ${truncate(payload)}`
+      ? ` ${redactSecrets(truncate(payload))}`
       : '';
-    req.log.info(`← ${reply.statusCode} ${req.method} ${req.url}  ${ms}ms${bodyStr}`);
+    req.log.info(`← ${reply.statusCode} ${req.method} ${redactUrl(req.url)}  ${ms}ms${bodyStr}`);
     return payload;
   });
 
-  // Auth middleware
-  // Skipped: /health (LAN discovery), /ws/shell (WS auth via init message),
-  // /pair/start (PIN is the credential), /pair/qr-claim (claim code is the credential)
+  // Auth middleware.
+  // Frontend routes/static files are public. API routes live under /api, except
+  // /health which remains a root LAN/discovery probe.
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
     if (
       url === '/health' ||
+      (!url.startsWith('/api/') && url !== '/ws/shell') ||
       url === '/ws/shell' ||
-      url === '/pair/start' ||
-      url === '/pair/request' ||
-      url === '/pair/qr-claim' ||
-      url.startsWith('/pair/poll/')
+      url === '/api/pair/start' ||
+      url === '/api/pair/request' ||
+      url === '/api/pair/qr-claim' ||
+      url === '/api/admin/access-token' ||
+      url.startsWith('/api/pair/poll/')
     ) {
       return;
     }
 
     const auth = req.headers['authorization'];
-    // Also accept ?token= query param for SSE connections (EventSource can't set headers)
-    const queryToken = (req.query as Record<string, string | undefined>)['token'];
-    const token = (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null) ?? queryToken ?? null;
+    const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
 
-    const isAdmin = token === settings.adminToken || (!!settings.password && token === settings.password);
+    const isPasswordAdmin =
+      !!token &&
+      (
+        verifyAdminPassword(token, settings.adminPasswordHash) ||
+        (!!settings.password && token === settings.password)
+      );
+    const isRootAdmin = token === settings.adminToken || isPasswordAdmin;
+    const isAdmin = isRootAdmin || (!!token && adminAccessManager.isAdminAccessToken(token));
     const matchedDevice = token
       ? settings.pairedDevices.find((d) => d.deviceToken === token)
       : undefined;
@@ -217,8 +348,13 @@ async function main(): Promise<void> {
     }
 
     // Admin-only routes
-    if (url.startsWith('/admin/') && !isAdmin) {
-      reply.code(403).send({ error: 'admin token required' });
+    if (url === '/api/admin/login-codes' && !isRootAdmin) {
+      reply.code(403).send({ error: 'root admin token required' });
+      return;
+    }
+
+    if (url.startsWith('/api/admin/') && !isAdmin) {
+      reply.code(403).send({ error: 'admin access token required' });
       return;
     }
 
@@ -230,16 +366,51 @@ async function main(): Promise<void> {
   });
 
   // REST: health (no auth)
-  app.get('/health', async (): Promise<HealthResponse> => ({
-    status: 'ok',
-    version: VERSION,
-    hostname: hostname(),
-    serverId: settings.serverId,
-    pairingOpen: pairingManager.getState() === 'open',
-  }));
+  const healthHandler = async (): Promise<HealthResponse> => {
+    const advertisedAddress = networkAddressService.getCurrent();
+    return {
+      status: 'ok',
+      version: VERSION,
+      hostname: hostname(),
+      serverId: settings.serverId,
+      pairingOpen: pairingManager.getState() === 'open',
+      advertisedAddress: advertisedAddress
+        ? { name: advertisedAddress.name, address: advertisedAddress.address }
+        : undefined,
+    };
+  };
+  app.get('/health', healthHandler);
 
-  // REST: models — reads ~/.claude/settings.json to detect provider + available models
-  app.get('/models', async (): Promise<ModelsResponse> => {
+  await app.register(async (api) => {
+
+  const agentsHandler = async (): Promise<AgentsResponse> => ({
+    agents: await defaultAgentRegistry.listInfos(),
+  });
+  api.get('/agents', agentsHandler);
+
+  // REST: models — agent-aware model candidates for the mobile/web picker.
+  api.get<{ Querystring: { agent?: string } }>('/models', async (req): Promise<ModelsResponse> => {
+    const agent = parseAgentQuery(req.query.agent);
+    if (agent === 'codex') {
+      const codexConfig = (() => {
+        try {
+          return readFileSync(join(homedir(), '.codex', 'config.toml'), 'utf-8');
+        } catch {
+          return '';
+        }
+      })();
+      const configuredModel = codexConfig.match(/^\s*model\s*=\s*["']([^"']+)["']/m)?.[1]?.trim() ?? '';
+      const codexModels = await _codexModelsFromCli().catch(() => _codexFallbackModels());
+      const models = configuredModel && !codexModels.some((m) => m.id === configuredModel)
+        ? [{ id: configuredModel, label: configuredModel, tier: 'default' as const }, ...codexModels]
+        : codexModels;
+      return {
+        provider: 'openai',
+        current: configuredModel || models[0]?.id || '',
+        models,
+      };
+    }
+
     const claudeSettings = (() => {
       try {
         return JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8'));
@@ -268,10 +439,11 @@ async function main(): Promise<void> {
   });
 
   // REST: projects list
-  app.get('/projects', async (): Promise<Project[]> => settings.projects);
+  const projectsHandler = async (): Promise<Project[]> => settings.projects;
+  api.get('/projects', projectsHandler);
 
   // REST: add project. name is optional; defaults to basename(path).
-  app.post<{ Body: { name?: string; path: string } }>('/projects', async (req, reply) => {
+  api.post<{ Body: { name?: string; path: string } }>('/projects', async (req, reply) => {
     const { name, path: p } = req.body ?? {};
     if (!p) {
       reply.code(400);
@@ -289,7 +461,7 @@ async function main(): Promise<void> {
   });
 
   // REST: remove project (config only — never touches ~/.claude/projects sessions).
-  app.delete<{ Querystring: { path?: string } }>('/projects', async (req, reply) => {
+  api.delete<{ Querystring: { path?: string } }>('/projects', async (req, reply) => {
     const p = req.query.path;
     if (!p) {
       reply.code(400);
@@ -301,7 +473,7 @@ async function main(): Promise<void> {
   });
 
   // REST: browse server filesystem (directories only)
-  app.get<{ Querystring: { path?: string } }>('/browse', async (req): Promise<{ dirs: string[] }> => {
+  api.get<{ Querystring: { path?: string } }>('/browse', async (req): Promise<{ dirs: string[] }> => {
     const p = req.query.path;
     const abs = p ? resolve(p.replace(/^~/, homedir())) : homedir();
     try {
@@ -317,7 +489,7 @@ async function main(): Promise<void> {
   });
 
   // REST: create a new subdirectory under `parent`.
-  app.post<{ Body: { parent: string; name: string } }>('/browse/mkdir', async (req, reply) => {
+  api.post<{ Body: { parent: string; name: string } }>('/browse/mkdir', async (req, reply) => {
     const { parent, name } = req.body ?? {};
     if (!parent || !name) {
       reply.code(400);
@@ -345,7 +517,7 @@ async function main(): Promise<void> {
 
   // REST: filesystem — list and download files under whitelisted project roots.
   // Both endpoints accept absolute paths and reject anything outside isPathAllowed().
-  app.get<{ Querystring: { path?: string } }>('/fs/ls', async (req, reply) => {
+  api.get<{ Querystring: { path?: string } }>('/fs/ls', async (req, reply) => {
     const p = req.query.path;
     if (!p) { reply.code(400); return { error: 'path required' }; }
     const abs = resolve(p.replace(/^~/, homedir()));
@@ -390,7 +562,7 @@ async function main(): Promise<void> {
    * Returns `{ path, size, text, truncated, binary? }`. If the file looks
    * binary we return `{ binary: true }` without `text` — client decides.
    */
-  app.get<{ Querystring: { path?: string; max_bytes?: string } }>('/fs/cat', async (req, reply) => {
+  api.get<{ Querystring: { path?: string; max_bytes?: string } }>('/fs/cat', async (req, reply) => {
     const p = req.query.path;
     if (!p) { reply.code(400); return { error: 'path required' }; }
     const abs = resolve(p.replace(/^~/, homedir()));
@@ -434,7 +606,7 @@ async function main(): Promise<void> {
     }
   });
 
-  app.get<{ Querystring: { path?: string } }>('/fs/download', async (req, reply) => {
+  api.get<{ Querystring: { path?: string } }>('/fs/download', async (req, reply) => {
     const p = req.query.path;
     if (!p) { reply.code(400); return { error: 'path required' }; }
     const abs = resolve(p.replace(/^~/, homedir()));
@@ -460,29 +632,107 @@ async function main(): Promise<void> {
   });
 
   // REST: sessions
-  await registerSessionsApi(app);
+  await registerSessionsApi(api, { registry: defaultAgentRegistry });
 
   // REST + SSE: chat
-  await registerChatRest(app);
+  await registerChatRest(api);
 
   // REST: upload (chat attachments)
-  await registerUpload(app);
+  await registerUpload(api);
 
-  // WebSocket: shell
-  app.get('/ws/shell', { websocket: true }, (socket, req) => {
-    handleShellSocket(socket, req);
-  });
+  // ============ Admin access endpoints ============
+
+  // POST /api/admin/login-codes — root admin token/password required.
+  // Used by local trusted entry points (CLI / Mac app) to open Web Admin
+  // without placing the root admin token in the browser URL.
+  const createAdminLoginCodeHandler = async () => {
+    const login = adminAccessManager.createLoginCode();
+    return {
+      admin_login_code: login.loginCode,
+      expires_at: login.expiresAt,
+    };
+  };
+  api.post('/admin/login-codes', createAdminLoginCodeHandler);
+
+  // POST /api/admin/access-token — public exchange endpoint; the one-time
+  // admin_login_code is the credential and is consumed whether exchange succeeds.
+  const exchangeAdminAccessTokenHandler = async (
+    req: FastifyRequest<{ Body: { admin_login_code?: string } }>,
+    reply: FastifyReply,
+  ) => {
+    const code = req.body?.admin_login_code;
+    if (!code) {
+      reply.code(400);
+      return { error: 'admin_login_code required' };
+    }
+    const access = adminAccessManager.redeemLoginCode(code);
+    if (!access) {
+      reply.code(403);
+      return { error: 'invalid or expired admin_login_code' };
+    }
+    await persistAdminAccessTokens(adminAccessManager.snapshotAccessTokens());
+    return {
+      admin_access_token: access.accessToken,
+      expires_at: access.expiresAt,
+    };
+  };
+  api.post<{ Body: { admin_login_code?: string } }>('/admin/access-token', exchangeAdminAccessTokenHandler);
+
+  // POST /api/admin/access-token/renew — admin access token required.
+  // Rotates the Bearer token before expiry; the old token is revoked.
+  const renewAdminAccessTokenHandler = async (req: FastifyRequest, reply: FastifyReply) => {
+    const auth = req.headers['authorization'];
+    const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token) {
+      reply.code(401);
+      return { error: 'admin access token required' };
+    }
+    const access = adminAccessManager.renewAccessToken(token);
+    if (!access) {
+      await persistAdminAccessTokens(adminAccessManager.snapshotAccessTokens());
+      reply.code(403);
+      return { error: 'admin access token expired' };
+    }
+    await persistAdminAccessTokens(adminAccessManager.snapshotAccessTokens());
+    return {
+      admin_access_token: access.accessToken,
+      expires_at: access.expiresAt,
+    };
+  };
+  api.post('/admin/access-token/renew', renewAdminAccessTokenHandler);
+
+  // POST /api/admin/password — admin auth required.
+  const setAdminPasswordHandler = async (
+    req: FastifyRequest<{ Body: { password?: string } }>,
+    reply: FastifyReply,
+  ) => {
+    const password = req.body?.password ?? '';
+    if (!isValidPassword(password)) {
+      reply.code(400);
+      return { error: 'Password must be >=8 characters and contain both letters and digits.' };
+    }
+    await setPassword(password);
+    return { ok: true, admin_password_set_at: settings.adminPasswordSetAt ?? Date.now() };
+  };
+  api.post<{ Body: { password?: string } }>('/admin/password', setAdminPasswordHandler);
+
+  const clearAdminPasswordHandler = async () => {
+    await clearPassword();
+    return { ok: true };
+  };
+  api.delete('/admin/password', clearAdminPasswordHandler);
 
   // ============ Pairing endpoints ============
 
-  // POST /admin/pair-window — adminToken required (checked by middleware)
-  app.post('/admin/pair-window', async (_req, _reply) => {
+  // POST /api/admin/pair-window — adminToken required (checked by middleware)
+  const openPairWindowHandler = async () => {
     const result = pairingManager.openWindow();
     return result;
-  });
+  };
+  api.post('/admin/pair-window', openPairWindowHandler);
 
-  // POST /pair/start — no auth; PIN is the out-of-band credential
-  app.post<{ Body: { deviceId: string; deviceName: string; pin: string } }>(
+  // POST /api/pair/start — no auth; PIN is the out-of-band credential
+  api.post<{ Body: { deviceId: string; deviceName: string; pin: string } }>(
     '/pair/start',
     async (req, reply) => {
       const { deviceId, deviceName, pin } = req.body ?? {};
@@ -499,8 +749,8 @@ async function main(): Promise<void> {
     },
   );
 
-  // POST /pair/qr-claim — no auth; claim code (from QR) is the credential
-  app.post<{ Body: { deviceId: string; deviceName: string; claim: string } }>(
+  // POST /api/pair/qr-claim — no auth; claim code (from QR) is the credential
+  api.post<{ Body: { deviceId: string; deviceName: string; claim: string } }>(
     '/pair/qr-claim',
     async (req, reply) => {
       const { deviceId, deviceName, claim } = req.body ?? {};
@@ -518,18 +768,22 @@ async function main(): Promise<void> {
     },
   );
 
-  // GET /admin/devices — list paired devices (no deviceToken in response)
-  app.get('/admin/devices', async (): Promise<PairedDevice[]> => {
+  // GET /api/admin/devices — list paired devices (no deviceToken in response)
+  const listAdminDevicesHandler = async (): Promise<PairedDevice[]> => {
     return settings.pairedDevices.map((d) => ({
       deviceId: d.deviceId,
       name: d.name,
       pairedAt: d.pairedAt,
       lastSeen: d.lastSeen,
     }));
-  });
+  };
+  api.get('/admin/devices', listAdminDevicesHandler);
 
-  // DELETE /admin/devices/:id — revoke a device
-  app.delete<{ Params: { id: string } }>('/admin/devices/:id', async (req, reply) => {
+  // DELETE /api/admin/devices/:id — revoke a device
+  const revokeAdminDeviceHandler = async (
+    req: FastifyRequest<{ Params: { id: string } }>,
+    reply: FastifyReply,
+  ) => {
     const { id } = req.params;
     const revoked = await pairingManager.revokeDevice(id);
     if (!revoked) {
@@ -537,23 +791,24 @@ async function main(): Promise<void> {
       return { error: 'device not found' };
     }
     return { revoked: true };
-  });
+  };
+  api.delete<{ Params: { id: string } }>('/admin/devices/:id', revokeAdminDeviceHandler);
 
   // ==========================================
   // ======== Slice 8: Web Admin APIs =========
 
-  // GET /admin/qr — adminToken required.
-  // 生成一次性 QR claim code，5min 过期，扫码端用 POST /pair/qr-claim 兑换 deviceToken。
-  app.get('/admin/qr', async (_req, _reply) => {
-    const lanIp = getLanIp();
+  // GET /api/admin/qr — adminToken required.
+  // 生成一次性 QR claim code，5min 过期，扫码端用 POST /api/pair/qr-claim 兑换 deviceToken。
+  const adminQrHandler = async () => {
     const { code, expiresAt } = pairingManager.createQrClaim();
-    const content = `pawterm://${lanIp}:${settings.port}?claim=${code}`;
+    const content = `pawterm://${advertisedHost()}:${settings.port}?claim=${code}`;
     const svg = await QRCode.toString(content, { type: 'svg' });
     return { content, svg, expiresAt };
-  });
+  };
+  api.get('/admin/qr', adminQrHandler);
 
-  // POST /pair/request — no auth
-  app.post<{ Body: { deviceId: string; deviceName: string } }>(
+  // POST /api/pair/request — no auth
+  api.post<{ Body: { deviceId: string; deviceName: string } }>(
     '/pair/request',
     async (req, reply) => {
       const { deviceId, deviceName } = req.body ?? {};
@@ -570,13 +825,13 @@ async function main(): Promise<void> {
       const requestId = result.request.requestId;
       return {
         requestId,
-        pollUrl: `/pair/poll/${requestId}`,
+        pollUrl: `/api/pair/poll/${requestId}`,
       };
     },
   );
 
-  // GET /pair/poll/:requestId — no auth, long-poll (up to 30s)
-  app.get<{ Params: { requestId: string } }>(
+  // GET /api/pair/poll/:requestId — no auth, long-poll (up to 30s)
+  api.get<{ Params: { requestId: string } }>(
     '/pair/poll/:requestId',
     async (req, reply) => {
       const { requestId } = req.params;
@@ -597,10 +852,11 @@ async function main(): Promise<void> {
     },
   );
 
-  // POST /admin/pair-approve — adminToken required
-  app.post<{ Body: { requestId: string } }>(
-    '/admin/pair-approve',
-    async (req, reply) => {
+  // POST /api/admin/pair-approve — adminToken required
+  const approvePairHandler = async (
+    req: FastifyRequest<{ Body: { requestId: string } }>,
+    reply: FastifyReply,
+  ) => {
       const { requestId } = req.body ?? {};
       if (!requestId) {
         reply.code(400);
@@ -613,13 +869,14 @@ async function main(): Promise<void> {
       }
       const pairReq = pairingManager.getRequest(requestId)!;
       return { ok: true, deviceId: pairReq.deviceId, name: pairReq.deviceName };
-    },
-  );
+  };
+  api.post<{ Body: { requestId: string } }>('/admin/pair-approve', approvePairHandler);
 
-  // POST /admin/pair-deny — adminToken required
-  app.post<{ Body: { requestId: string } }>(
-    '/admin/pair-deny',
-    async (req, reply) => {
+  // POST /api/admin/pair-deny — adminToken required
+  const denyPairHandler = async (
+    req: FastifyRequest<{ Body: { requestId: string } }>,
+    reply: FastifyReply,
+  ) => {
       const { requestId } = req.body ?? {};
       if (!requestId) {
         reply.code(400);
@@ -631,11 +888,11 @@ async function main(): Promise<void> {
         return { error: 'request not found or not pending' };
       }
       return { ok: true };
-    },
-  );
+  };
+  api.post<{ Body: { requestId: string } }>('/admin/pair-deny', denyPairHandler);
 
-  // GET /admin/events — SSE stream; adminToken via Bearer header OR ?token= query
-  app.get('/admin/events', async (req, reply) => {
+  // GET /api/admin/events — SSE stream; admin auth via Bearer header.
+  const adminEventsHandler = async (req: FastifyRequest, reply: FastifyReply) => {
     reply
       .raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -673,10 +930,24 @@ async function main(): Promise<void> {
 
     // Never resolve — Fastify will manage the raw response
     return reply;
+  };
+  api.get('/admin/events', adminEventsHandler);
+
+  }, { prefix: '/api' });
+
+  // WebSocket: shell
+  app.get('/ws/shell', { websocket: true }, (socket, req) => {
+    handleShellSocket(socket, req);
   });
 
-  // GET /admin — serve built web admin SPA; fallback placeholder when not built
-  const webDist = resolve(__dirname, '..', '..', 'web', 'dist');
+  app.get('/', async (_req, reply) => {
+    reply.redirect('/admin');
+  });
+
+  // GET /admin — serve built web admin SPA; fallback placeholder when not built.
+  const packagedWebDist = resolve(__dirname, '..', 'dist-web');
+  const repoWebDist = resolve(__dirname, '..', '..', 'web', 'dist');
+  const webDist = existsSync(packagedWebDist) ? packagedWebDist : repoWebDist;
   const contentType = (p: string): string => {
     if (p.endsWith('.js')) return 'application/javascript; charset=utf-8';
     if (p.endsWith('.css')) return 'text/css; charset=utf-8';
@@ -698,10 +969,9 @@ async function main(): Promise<void> {
     }
   };
 
-  app.get('/admin', async (_req, reply) => {
-    const { existsSync } = await import('node:fs');
-    if (existsSync(resolve(webDist, 'admin.html'))) {
-      await serveStatic('admin.html', reply);
+  const serveIndex = async (reply: import('fastify').FastifyReply) => {
+    if (existsSync(resolve(webDist, 'index.html'))) {
+      await serveStatic('index.html', reply);
       return;
     }
     reply
@@ -709,25 +979,32 @@ async function main(): Promise<void> {
       .send(
         '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PawTerm Web Admin</title></head>' +
         '<body style="font-family:monospace;padding:2rem;background:#111;color:#eee">' +
-        '<h2>🐾 PawTerm Web Admin</h2>' +
-        '<p>Web admin not built yet — run <code>pnpm --filter @cc/web build</code>.</p>' +
+        '<h2>PawTerm Web Admin</h2>' +
+        '<p>Web admin not built yet — run <code>pnpm --filter @pawterm/web build</code>.</p>' +
         '</body></html>',
       );
-  });
-  // Admin SPA assets (Vite emits hashed filenames under /admin/ and /assets/)
-  app.get<{ Params: { '*': string } }>('/admin/*', (req, reply) => serveStatic(join('admin', req.params['*']), reply));
+  };
+
+  app.get('/admin', async (_req, reply) => serveIndex(reply));
+  app.get<{ Params: { '*': string } }>('/admin/*', async (_req, reply) => serveIndex(reply));
+  // Vite emits hashed filenames under /assets/.
   app.get<{ Params: { '*': string } }>('/assets/*', (req, reply) => serveStatic(join('assets', req.params['*']), reply));
 
   // ==========================================
 
   await app.listen({ host: settings.host, port: settings.port });
+  networkAddressService.start();
 
+  const advertisedAddress = networkAddressService.getCurrent();
+  const lanIp = advertisedHost();
   app.log.info(
     [
       '',
       `┌─ PawTerm Server v${VERSION}`,
       `│  node     : ${process.version}`,
       `│  listen   : http://${settings.host}:${settings.port}`,
+      `│  web admin: http://${lanIp}:${settings.port}/admin`,
+      `│  address  : ${formatAddress(advertisedAddress)}`,
       `│  config   : ${configPath}`,
       `│  serverId : ${settings.serverId}`,
       `│  log      : ${settings.logFormat} / ${settings.logLevel}${settings.logFile ? ` → ${settings.logFile}` : ''}`,
@@ -738,24 +1015,15 @@ async function main(): Promise<void> {
     ].join('\n'),
   );
 
-  const lanIp = getLanIp();
-  const qrContent = `pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`;
-  app.log.info(`  pawterm://${lanIp}:${settings.port}?token=${settings.adminToken}`);
-
-
   // Start mDNS advertisement
-  const stopMdns = startMdns({
-    port: settings.port,
-    serverId: settings.serverId,
-    hostname: hostname(),
-    version: VERSION,
-    getPairingState: () => pairingManager.getState(),
-  });
+  stopMdns = startMdns(mdnsOptions());
 
   // Cleanup on shutdown
   const shutdown = async () => {
     console.log('\n[pawterm] shutting down…');
-    stopMdns();
+    unsubscribePairRequestLog();
+    networkAddressService.stop();
+    stopMdns?.();
     try { await app.close(); } catch {}
     console.log('[pawterm] bye');
     process.exit(0);
@@ -772,6 +1040,9 @@ if (subcommand === '--version' || subcommand === '-v') {
   process.exit(0);
 } else if (subcommand === 'password') {
   await runPasswordCommand();
+} else if (subcommand === 'admin') {
+  const { runAdminCli } = await import('./admin-cli.js');
+  await runAdminCli();
 } else if (subcommand === 'pair') {
   const { runPairCli } = await import('./pair-cli.js');
   await runPairCli();
@@ -779,7 +1050,7 @@ if (subcommand === '--version' || subcommand === '-v') {
   const { runServiceCommand } = await import('./service.js');
   runServiceCommand(subcommand, process.argv.slice(3));
 } else {
-  if (isFirstRun) await firstRunSetup();
+  if (isFirstRun && process.stdin.isTTY && process.stdout.isTTY) await firstRunSetup();
   main().catch((err) => {
     console.error(err);
     process.exit(1);

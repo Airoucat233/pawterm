@@ -4,6 +4,9 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:nsd/nsd.dart' as nsd;
+import 'package:permission_handler/permission_handler.dart';
+
+import '../config/build_defaults.dart';
 
 class LanScanResult {
   final String serverId;
@@ -42,13 +45,17 @@ class LanScanner {
   ///
   /// [ports] 仅作用于 subnet sweep：每个 IP × 每个 port 都会探一次 `/health`。
   /// mDNS 路径继续用服务声明里的端口，跟这个参数无关。
-  static Stream<List<LanScanResult>> scan(
-      {Set<int> ports = const {8765}}) async* {
+  static Stream<List<LanScanResult>> scan({
+    Set<int> ports = const {BuildDefaults.defaultServerPort},
+    bool requestNearbyWifiPermission = true,
+  }) async* {
     final results = <String, LanScanResult>{}; // keyed by serverId
 
     void addOrUpdate(LanScanResult r) {
       results[r.serverId] = r;
     }
+
+    await _ensureNearbyWifiPermission(requestNearbyWifiPermission);
 
     final controller = StreamController<List<LanScanResult>>();
 
@@ -62,13 +69,16 @@ class LanScanner {
         );
         discovery.addServiceListener((service, status) async {
           if (status != nsd.ServiceStatus.found) return;
-          final port = service.port ?? 8765;
+          final port = service.port ?? BuildDefaults.defaultServerPort;
           // Prefer IPv4 from the resolved address list; fall back to first.
           final addresses = service.addresses;
           if (addresses == null || addresses.isEmpty) return;
           InternetAddress? picked;
           for (final a in addresses) {
-            if (a.type == InternetAddressType.IPv4) { picked = a; break; }
+            if (a.type == InternetAddressType.IPv4) {
+              picked = a;
+              break;
+            }
           }
           picked ??= addresses.first;
           final host = picked.address;
@@ -148,6 +158,14 @@ class LanScanner {
     return null;
   }
 
+  static Future<void> _ensureNearbyWifiPermission(bool shouldRequest) async {
+    if (!Platform.isAndroid || !shouldRequest) return;
+    final status = await Permission.nearbyWifiDevices.status;
+    if (status.isDenied || status.isRestricted) {
+      await Permission.nearbyWifiDevices.request();
+    }
+  }
+
   static LanScanResult? _toResult(
       String host, int port, Map<String, dynamic> health) {
     final serverId = health['serverId'] as String?;
@@ -190,8 +208,7 @@ class LanScanner {
   }
 
   /// Probe a list of hosts in order, return first that responds.
-  static Future<String?> probeRecentHosts(
-      List<String> hosts, int port) async {
+  static Future<String?> probeRecentHosts(List<String> hosts, int port) async {
     for (final host in hosts) {
       final info = await _probeHealth(host, port);
       if (info != null) return host;

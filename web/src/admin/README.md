@@ -2,45 +2,32 @@
 
 ## Build output
 
-`pnpm --filter @cc/web build` produces:
+`pnpm --filter @pawterm/web build` produces:
 
 ```
 web/dist/
-  index.html          ← chat client (existing)
-  assets/…
-  admin.html          ← admin SPA entry
-  admin/
-    admin-<hash>.js
-    assets/…
+  index.html          ← admin SPA entry
+  assets/
+    index-<hash>.js
+    index-<hash>.css
 ```
 
-## Server wiring (to do in server/src/index.ts)
+## Server wiring
 
-Replace the placeholder `/admin` HTML response with:
+`pawterm-server admin` and the Mac app open Web Admin by first asking the
+server for an `admin_login_code`, then opening:
 
-```ts
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
-const adminHtml = readFileSync(
-  join(__dirname, '../../web/dist/admin.html'),
-  'utf8'
-);
-
-fastify.get('/admin', (req, reply) => {
-  reply.type('text/html').send(adminHtml);
-});
-
-// Serve admin static assets
-fastify.register(import('@fastify/static'), {
-  root: join(__dirname, '../../web/dist/admin'),
-  prefix: '/admin/',
-  decorateReply: false,
-});
+```
+http://localhost:<port>/admin?admin_login_code=<alc-...>
 ```
 
-Then the server's auto-open already points to `http://localhost:<port>/admin?token=<adminToken>` — it will just work.
+The SPA exchanges that one-time code for an `admin_access_token` and uses it
+as `Authorization: Bearer <aat-...>` for admin APIs. The SPA schedules
+`POST /api/admin/access-token/renew` 10 minutes before expiry and replaces the
+stored token when renewal succeeds.
 
 ## Dev proxy
 
-During development (`pnpm --filter @cc/web dev`), Vite proxies `/admin/*`, `/health`, and `/pair/*` to `localhost:8765` — so you can run `pnpm dev:server` + `pnpm --filter @cc/web dev` and open `http://localhost:5173/admin.html?token=<adminToken>` directly.
+During development (`pnpm dev:web` or `pnpm --filter @pawterm/web dev`), the Admin page is served by Vite at `/admin`, and Admin API calls use `/api/admin/*`. Vite proxies `/api/*` to `localhost:8765` without rewriting the path.
+
+From the repo root, `pnpm dev` starts `pnpm dev:server` and `pnpm dev:web`. If port 8765 is already occupied, it lists the listener and asks before killing it.

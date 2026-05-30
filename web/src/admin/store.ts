@@ -16,7 +16,8 @@ export interface PairRequestItem {
 interface AdminState {
   // Auth
   token: string | null;
-  setToken: (t: string) => void;
+  tokenExpiresAt: number | null;
+  setToken: (t: string, expiresAt?: number | null) => void;
   clearToken: () => void;
 
   // Server health
@@ -47,8 +48,9 @@ export const useAdminStore = create<AdminState>()(
   persist(
     (set, get) => ({
       token: null,
-      setToken: (t) => set({ token: t }),
-      clearToken: () => set({ token: null }),
+      tokenExpiresAt: null,
+      setToken: (t, expiresAt = null) => set({ token: t, tokenExpiresAt: expiresAt }),
+      clearToken: () => set({ token: null, tokenExpiresAt: null }),
 
       serverOnline: false,
       serverId: null,
@@ -87,7 +89,7 @@ export const useAdminStore = create<AdminState>()(
     }),
     {
       name: 'pawterm-admin',
-      partialize: (s) => ({ token: s.token }),
+      partialize: (s) => ({ token: s.token, tokenExpiresAt: s.tokenExpiresAt }),
     }
   )
 );

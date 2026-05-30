@@ -177,7 +177,7 @@ class PairingManager {
   // ===== QR claims =====
 
   /**
-   * 生成一个一次性 QR claim code。Web 端从 `/admin/qr` 拿到 QR 时调用。
+   * 生成一个一次性 QR claim code。Web 端从 `/api/admin/qr` 拿到 QR 时调用。
    * code 长 32 hex 字符；5min 过期；一次消耗就删除。
    *
    * 旧设计是 QR 直接塞 adminToken —— 截图泄露 = 服务端永久失守；现在 QR 内只带

@@ -24,23 +24,28 @@ class UploadApi {
   final String httpBase;
   final String? _token;
   UploadApi(this.httpBase, {String? token}) : _token = token;
+  String get _apiBase => httpBase.endsWith('/api') ? httpBase : '$httpBase/api';
 
   Map<String, String> get _auth =>
       _token != null ? {'Authorization': 'Bearer $_token'} : const {};
 
   Future<UploadedFile> upload(File file, String cwd) async {
-    final uri = Uri.parse('$httpBase/upload').replace(queryParameters: {'cwd': cwd});
+    final uri =
+        Uri.parse('$_apiBase/upload').replace(queryParameters: {'cwd': cwd});
     final req = http.MultipartRequest('POST', uri);
     req.headers.addAll(_auth);
     req.files.add(await http.MultipartFile.fromPath('file', file.path));
     final streamed = await req.send();
     final resp = await http.Response.fromStream(streamed);
     if (resp.statusCode >= 200 && resp.statusCode < 300) {
-      return UploadedFile.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      return UploadedFile.fromJson(
+          jsonDecode(resp.body) as Map<String, dynamic>);
     }
     String msg = resp.body;
     try {
-      msg = (jsonDecode(resp.body) as Map<String, dynamic>)['error']?.toString() ?? resp.body;
+      msg = (jsonDecode(resp.body) as Map<String, dynamic>)['error']
+              ?.toString() ??
+          resp.body;
     } catch (_) {}
     throw UploadException(resp.statusCode, msg);
   }

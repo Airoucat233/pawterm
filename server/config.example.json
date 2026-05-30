@@ -1,11 +1,10 @@
 {
   "host": "0.0.0.0",
-  "port": 8765,
-  "permission_mode": "acceptEdits",
+  "port": 18765,
   "projects": [
-    { "name": "pawterm", "path": "~/workspace/pawterm" },
-    { "name": "shulex-gpt", "path": "~/workspace/shulex/shulex-gpt" },
-    { "name": "chatflow", "path": "~/workspace/shulex/chatflow" },
-    { "name": "agent-builder", "path": "~/workspace/shulex/agent-builder" }
-  ]
+    { "name": "pawterm", "path": "~/workspace/pawterm" }
+  ],
+  "log_level": "info",
+  "log_format": "pretty",
+  "log_file": null
 }

@@ -11,12 +11,12 @@ import 'package:uuid/uuid.dart';
 /// [serverId] non-null means the connection was established via PIN/QR pairing.
 /// Manual (unauthenticated) connections have serverId == null.
 class Connection {
-  final String id;               // local UUID, list key
-  final String name;             // user-editable display name
+  final String id; // local UUID, list key
+  final String name; // user-editable display name
   final String emoji;
-  final String url;              // http://host:port — single source of truth for address
-  final String? token;           // device token from pairing (null = no auth)
-  final String? serverId;        // stable server identity; null = manually added
+  final String url; // http://host:port — single source of truth for address
+  final String? token; // device token from pairing (null = no auth)
+  final String? serverId; // stable server identity; null = manually added
   final List<String> recentHosts; // past IPs for cross-network reconnect
   final DateTime? lastConnected;
   final DateTime? lastSeen;
@@ -36,14 +36,14 @@ class Connection {
   bool get isPaired => serverId != null && token != null;
 
   String get httpBase => url;
+  String get apiBase => '${url.replaceFirst(RegExp(r'/$'), '')}/api';
   String get wsBase => url.replaceFirst(RegExp(r'^http'), 'ws');
   String get host => Uri.parse(url).host;
   int get port => Uri.parse(url).port;
 
-  Map<String, String> get authHeaders =>
-      token != null && token!.isNotEmpty
-          ? {'Authorization': 'Bearer $token'}
-          : const {};
+  Map<String, String> get authHeaders => token != null && token!.isNotEmpty
+      ? {'Authorization': 'Bearer $token'}
+      : const {};
 
   Connection copyWith({
     String? name,
@@ -101,7 +101,8 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
     _load();
   }
 
-  static const _key = 'connections_v2';   // new key — clean break from v1 + paired_servers
+  static const _key =
+      'connections_v2'; // new key — clean break from v1 + paired_servers
   static const _deviceIdKey = 'device_id';
   static const _uuid = Uuid();
 
@@ -148,20 +149,20 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
     await _save();
   }
 
-  /// Updates url for a paired connection after LAN rediscovery.
+  /// Updates url for a paired connection after rediscovery or re-pairing.
   /// Pushes old host into recentHosts (capped at 5).
-  Future<void> updateUrl(String id, String newUrl) async {
+  Future<Connection?> updateUrl(String id, String newUrl) async {
+    Connection? updated;
     state = [
       for (final c in state)
         if (c.id == id)
-          c.copyWith(
+          updated = c.copyWith(
             url: newUrl,
             lastSeen: DateTime.now(),
             recentHosts: newUrl != c.url
                 ? [
                     c.host,
-                    ...c.recentHosts
-                        .where((h) => h != Uri.parse(newUrl).host),
+                    ...c.recentHosts.where((h) => h != Uri.parse(newUrl).host),
                   ].take(5).toList()
                 : c.recentHosts,
           )
@@ -169,6 +170,7 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
           c,
     ];
     await _save();
+    return updated;
   }
 
   // ─── Static helpers (formerly on PairedServersNotifier) ───────────────────
@@ -191,7 +193,8 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
         final brand = d.brand.isNotEmpty ? d.brand : '';
         final model = d.model.isNotEmpty ? d.model : 'Android';
         // Avoid redundant prefix like "samsung Samsung Galaxy S24"
-        if (brand.isNotEmpty && !model.toLowerCase().startsWith(brand.toLowerCase())) {
+        if (brand.isNotEmpty &&
+            !model.toLowerCase().startsWith(brand.toLowerCase())) {
           return '${_capitalize(brand)} $model';
         }
         return model;

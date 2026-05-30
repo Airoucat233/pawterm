@@ -8,7 +8,8 @@ class GithubAsset {
   final String name;
   final String downloadUrl;
   final int size;
-  const GithubAsset({required this.name, required this.downloadUrl, required this.size});
+  const GithubAsset(
+      {required this.name, required this.downloadUrl, required this.size});
 
   factory GithubAsset.fromJson(Map<String, dynamic> j) => GithubAsset(
         name: j['name'] as String,
@@ -21,7 +22,8 @@ class GithubRelease {
   final String tagName;
   final String body;
   final List<GithubAsset> assets;
-  const GithubRelease({required this.tagName, required this.body, required this.assets});
+  const GithubRelease(
+      {required this.tagName, required this.body, required this.assets});
 
   factory GithubRelease.fromJson(Map<String, dynamic> j) => GithubRelease(
         tagName: j['tag_name'] as String,
@@ -31,38 +33,36 @@ class GithubRelease {
             .toList(),
       );
 
-  String get version => tagName.startsWith('v') ? tagName.substring(1) : tagName;
+  String get version => versionFromTag(tagName);
 }
 
-Future<GithubRelease?> fetchLatestRelease({bool devChannel = false}) async {
-  if (devChannel) return _fetchDevRelease();
+Future<GithubRelease?> fetchLatestRelease(
+    {bool prereleaseChannel = false}) async {
+  if (prereleaseChannel) return _fetchPrereleaseRelease();
   try {
-    final resp = await http
-        .get(
-          Uri.parse('https://api.github.com/repos/$_repo/releases/latest'),
-          headers: {'Accept': 'application/vnd.github+json'},
-        )
-        .timeout(const Duration(seconds: 10));
+    final resp = await http.get(
+      Uri.parse('https://api.github.com/repos/$_repo/releases/latest'),
+      headers: {'Accept': 'application/vnd.github+json'},
+    ).timeout(const Duration(seconds: 10));
     if (resp.statusCode == 200) {
-      return GithubRelease.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      return GithubRelease.fromJson(
+          jsonDecode(resp.body) as Map<String, dynamic>);
     }
   } catch (_) {}
   return null;
 }
 
-Future<GithubRelease?> _fetchDevRelease() async {
+Future<GithubRelease?> _fetchPrereleaseRelease() async {
   try {
-    final resp = await http
-        .get(
-          Uri.parse('https://api.github.com/repos/$_repo/releases'),
-          headers: {'Accept': 'application/vnd.github+json'},
-        )
-        .timeout(const Duration(seconds: 10));
+    final resp = await http.get(
+      Uri.parse('https://api.github.com/repos/$_repo/releases'),
+      headers: {'Accept': 'application/vnd.github+json'},
+    ).timeout(const Duration(seconds: 10));
     if (resp.statusCode == 200) {
       final list = jsonDecode(resp.body) as List;
       for (final item in list) {
         final r = GithubRelease.fromJson(item as Map<String, dynamic>);
-        if (r.tagName == 'dev') return r;
+        if (r.tagName.startsWith('prerelease-v')) return r;
       }
     }
   } catch (_) {}
@@ -70,7 +70,7 @@ Future<GithubRelease?> _fetchDevRelease() async {
 }
 
 bool isNewerVersion(String latestTag, String currentVersion) {
-  final latest = latestTag.startsWith('v') ? latestTag.substring(1) : latestTag;
+  final latest = versionFromTag(latestTag);
   final current = currentVersion.split('+').first;
   final l = latest.split('.').map((s) => int.tryParse(s) ?? 0).toList();
   final c = current.split('.').map((s) => int.tryParse(s) ?? 0).toList();
@@ -83,6 +83,13 @@ bool isNewerVersion(String latestTag, String currentVersion) {
   return false;
 }
 
+String versionFromTag(String tagName) {
+  for (final prefix in ['release-v', 'prerelease-v', 'v']) {
+    if (tagName.startsWith(prefix)) return tagName.substring(prefix.length);
+  }
+  return tagName;
+}
+
 GithubAsset? findApkAsset(GithubRelease release) {
   final arm64 = release.assets
       .where((a) => a.name.endsWith('.apk') && a.name.contains('arm64'))
@@ -91,4 +98,3 @@ GithubAsset? findApkAsset(GithubRelease release) {
   final any = release.assets.where((a) => a.name.endsWith('.apk')).toList();
   return any.isEmpty ? null : any.first;
 }
-

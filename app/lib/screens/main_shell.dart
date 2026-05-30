@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../api/agents_api.dart';
 import '../api/sessions_api.dart';
 import '../i18n/locale_provider.dart';
+import '../state/agents_store.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
@@ -47,6 +49,7 @@ class _MainShellState extends ConsumerState<MainShell> {
             _TopBar(
               conn: conn,
               session: session,
+              tabIndex: _index,
               onSessionTap: () => _showSessionSwitcher(context),
             ),
             Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
@@ -157,10 +160,12 @@ class _LazyTabSwitcherState extends State<_LazyTabSwitcher> {
 class _TopBar extends StatelessWidget {
   final Connection? conn;
   final CurrentSession? session;
+  final int tabIndex;
   final VoidCallback onSessionTap;
   const _TopBar({
     required this.conn,
     required this.session,
+    required this.tabIndex,
     required this.onSessionTap,
   });
 
@@ -168,7 +173,9 @@ class _TopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final connEmoji = conn?.emoji ?? '🖥️';
-
+    final isChat = tabIndex == 0 && session != null;
+    final title = session?.label ?? '选择工作目录';
+    final chatPrefix = isChat ? _agentLabel(session!.agent) : null;
     return SizedBox(
       height: 52,
       child: Padding(
@@ -184,7 +191,8 @@ class _TopBar extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.arrow_back_ios_new, size: 14, color: t.textMuted),
+                    Icon(Icons.arrow_back_ios_new,
+                        size: 14, color: t.textMuted),
                     const SizedBox(width: 3),
                     Text(connEmoji, style: const TextStyle(fontSize: 16)),
                   ],
@@ -192,42 +200,80 @@ class _TopBar extends StatelessWidget {
               ),
             ),
 
-            // Center: context pill (project + session)
+            // Center: fixed runtime prefix + scrollable session title.
             Expanded(
-              child: GestureDetector(
-                onTap: onSessionTap,
-                child: Container(
-                  height: 34,
-                  margin: const EdgeInsets.symmetric(horizontal: 4),
-                  decoration: BoxDecoration(
-                    color: t.surfaceHi,
-                    border: Border.all(color: t.border),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.folder_outlined, size: 13, color: t.textMuted),
-                      const SizedBox(width: 5),
-                      Flexible(
+              child: Container(
+                height: 34,
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  color: t.surfaceHi,
+                  border: Border.all(color: t.border),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Row(
+                  children: [
+                    Icon(
+                      isChat ? Icons.smart_toy_outlined : Icons.folder_outlined,
+                      size: 13,
+                      color: t.textMuted,
+                    ),
+                    const SizedBox(width: 5),
+                    if (chatPrefix != null) ...[
+                      Text(
+                        chatPrefix,
+                        maxLines: 1,
+                        softWrap: false,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: t.text,
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
                         child: Text(
-                          session?.label ?? '选择工作目录',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                          '·',
                           style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            color: t.textDim,
+                          ),
+                        ),
+                      ),
+                    ],
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          softWrap: false,
+                          style: TextStyle(
+                            fontSize: isChat ? 13.5 : 13,
+                            fontWeight:
+                                isChat ? FontWeight.w500 : FontWeight.w600,
                             color: session != null ? t.text : t.textDim,
                           ),
                         ),
                       ),
+                    ),
+                    if (!isChat) ...[
                       const SizedBox(width: 4),
                       Icon(Icons.expand_more, size: 15, color: t.textMuted),
                     ],
-                  ),
+                  ],
                 ),
               ),
+            ),
+
+            IconButton(
+              icon: Icon(Icons.more_horiz, size: 20, color: t.textMuted),
+              onPressed: onSessionTap,
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              tooltip: '切换会话',
             ),
 
             // Right: settings button
@@ -245,6 +291,13 @@ class _TopBar extends StatelessWidget {
     );
   }
 
+  String _agentLabel(AgentKind agent) {
+    return switch (agent) {
+      AgentKind.claude => 'Claude',
+      AgentKind.codex => 'Codex',
+      AgentKind.gemini => 'Gemini',
+    };
+  }
 }
 
 // ── Session switcher sheet ────────────────────────────────────
@@ -260,7 +313,8 @@ class _SessionSwitcherSheet extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<_SessionSwitcherSheet> createState() => _SessionSwitcherSheetState();
+  ConsumerState<_SessionSwitcherSheet> createState() =>
+      _SessionSwitcherSheetState();
 }
 
 class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
@@ -293,7 +347,8 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
     final projectsAsync = ref.watch(projectsProvider);
 
     return Container(
-      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.8),
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.8),
       decoration: BoxDecoration(
         color: t.surface,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
@@ -307,8 +362,10 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
             padding: const EdgeInsets.only(top: 12, bottom: 6),
             child: Center(
               child: Container(
-                width: 36, height: 4,
-                decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2)),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: t.border, borderRadius: BorderRadius.circular(2)),
               ),
             ),
           ),
@@ -318,17 +375,21 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
               children: [
                 Text(
                   '切换工作目录',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: t.text),
+                  style: TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700, color: t.text),
                 ),
                 const Spacer(),
                 IconButton(
                   icon: Icon(Icons.refresh, size: 18, color: t.textMuted),
                   onPressed: () {
                     ref.invalidate(projectsProvider);
-                    for (final p in _expanded) { ref.invalidate(sessionsProvider(p)); }
+                    for (final p in _expanded) {
+                      ref.invalidate(sessionsProvider(p));
+                    }
                   },
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  constraints:
+                      const BoxConstraints(minWidth: 32, minHeight: 32),
                 ),
               ],
             ),
@@ -344,12 +405,14 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
               ),
               error: (e, _) => Padding(
                 padding: const EdgeInsets.all(20),
-                child: Text('载入失败：$e', style: TextStyle(color: t.error, fontSize: 13)),
+                child: Text('载入失败：$e',
+                    style: TextStyle(color: t.error, fontSize: 13)),
               ),
               data: (projects) => projects.isEmpty
                   ? Padding(
                       padding: const EdgeInsets.all(24),
-                      child: Text('没有可用项目', style: TextStyle(color: t.textDim, fontSize: 14)),
+                      child: Text('没有可用项目',
+                          style: TextStyle(color: t.textDim, fontSize: 14)),
                     )
                   : ListView(
                       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -370,17 +433,34 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                               widget.onExpandedChanged(_expanded);
                             }),
                             onNewSession: () {
-                              ref.read(selectedProjectProvider.notifier).state = p;
+                              final agent = ref
+                                  .read(projectDefaultAgentProvider.notifier)
+                                  .forProject(p.path);
+                              ref.read(selectedProjectProvider.notifier).state =
+                                  p;
                               ref.read(currentSessionProvider.notifier).state =
-                                  CurrentSession(cwd: p.path, label: p.name);
+                                  CurrentSession(
+                                cwd: p.path,
+                                label: p.name,
+                                agent: agent,
+                                runtime: ref
+                                    .read(projectAgentRuntimeProvider.notifier)
+                                    .runtimeFor(p.path, agent),
+                              );
                               widget.onPop();
                             },
                             onPickSession: (s) {
-                              ref.read(selectedProjectProvider.notifier).state = p;
-                              ref.read(currentSessionProvider.notifier).state = CurrentSession(
+                              ref.read(selectedProjectProvider.notifier).state =
+                                  p;
+                              ref.read(currentSessionProvider.notifier).state =
+                                  CurrentSession(
                                 cwd: p.path,
                                 resumeId: s.sessionId,
                                 label: '${p.name} · ${s.displayTitle}',
+                                agent: s.agent,
+                                runtime: ref
+                                    .read(projectAgentRuntimeProvider.notifier)
+                                    .runtimeFor(p.path, s.agent),
                               );
                               widget.onPop();
                             },
@@ -400,12 +480,14 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                 Navigator.of(context).pop();
               },
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                 child: Row(
                   children: [
                     Icon(Icons.swap_horiz, size: 16, color: t.textMuted),
                     const SizedBox(width: 12),
-                    Text('切换连接', style: TextStyle(fontSize: 14, color: t.textMuted)),
+                    Text('切换连接',
+                        style: TextStyle(fontSize: 14, color: t.textMuted)),
                   ],
                 ),
               ),
@@ -469,13 +551,18 @@ class _SheetProjectNode extends ConsumerWidget {
                         project.name,
                         style: TextStyle(
                           fontSize: 14,
-                          fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w500,
+                          fontWeight:
+                              isCurrent ? FontWeight.w600 : FontWeight.w500,
                           color: isCurrent ? t.accent : t.text,
                         ),
                       ),
                       Text(
-                        project.path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~'),
-                        style: TextStyle(fontSize: 10, color: t.textDim, fontFamily: 'monospace'),
+                        project.path
+                            .replaceFirst(RegExp(r'^/Users/[^/]+'), '~'),
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: t.textDim,
+                            fontFamily: 'monospace'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -511,11 +598,13 @@ class _SheetProjectNode extends ConsumerWidget {
                       loading: () => const Padding(
                         padding: EdgeInsets.all(8),
                         child: SizedBox(
-                          width: 14, height: 14,
+                          width: 14,
+                          height: 14,
                           child: CircularProgressIndicator(strokeWidth: 1.5),
                         ),
                       ),
-                      error: (e, _) => Text('$e', style: TextStyle(fontSize: 10, color: t.error)),
+                      error: (e, _) => Text('$e',
+                          style: TextStyle(fontSize: 10, color: t.error)),
                       data: (sessions) => Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -523,7 +612,8 @@ class _SheetProjectNode extends ConsumerWidget {
                             Padding(
                               padding: const EdgeInsets.all(8),
                               child: Text('暂无历史 session',
-                                  style: TextStyle(fontSize: 11, color: t.textDim)),
+                                  style: TextStyle(
+                                      fontSize: 11, color: t.textDim)),
                             ),
                           for (final s in sessions)
                             _SheetSessionTile(
@@ -550,7 +640,11 @@ class _SheetSessionTile extends StatelessWidget {
   final bool isCurrent;
   final VoidCallback onTap;
   final String myDeviceId;
-  const _SheetSessionTile({required this.session, required this.isCurrent, required this.onTap, required this.myDeviceId});
+  const _SheetSessionTile(
+      {required this.session,
+      required this.isCurrent,
+      required this.onTap,
+      required this.myDeviceId});
 
   @override
   Widget build(BuildContext context) {
@@ -558,7 +652,8 @@ class _SheetSessionTile extends StatelessWidget {
     final ts = session.lastModified;
     final timeText = ts == null
         ? ''
-        : DateFormat('MM-dd HH:mm').format(DateTime.fromMillisecondsSinceEpoch(ts));
+        : DateFormat('MM-dd HH:mm')
+            .format(DateTime.fromMillisecondsSinceEpoch(ts));
 
     return InkWell(
       onTap: onTap,
@@ -573,7 +668,8 @@ class _SheetSessionTile extends StatelessWidget {
         child: Row(
           children: [
             Container(
-              width: 3, height: 28,
+              width: 3,
+              height: 28,
               margin: const EdgeInsets.only(right: 10),
               decoration: BoxDecoration(
                 color: isCurrent ? t.accent : t.border,
@@ -588,9 +684,11 @@ class _SheetSessionTile extends StatelessWidget {
                     children: [
                       if (isCurrent)
                         Container(
-                          width: 5, height: 5,
+                          width: 5,
+                          height: 5,
                           margin: const EdgeInsets.only(right: 6),
-                          decoration: BoxDecoration(color: t.accent, shape: BoxShape.circle),
+                          decoration: BoxDecoration(
+                              color: t.accent, shape: BoxShape.circle),
                         ),
                       Flexible(
                         child: Text(
@@ -599,8 +697,13 @@ class _SheetSessionTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 13,
-                            fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w400,
-                            color: isCurrent ? t.accent : (session.holderDeviceId != null ? t.textMuted : t.text),
+                            fontWeight:
+                                isCurrent ? FontWeight.w600 : FontWeight.w400,
+                            color: isCurrent
+                                ? t.accent
+                                : (session.holderDeviceId != null
+                                    ? t.textMuted
+                                    : t.text),
                           ),
                         ),
                       ),
@@ -608,24 +711,34 @@ class _SheetSessionTile extends StatelessWidget {
                         const SizedBox(width: 6),
                         if (session.holderDeviceId == myDeviceId) ...[
                           Container(
-                            width: 6, height: 6,
-                            decoration: BoxDecoration(color: t.success, shape: BoxShape.circle),
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                                color: t.success, shape: BoxShape.circle),
                           ),
                           const SizedBox(width: 3),
-                          Text('进行中', style: TextStyle(fontSize: 10, color: t.success)),
+                          Text('进行中',
+                              style: TextStyle(fontSize: 10, color: t.success)),
                         ] else ...[
                           Container(
-                            width: 6, height: 6,
-                            decoration: BoxDecoration(color: t.warning, shape: BoxShape.circle),
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                                color: t.warning, shape: BoxShape.circle),
                           ),
                           const SizedBox(width: 3),
-                          Text('占用中', style: TextStyle(fontSize: 10, color: t.warning)),
+                          Text('占用中',
+                              style: TextStyle(fontSize: 10, color: t.warning)),
                         ],
                       ],
                     ],
                   ),
                   if (timeText.isNotEmpty)
-                    Text(timeText, style: TextStyle(fontSize: 10, color: t.textDim, fontFamily: 'monospace')),
+                    Text(timeText,
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: t.textDim,
+                            fontFamily: 'monospace')),
                 ],
               ),
             ),
@@ -641,7 +754,11 @@ class _SheetChip extends StatelessWidget {
   final String label;
   final bool primary;
   final VoidCallback onTap;
-  const _SheetChip({required this.icon, required this.label, required this.primary, required this.onTap});
+  const _SheetChip(
+      {required this.icon,
+      required this.label,
+      required this.primary,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -682,7 +799,8 @@ class _BottomNav extends StatelessWidget {
   final List<_TabSpec> tabs;
   final int index;
   final ValueChanged<int> onChanged;
-  const _BottomNav({required this.tabs, required this.index, required this.onChanged});
+  const _BottomNav(
+      {required this.tabs, required this.index, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -721,7 +839,10 @@ class _NavItem extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
   const _NavItem(
-      {required this.label, required this.icon, required this.selected, required this.onTap});
+      {required this.label,
+      required this.icon,
+      required this.selected,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) {

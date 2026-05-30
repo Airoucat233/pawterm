@@ -1,11 +1,12 @@
 #!/usr/bin/env zsh
 # Bump server version, commit, push, push release tag, then npm publish.
 #
-# --dev:  prerelease publish from any branch (tag: dev/server-v*, npm tag: dev)
+# --prerelease: prerelease publish from any branch (tag: prerelease-server-v*, npm tag: prerelease)
+# --dev: deprecated alias for --prerelease
 #
 # Usage:
-#   ./scripts/publish.sh        # publish to npm latest (main branch)
-#   ./scripts/publish.sh --dev  # publish to npm dev tag (any branch)
+#   ./scripts/publish.sh               # publish to npm latest (main branch)
+#   ./scripts/publish.sh --prerelease  # publish to npm prerelease tag (any branch)
 
 set -euo pipefail
 
@@ -14,19 +15,25 @@ SERVER_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$SERVER_DIR")"
 PKG="$SERVER_DIR/package.json"
 
-DEV=0
+PRERELEASE=0
+USED_DEV_ALIAS=0
 for arg in "$@"; do
   case "$arg" in
-    --dev) DEV=1 ;;
+    --prerelease|--pre) PRERELEASE=1 ;;
+    --dev) PRERELEASE=1; USED_DEV_ALIAS=1 ;;
   esac
 done
+
+if [[ $USED_DEV_ALIAS -eq 1 ]]; then
+  echo "warning: --dev is deprecated for server publish; use --prerelease."
+fi
 
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-if [[ $DEV -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
+if [[ $PRERELEASE -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
   echo "✗ release must be run from main (current: $CURRENT_BRANCH)" >&2
-  echo "  use --dev to publish from a non-main branch" >&2
+  echo "  use --prerelease to publish from a non-main branch" >&2
   exit 1
 fi
 
@@ -34,34 +41,44 @@ fi
 
 CURRENT=$(/usr/bin/python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$PKG")
 SEMVER="${CURRENT%%+*}"
-IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
+BASE_SEMVER="${SEMVER%%-*}"
+IFS='.' read -r MAJOR MINOR PATCH <<<"$BASE_SEMVER"
 
 echo
 printf "  current: \033[36m%s\033[0m\n" "$CURRENT"
-[[ $DEV -eq 1 ]] && echo "  mode   : dev (tag: dev-server-v*, npm tag: dev)"
+[[ $PRERELEASE -eq 1 ]] && echo "  mode   : prerelease (tag: prerelease-server-v*, npm tag: prerelease)"
 echo
 
 # -------- 2. Bump --------
 
-# For dev: extract existing pre-release counter from version like 0.6.3-dev.2
-DEV_BASE="${CURRENT%%-dev.*}"   # strip -dev.N suffix if present
-DEV_N=0
-if [[ "$CURRENT" =~ -dev\.([0-9]+)$ ]]; then
-  DEV_N="${BASH_REMATCH[1]}"
-  MAJOR_D="${DEV_BASE%%.*}"; REST="${DEV_BASE#*.}"; MINOR_D="${REST%%.*}"; PATCH_D="${REST#*.}"
-else
-  MAJOR_D="$MAJOR"; MINOR_D="$MINOR"; PATCH_D="$PATCH"
+# For prerelease: extract existing pre-release counter from versions like
+# 0.6.3-prerelease.2. Also migrate old 0.6.3-dev.2 versions to
+# 0.6.3-prerelease.1 rather than continuing the old naming.
+PRE_BASE="$CURRENT"
+PRE_N=0
+if [[ "$CURRENT" =~ -prerelease\.([0-9]+)$ ]]; then
+  PRE_BASE="${CURRENT%%-prerelease.*}"
+  PRE_N="${match[1]}"
+elif [[ "$CURRENT" =~ -dev\.([0-9]+)$ ]]; then
+  PRE_BASE="${CURRENT%%-dev.*}"
+  PRE_N=0
 fi
 
-if [[ $DEV -eq 1 ]]; then
-  # If already a dev version, offer "same" as first/default option (resume interrupted run)
-  if [[ $DEV_N -gt 0 ]]; then
+if [[ "$PRE_BASE" == *.*.* ]]; then
+  MAJOR_P="${PRE_BASE%%.*}"; REST="${PRE_BASE#*.}"; MINOR_P="${REST%%.*}"; PATCH_P="${REST#*.}"
+else
+  MAJOR_P="$MAJOR"; MINOR_P="$MINOR"; PATCH_P="$PATCH"
+fi
+
+if [[ $PRERELEASE -eq 1 ]]; then
+  # If already a prerelease version, offer "same" as first/default option.
+  if [[ $PRE_N -gt 0 ]]; then
     cat <<MENU
   Choose bump:
     1)  same     $CURRENT  (resume / re-run)
-    2)  dev      ${DEV_BASE}-dev.$((DEV_N+1))  (new dev version)
-    3)  patch    $MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1
-    4)  minor    $MAJOR_D.$((MINOR_D+1)).0-dev.1
+    2)  prerelease ${PRE_BASE}-prerelease.$((PRE_N+1))
+    3)  patch    $MAJOR_P.$MINOR_P.$((PATCH_P+1))-prerelease.1
+    4)  minor    $MAJOR_P.$((MINOR_P+1)).0-prerelease.1
     q)  quit
 MENU
     printf "  → [1-4/q, default=1]: "
@@ -69,35 +86,56 @@ MENU
     CHOICE="${CHOICE:-1}"
     case "$CHOICE" in
       1|same)  NEW="$CURRENT" ;;
-      2|dev)   NEW="${DEV_BASE}-dev.$((DEV_N+1))" ;;
-      3|patch) NEW="$MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1" ;;
-      4|minor) NEW="$MAJOR_D.$((MINOR_D+1)).0-dev.1" ;;
+      2|prerelease|pre) NEW="${PRE_BASE}-prerelease.$((PRE_N+1))" ;;
+      3|patch) NEW="$MAJOR_P.$MINOR_P.$((PATCH_P+1))-prerelease.1" ;;
+      4|minor) NEW="$MAJOR_P.$((MINOR_P+1)).0-prerelease.1" ;;
       q|quit)  echo "  aborted."; exit 0 ;;
       *)       echo "  invalid choice" >&2; exit 1 ;;
     esac
   else
     cat <<MENU
   Choose bump:
-    1)  dev      ${DEV_BASE}-dev.1
-    2)  patch    $MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1
-    3)  minor    $MAJOR_D.$((MINOR_D+1)).0-dev.1
-    4)  major    $((MAJOR_D+1)).0.0-dev.1
+    1)  prerelease ${PRE_BASE}-prerelease.1
+    2)  patch    $MAJOR_P.$MINOR_P.$((PATCH_P+1))-prerelease.1
+    3)  minor    $MAJOR_P.$((MINOR_P+1)).0-prerelease.1
+    4)  major    $((MAJOR_P+1)).0.0-prerelease.1
     q)  quit
 MENU
     printf "  → [1-4/q, default=1]: "
     read -r CHOICE
     CHOICE="${CHOICE:-1}"
     case "$CHOICE" in
-      1|dev)   NEW="${DEV_BASE}-dev.1" ;;
-      2|patch) NEW="$MAJOR_D.$MINOR_D.$((PATCH_D+1))-dev.1" ;;
-      3|minor) NEW="$MAJOR_D.$((MINOR_D+1)).0-dev.1" ;;
-      4|major) NEW="$((MAJOR_D+1)).0.0-dev.1" ;;
+      1|prerelease|pre) NEW="${PRE_BASE}-prerelease.1" ;;
+      2|patch) NEW="$MAJOR_P.$MINOR_P.$((PATCH_P+1))-prerelease.1" ;;
+      3|minor) NEW="$MAJOR_P.$((MINOR_P+1)).0-prerelease.1" ;;
+      4|major) NEW="$((MAJOR_P+1)).0.0-prerelease.1" ;;
       q|quit)  echo "  aborted."; exit 0 ;;
       *)       echo "  invalid choice" >&2; exit 1 ;;
     esac
   fi
 else
-  cat <<MENU
+  if [[ "$CURRENT" != "$BASE_SEMVER" ]]; then
+    cat <<MENU
+  Choose bump:
+    1)  stable   $BASE_SEMVER  (promote from $CURRENT)
+    2)  patch    $MAJOR.$MINOR.$((PATCH+1))
+    3)  minor    $MAJOR.$((MINOR+1)).0
+    4)  major    $((MAJOR+1)).0.0
+    q)  quit
+MENU
+    printf "  → [1-4/q, default=1]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-1}"
+    case "$CHOICE" in
+      1|stable|release) NEW="$BASE_SEMVER" ;;
+      2|patch)          NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
+      3|minor)          NEW="$MAJOR.$((MINOR+1)).0" ;;
+      4|major)          NEW="$((MAJOR+1)).0.0" ;;
+      q|quit)           echo "  aborted."; exit 0 ;;
+      *)                echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  else
+    cat <<MENU
   Choose bump:
     1)  same     $CURRENT  (re-publish)
     2)  patch    $MAJOR.$MINOR.$((PATCH+1))
@@ -105,21 +143,22 @@ else
     4)  major    $((MAJOR+1)).0.0
     q)  quit
 MENU
-  printf "  → [1-4/q, default=2]: "
-  read -r CHOICE
-  CHOICE="${CHOICE:-2}"
-  case "$CHOICE" in
-    1|same)  NEW="$CURRENT" ;;
-    2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
-    3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
-    4|major) NEW="$((MAJOR+1)).0.0" ;;
-    q|quit)  echo "  aborted."; exit 0 ;;
-    *)       echo "  invalid choice" >&2; exit 1 ;;
-  esac
+    printf "  → [1-4/q, default=2]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-2}"
+    case "$CHOICE" in
+      1|same)  NEW="$CURRENT" ;;
+      2|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))" ;;
+      3|minor) NEW="$MAJOR.$((MINOR+1)).0" ;;
+      4|major) NEW="$((MAJOR+1)).0.0" ;;
+      q|quit)  echo "  aborted."; exit 0 ;;
+      *)       echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  fi
 fi
 
-if [[ $DEV -eq 1 ]]; then
-  TAG="dev-server-v$NEW"
+if [[ $PRERELEASE -eq 1 ]]; then
+  TAG="prerelease-server-v$NEW"
 else
   TAG="release-server-v$NEW"
 fi
@@ -136,8 +175,8 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && TAG_EXISTS=1
 
 # -------- 4. Confirm --------
 
-if [[ $DEV -eq 1 ]]; then
-  printf "  → bump, commit, push, tag, npm publish --tag dev? [y/N]: "
+if [[ $PRERELEASE -eq 1 ]]; then
+  printf "  → bump, commit, push, tag, npm publish --tag prerelease? [y/N]: "
 else
   printf "  → bump, commit, push, tag, npm publish? [y/N]: "
 fi
@@ -172,7 +211,7 @@ REMOTE_SHA=$(git -C "$REPO_ROOT" rev-parse "@{u}" 2>/dev/null || echo "")
 if [[ "$LOCAL_SHA" == "$REMOTE_SHA" ]]; then
   echo "  (push already done — skipping)"
 else
-  if [[ $DEV -eq 1 ]]; then
+  if [[ $PRERELEASE -eq 1 ]]; then
     git -C "$REPO_ROOT" push origin "$CURRENT_BRANCH"
   else
     git -C "$REPO_ROOT" push origin main
@@ -198,16 +237,28 @@ if [[ "$NPM_PUBLISHED" == "$NEW" ]]; then
   echo "  (npm pawterm-server@$NEW already published — skipping)"
 else
   echo
-  echo "▶ pnpm build"
+  echo "▶ pnpm --filter @pawterm/web run build"
+  cd "$REPO_ROOT"
+  pnpm --filter @pawterm/web run build
+
+  echo
+  echo "▶ pnpm --filter pawterm-server run build"
   cd "$SERVER_DIR"
   pnpm build
 
   echo
-  if [[ $DEV -eq 1 ]]; then
-    echo "▶ npm publish --tag dev --registry https://registry.npmjs.org"
-    npm publish --tag dev --registry https://registry.npmjs.org
+  echo "▶ pnpm --filter pawterm-server run smoke:packaged"
+  cd "$REPO_ROOT"
+  pnpm --filter pawterm-server run smoke:packaged
+
+  echo
+  if [[ $PRERELEASE -eq 1 ]]; then
+    echo "▶ npm publish --tag prerelease --registry https://registry.npmjs.org"
+    cd "$SERVER_DIR"
+    npm publish --tag prerelease --registry https://registry.npmjs.org
   else
     echo "▶ npm publish --registry https://registry.npmjs.org"
+    cd "$SERVER_DIR"
     npm publish --registry https://registry.npmjs.org
   fi
 fi

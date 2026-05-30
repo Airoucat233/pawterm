@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
+import '../config/build_defaults.dart';
 import '../i18n/locale_provider.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
@@ -45,12 +46,18 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     if (e != null) {
       // Reconstruct IP and port from the stored URL
       final uri = Uri.tryParse(e.url);
-      _ipCtrl = TextEditingController(text: uri?.host ?? e.url.replaceFirst(RegExp(r'^https?://'), '').split(':').first);
-      _portCtrl = TextEditingController(text: uri?.port != null && uri!.port != 0 ? '${uri.port}' : '8765');
+      _ipCtrl = TextEditingController(
+          text: uri?.host ??
+              e.url.replaceFirst(RegExp(r'^https?://'), '').split(':').first);
+      _portCtrl = TextEditingController(
+          text: uri?.port != null && uri!.port != 0
+              ? '${uri.port}'
+              : '${BuildDefaults.defaultServerPort}');
       _phase = _SheetState.detected;
     } else {
       _ipCtrl = TextEditingController();
-      _portCtrl = TextEditingController(text: '8765');
+      _portCtrl =
+          TextEditingController(text: '${BuildDefaults.defaultServerPort}');
     }
     _nameCtrl = TextEditingController(text: e?.name ?? '');
     _emoji = e?.emoji ?? '🖥️';
@@ -66,7 +73,8 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
 
   String get _normalizedUrl {
     var ip = _ipCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim()) ?? 8765;
+    final port =
+        int.tryParse(_portCtrl.text.trim()) ?? BuildDefaults.defaultServerPort;
     if (ip.isEmpty) return '';
     if (!kIsWeb && Platform.isAndroid) {
       ip = ip.replaceFirst(RegExp(r'^localhost$'), '10.0.2.2');
@@ -139,7 +147,8 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
 
   Future<void> _openPairSheet() async {
     final host = _ipCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim()) ?? 8765;
+    final port =
+        int.tryParse(_portCtrl.text.trim()) ?? BuildDefaults.defaultServerPort;
     final scanResult = LanScanResult(
       serverId: '',
       name: _detectedName ?? host,
@@ -172,14 +181,13 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   Future<void> _saveAndClose() async {
     final paired = _pairedConn;
     if (paired == null) return;
-    final name = _nameCtrl.text.trim().isNotEmpty
-        ? _nameCtrl.text.trim()
-        : paired.name;
+    final name =
+        _nameCtrl.text.trim().isNotEmpty ? _nameCtrl.text.trim() : paired.name;
     // Only update if name/emoji changed from what PairSheet saved
     if (name != paired.name || _emoji != paired.emoji) {
       await ref.read(connectionsProvider.notifier).update(
-        paired.copyWith(name: name, emoji: _emoji),
-      );
+            paired.copyWith(name: name, emoji: _emoji),
+          );
     }
     if (mounted) Navigator.of(context).pop();
   }
@@ -190,29 +198,32 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     );
     if (result == null || !mounted) return;
 
-    setState(() { _phase = _SheetState.detecting; _errorMsg = null; });
+    setState(() {
+      _phase = _SheetState.detecting;
+      _errorMsg = null;
+    });
     try {
       final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
       final deviceName = await ConnectionsNotifier.getDeviceName();
-      final claimResp = await http.post(
-        Uri.parse('${result.url}/pair/qr-claim'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'deviceId': deviceId,
-          'deviceName': deviceName,
-          'claim': result.claim,
-        }),
-      ).timeout(const Duration(seconds: 10));
+      final claimResp = await http
+          .post(
+            Uri.parse('${result.url}/api/pair/qr-claim'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'deviceId': deviceId,
+              'deviceName': deviceName,
+              'claim': result.claim,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
       if (!mounted) return;
       if (claimResp.statusCode == 200) {
         final body = jsonDecode(claimResp.body) as Map<String, dynamic>;
         final deviceToken = body['deviceToken'] as String;
         final serverId = body['serverId'] as String? ?? '';
 
-        String name = result.url
-            .replaceFirst(RegExp(r'^https?://'), '')
-            .split(':')
-            .first;
+        String name =
+            result.url.replaceFirst(RegExp(r'^https?://'), '').split(':').first;
         try {
           final healthResp = await http
               .get(Uri.parse('${result.url}/health'))
@@ -224,36 +235,44 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
         } catch (_) {}
 
         // Check for existing connection with same serverId
-        final existing = ref.read(connectionsProvider)
+        final existing = ref
+            .read(connectionsProvider)
             .where((c) => c.serverId == serverId)
             .firstOrNull;
         if (existing != null) {
-          await ref.read(connectionsProvider.notifier).update(
-            existing.copyWith(token: deviceToken, url: result.url, lastSeen: DateTime.now()),
+          final notifier = ref.read(connectionsProvider.notifier);
+          final updated =
+              await notifier.updateUrl(existing.id, result.url) ?? existing;
+          await notifier.update(
+            updated.copyWith(token: deviceToken, lastSeen: DateTime.now()),
           );
         } else {
           await ref.read(connectionsProvider.notifier).add(Connection(
-            id: ConnectionsNotifier.newId(),
-            name: name,
-            emoji: '🖥️',
-            url: result.url,
-            token: deviceToken,
-            serverId: serverId.isNotEmpty ? serverId : null,
-            lastSeen: DateTime.now(),
-          ));
+                id: ConnectionsNotifier.newId(),
+                name: name,
+                emoji: '🖥️',
+                url: result.url,
+                token: deviceToken,
+                serverId: serverId.isNotEmpty ? serverId : null,
+                lastSeen: DateTime.now(),
+              ));
         }
         if (mounted) Navigator.of(context).pop();
       } else {
         final s = ref.read(stringsProvider);
         setState(() {
-          _errorMsg = s.addConnectionServerReturnedTpl.replaceAll('{code}', '${claimResp.statusCode}');
+          _errorMsg = s.addConnectionServerReturnedTpl
+              .replaceAll('{code}', '${claimResp.statusCode}');
           _phase = _SheetState.error;
         });
       }
     } catch (e) {
       if (!mounted) return;
       final s = ref.read(stringsProvider);
-      setState(() { _errorMsg = s.addConnectionUnreachable; _phase = _SheetState.error; });
+      setState(() {
+        _errorMsg = s.addConnectionUnreachable;
+        _phase = _SheetState.error;
+      });
     }
   }
 
@@ -295,19 +314,14 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                   width: 36,
                   height: 4,
                   decoration: BoxDecoration(
-                      color: t.border,
-                      borderRadius: BorderRadius.circular(2)),
+                      color: t.border, borderRadius: BorderRadius.circular(2)),
                 ),
               ),
               const SizedBox(height: 20),
               Text(
-                isEditing
-                    ? s.addConnectionEditTitle
-                    : s.addConnectionTitle,
+                isEditing ? s.addConnectionEditTitle : s.addConnectionTitle,
                 style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: t.text),
+                    fontSize: 17, fontWeight: FontWeight.w700, color: t.text),
               ),
               const SizedBox(height: 20),
 
@@ -358,9 +372,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                           isEditing,
                       keyboardType: TextInputType.url,
                       style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 13,
-                          color: t.text),
+                          fontFamily: 'monospace', fontSize: 13, color: t.text),
                       decoration: InputDecoration(
                         hintText: s.addConnectionUrlHintLan,
                       ),
@@ -387,9 +399,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                           isEditing,
                       keyboardType: TextInputType.number,
                       style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 13,
-                          color: t.text),
+                          fontFamily: 'monospace', fontSize: 13, color: t.text),
                       decoration: InputDecoration(
                         hintText: s.addConnectionPort,
                       ),
@@ -409,7 +419,9 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                 ],
               ),
               const SizedBox(height: 6),
-              Text(s.addConnectionPortNote,
+              Text(
+                  s.addConnectionPortNote.replaceAll(
+                      '{port}', '${BuildDefaults.defaultServerPort}'),
                   style: TextStyle(fontSize: 11, color: t.textDim)),
               const SizedBox(height: 14),
 
@@ -432,12 +444,11 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
               // Error
               if (_phase == _SheetState.error && _errorMsg != null) ...[
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
                     color: t.error.withValues(alpha: 0.08),
-                    border: Border.all(
-                        color: t.error.withValues(alpha: 0.25)),
+                    border: Border.all(color: t.error.withValues(alpha: 0.25)),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(children: [
@@ -445,8 +456,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                     const SizedBox(width: 8),
                     Expanded(
                         child: Text(_errorMsg!,
-                            style: TextStyle(
-                                fontSize: 12, color: t.error))),
+                            style: TextStyle(fontSize: 12, color: t.error))),
                   ]),
                 ),
                 const SizedBox(height: 16),
@@ -455,17 +465,15 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
               // Detected result + name + emoji
               if (_phase == _SheetState.detected) ...[
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
                     color: t.accent.withValues(alpha: 0.07),
-                    border: Border.all(
-                        color: t.accent.withValues(alpha: 0.2)),
+                    border: Border.all(color: t.accent.withValues(alpha: 0.2)),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(children: [
-                    Icon(Icons.check_circle_outline,
-                        size: 14, color: t.accent),
+                    Icon(Icons.check_circle_outline, size: 14, color: t.accent),
                     const SizedBox(width: 8),
                     Text(
                       _pairedConn != null
@@ -475,13 +483,11 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                               _detectedVersion != null
                                   ? ' · v$_detectedVersion'
                                   : ''),
-                      style:
-                          TextStyle(fontSize: 12, color: t.accent),
+                      style: TextStyle(fontSize: 12, color: t.accent),
                     ),
                   ]),
                 ),
                 const SizedBox(height: 16),
-
                 _Label(s.addConnectionName),
                 TextField(
                   controller: _nameCtrl,
@@ -490,7 +496,6 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                       hintText: s.addConnectionNameNicknameHint),
                 ),
                 const SizedBox(height: 16),
-
                 _Label(s.addConnectionEmoji),
                 _EmojiPicker(
                   selected: _emoji,
@@ -505,8 +510,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                   child: OutlinedButton(
                     onPressed: () => Navigator.of(context).pop(),
                     style: OutlinedButton.styleFrom(
-                      padding:
-                          const EdgeInsets.symmetric(vertical: 13),
+                      padding: const EdgeInsets.symmetric(vertical: 13),
                       side: BorderSide(color: t.border),
                       foregroundColor: t.textMuted,
                       shape: RoundedRectangleBorder(
@@ -514,8 +518,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                     ),
                     child: Text(s.addConnectionCancel,
                         style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600)),
+                            fontSize: 14, fontWeight: FontWeight.w600)),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -537,8 +540,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                             }
                           },
                     style: FilledButton.styleFrom(
-                      padding:
-                          const EdgeInsets.symmetric(vertical: 13),
+                      padding: const EdgeInsets.symmetric(vertical: 13),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
                     ),
@@ -547,8 +549,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                           ? s.addConnectionSave
                           : s.addConnectionConnectBtn,
                       style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600),
+                          fontSize: 14, fontWeight: FontWeight.w600),
                     ),
                   ),
                 ),
@@ -615,9 +616,7 @@ class _Label extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6),
       child: Text(text,
           style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: t.textMuted)),
+              fontSize: 12, fontWeight: FontWeight.w500, color: t.textMuted)),
     );
   }
 }
@@ -643,15 +642,12 @@ class _EmojiPicker extends StatelessWidget {
             decoration: BoxDecoration(
               color: isSelected ? t.accentSubt : t.surfaceHi,
               border: Border.all(
-                color: isSelected
-                    ? t.accent.withValues(alpha: 0.5)
-                    : t.border,
+                color: isSelected ? t.accent.withValues(alpha: 0.5) : t.border,
                 width: isSelected ? 1.5 : 1,
               ),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Center(
-                child: Text(e, style: const TextStyle(fontSize: 20))),
+            child: Center(child: Text(e, style: const TextStyle(fontSize: 20))),
           ),
         );
       }).toList(),

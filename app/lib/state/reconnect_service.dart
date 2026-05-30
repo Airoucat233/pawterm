@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/build_defaults.dart';
 import 'lan_scanner.dart';
 import 'server_config.dart';
 
@@ -10,7 +11,7 @@ enum ReconnectStatus { idle, scanning, found, notFound }
 
 class ReconnectState {
   final ReconnectStatus status;
-  final String? updatedConnectionId;   // Connection.id (was: updatedServerId)
+  final String? updatedConnectionId; // Connection.id (was: updatedServerId)
 
   const ReconnectState({
     this.status = ReconnectStatus.idle,
@@ -59,16 +60,21 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
     _running = true;
     state = const ReconnectState(status: ReconnectStatus.scanning);
 
-    final sweepPorts = <int>{8765, for (final c in paired) c.port};
+    final sweepPorts = <int>{
+      BuildDefaults.defaultServerPort,
+      for (final c in paired) c.port
+    };
 
     String? foundId;
     try {
       try {
-        await for (final snapshot in LanScanner.scan(ports: sweepPorts)) {
+        await for (final snapshot in LanScanner.scan(
+          ports: sweepPorts,
+          requestNearbyWifiPermission: false,
+        )) {
           for (final found in snapshot) {
-            final match = paired
-                .where((c) => c.serverId == found.serverId)
-                .firstOrNull;
+            final match =
+                paired.where((c) => c.serverId == found.serverId).firstOrNull;
             if (match != null) {
               await _ref
                   .read(connectionsProvider.notifier)

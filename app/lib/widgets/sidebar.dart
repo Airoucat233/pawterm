@@ -105,6 +105,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                             cwd: p.path,
                             resumeId: s.sessionId,
                             label: '${p.name} · ${s.displayTitle}',
+                            agent: s.agent,
                           );
                           Navigator.of(context).pop();
                         },

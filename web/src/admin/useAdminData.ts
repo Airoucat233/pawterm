@@ -3,11 +3,43 @@
  */
 import { useEffect, useRef, useCallback } from 'react';
 import { useAdminStore } from './store';
-import { fetchHealth, fetchDevices } from './api';
+import { apiBase, fetchHealth, fetchDevices, renewAdminAccessToken } from './api';
 import type { AdminEvent } from '@pawterm/shared';
 
 const POLL_INTERVAL = 5000;
 const SSE_RECONNECT_DELAY = 5000;
+const RENEW_BEFORE_MS = 10 * 60 * 1000;
+
+export function useAdminAccessRenew() {
+  const token = useAdminStore((s) => s.token);
+  const tokenExpiresAt = useAdminStore((s) => s.tokenExpiresAt);
+  const setToken = useAdminStore((s) => s.setToken);
+  const clearToken = useAdminStore((s) => s.clearToken);
+
+  useEffect(() => {
+    if (!token || !tokenExpiresAt) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function renew() {
+      if (!token) return;
+      try {
+        const next = await renewAdminAccessToken(token);
+        if (alive) setToken(next.token, next.expiresAt);
+      } catch {
+        if (alive) clearToken();
+      }
+    }
+
+    const delay = Math.max(0, tokenExpiresAt - Date.now() - RENEW_BEFORE_MS);
+    timer = setTimeout(() => void renew(), delay);
+
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [token, tokenExpiresAt, setToken, clearToken]);
+}
 
 export function useHealthPing() {
   const token = useAdminStore((s) => s.token);
@@ -19,7 +51,7 @@ export function useHealthPing() {
 
     async function ping() {
       try {
-        const h = await fetchHealth(token!);
+        const h = await fetchHealth();
         if (alive)
           setHealth({
             online: h.status === 'ok',
@@ -71,6 +103,7 @@ export function useAdminSSE() {
   const pushEvent = useAdminStore((s) => s.pushEvent);
   const enqueuePairRequest = useAdminStore((s) => s.enqueuePairRequest);
   const setDevices = useAdminStore((s) => s.setDevices);
+  const clearToken = useAdminStore((s) => s.clearToken);
   const fetchDevicesRef = useRef(fetchDevices);
   fetchDevicesRef.current = fetchDevices;
 
@@ -99,37 +132,62 @@ export function useAdminSSE() {
 
   useEffect(() => {
     if (!token) return;
-    let es: EventSource | null = null;
+    let abort: AbortController | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let alive = true;
 
-    function connect() {
+    async function connect() {
       if (!alive) return;
-      es = new EventSource(`/admin/events?token=${encodeURIComponent(token!)}`);
-
-      es.onmessage = (msg) => {
-        try {
-          const event = JSON.parse(msg.data) as AdminEvent;
-          handleEvent(event);
-        } catch {
-          // ignore malformed
+      abort = new AbortController();
+      try {
+        const response = await fetch(`${apiBase()}/admin/events`, {
+          headers: {
+            Accept: 'text/event-stream',
+            Authorization: `Bearer ${token}`,
+          },
+          signal: abort.signal,
+        });
+        if (response.status === 401 || response.status === 403) {
+          clearToken();
+          return;
         }
-      };
+        if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
 
-      es.onerror = () => {
-        es?.close();
-        if (alive) {
-          reconnectTimer = setTimeout(connect, SSE_RECONNECT_DELAY);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (alive) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split(/\n\n/);
+          buffer = blocks.pop() ?? '';
+          for (const block of blocks) {
+            const data = block
+              .split(/\r?\n/)
+              .filter((line) => line.startsWith('data:'))
+              .map((line) => line.slice(5).trimStart())
+              .join('\n');
+            if (!data) continue;
+            try {
+              handleEvent(JSON.parse(data) as AdminEvent);
+            } catch {
+              // ignore malformed SSE data
+            }
+          }
         }
-      };
+      } catch {
+        // reconnect below unless the component has unmounted
+      }
+      if (alive) reconnectTimer = setTimeout(() => void connect(), SSE_RECONNECT_DELAY);
     }
 
-    connect();
+    void connect();
 
     return () => {
       alive = false;
-      es?.close();
+      abort?.abort();
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, [token, handleEvent]);
+  }, [token, handleEvent, clearToken]);
 }

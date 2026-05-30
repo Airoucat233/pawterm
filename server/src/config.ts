@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import type { Project, PermissionMode } from '@pawterm/shared';
+import type { StoredAdminAccessToken } from './admin-auth.js';
+import { hashAdminPassword } from './admin-password.js';
+import { DEFAULT_SERVER_PORT } from './defaults.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +25,47 @@ export interface StoredDevice {
   lastSeen: number | null;
 }
 
+export interface RawProjectConfig {
+  name?: string;
+  path: string;
+}
+
+export interface RawStoredDeviceConfig {
+  device_id: string;
+  name: string;
+  device_token: string;
+  paired_at: number;
+  last_seen: number | null;
+}
+
+export interface RawAdminAccessTokenConfig {
+  access_token: string;
+  expires_at: number;
+  max_expires_at: number;
+}
+
+/** JSON shape stored in config.json. Keys use snake_case on disk. */
+export interface RawServerConfig {
+  host?: string;
+  port?: number;
+  projects?: RawProjectConfig[];
+  log_level?: string;
+  log_format?: LogFormat;
+  log_file?: string | null;
+  /** Admin pairing token. Generated automatically when omitted. */
+  token?: string;
+  /** Optional password gate for older/manual connection flows. */
+  password?: string;
+  /** Hashed admin password, written as `scrypt$<salt>$<hash>`. */
+  admin_password_hash?: string;
+  admin_password_set_at?: number;
+  /** Stable server identity. Generated automatically when omitted. */
+  server_id?: string;
+  /** Active Web Admin bearer tokens. Managed automatically. */
+  admin_access_tokens?: RawAdminAccessTokenConfig[];
+  paired_devices?: RawStoredDeviceConfig[];
+}
+
 export interface ServerSettings {
   host: string;
   port: number;
@@ -33,6 +77,10 @@ export interface ServerSettings {
   adminToken: string;
   serverId: string;
   pairedDevices: StoredDevice[];
+  adminAccessTokens: StoredAdminAccessToken[];
+  adminPasswordHash?: string;
+  adminPasswordSetAt?: number;
+  /** Legacy plaintext config key; accepted on read but never written. */
   password?: string;
 }
 
@@ -43,10 +91,10 @@ function expandHome(p: string): string {
 }
 
 const ACTIVE_CONFIG_PTR = resolve(DEFAULT_CONFIG_DIR, 'active-config');
+const CONFIG_ENV = 'PAWTERM_CONFIG';
 
 function resolveConfigPath(): string {
-  if (process.env.PAWTERM_CONFIG) return process.env.PAWTERM_CONFIG;
-  if (process.env.CC_CONFIG) return process.env.CC_CONFIG;
+  if (process.env[CONFIG_ENV]) return process.env[CONFIG_ENV];
   if (existsSync(ACTIVE_CONFIG_PTR)) {
     const ptr = readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim();
     if (ptr) return resolve(ptr.replace(/^~/, homedir()));
@@ -62,13 +110,13 @@ function loadConfig(): ServerSettings {
   if (!existsSync(configPath)) {
     const adminToken = 'sk-' + randomBytes(16).toString('hex');
     const serverId = randomUUID();
-    const defaultConfig = {
+    const defaultConfig: Required<Pick<RawServerConfig, 'host' | 'port' | 'projects' | 'token' | 'server_id' | 'paired_devices'>> = {
       host: '0.0.0.0',
-      port: 8765,
-      projects: [] as Array<{ name: string; path: string }>,
+      port: DEFAULT_SERVER_PORT,
+      projects: [],
       token: adminToken,
       server_id: serverId,
-      paired_devices: [] as StoredDevice[],
+      paired_devices: [],
     };
     try {
       isFirstRun = true;
@@ -88,27 +136,11 @@ function loadConfig(): ServerSettings {
       adminToken,
       serverId,
       pairedDevices: [],
+      adminAccessTokens: [],
     };
   }
 
-  const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as {
-    host?: string;
-    port?: number;
-    projects?: Array<{ name?: string; path: string }>;
-    log_level?: string;
-    log_format?: LogFormat;
-    log_file?: string;
-    token?: string;
-    password?: string;
-    server_id?: string;
-    paired_devices?: Array<{
-      device_id: string;
-      name: string;
-      device_token: string;
-      paired_at: number;
-      last_seen: number | null;
-    }>;
-  };
+  const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as RawServerConfig;
 
   let adminToken = raw.token as string | undefined;
   let needsWrite = false;
@@ -139,9 +171,17 @@ function loadConfig(): ServerSettings {
     lastSeen: d.last_seen,
   }));
 
+  const adminAccessTokens: StoredAdminAccessToken[] = (raw.admin_access_tokens ?? [])
+    .filter((t) => typeof t.access_token === 'string' && typeof t.expires_at === 'number' && typeof t.max_expires_at === 'number')
+    .map((t) => ({
+      accessToken: t.access_token,
+      expiresAt: t.expires_at,
+      maxExpiresAt: t.max_expires_at,
+    }));
+
   return {
     host: raw.host ?? '0.0.0.0',
-    port: raw.port ?? 8765,
+    port: raw.port ?? DEFAULT_SERVER_PORT,
     projects: (raw.projects ?? []).map((p) => {
       const path = expandHome(p.path);
       return { name: p.name?.trim() || basename(path) || path, path };
@@ -153,6 +193,9 @@ function loadConfig(): ServerSettings {
     adminToken,
     serverId,
     pairedDevices,
+    adminAccessTokens,
+    adminPasswordHash: raw.admin_password_hash,
+    adminPasswordSetAt: raw.admin_password_set_at,
     password: raw.password as string | undefined,
   };
 }
@@ -195,16 +238,26 @@ async function persistProjects(): Promise<void> {
 }
 
 export async function setPassword(password: string): Promise<void> {
+  const hash = hashAdminPassword(password);
+  const setAt = Date.now();
   await writeConfigPreserving((c) => {
-    c['password'] = password;
+    c['admin_password_hash'] = hash;
+    c['admin_password_set_at'] = setAt;
+    delete c['password'];
   });
-  (settings as any).password = password;
+  (settings as any).adminPasswordHash = hash;
+  (settings as any).adminPasswordSetAt = setAt;
+  (settings as any).password = undefined;
 }
 
 export async function clearPassword(): Promise<void> {
   await writeConfigPreserving((c) => {
+    delete c['admin_password_hash'];
+    delete c['admin_password_set_at'];
     delete c['password'];
   });
+  (settings as any).adminPasswordHash = undefined;
+  (settings as any).adminPasswordSetAt = undefined;
   (settings as any).password = undefined;
 }
 
@@ -220,32 +273,55 @@ export async function persistPairedDevices(): Promise<void> {
   });
 }
 
+export async function persistAdminAccessTokens(tokens: StoredAdminAccessToken[]): Promise<void> {
+  settings.adminAccessTokens = tokens;
+  await writeConfigPreserving((c) => {
+    if (tokens.length === 0) {
+      delete c['admin_access_tokens'];
+      return;
+    }
+    c['admin_access_tokens'] = tokens.map((t) => ({
+      access_token: t.accessToken,
+      expires_at: t.expiresAt,
+      max_expires_at: t.maxExpiresAt,
+    }));
+  });
+}
+
+let configWriteQueue = Promise.resolve();
+
 /**
  * 读盘 → 修改 → 写盘，磁盘异常（不存在 / 空文件 / JSON 损坏）时回退到 `{}` 并
  * 用内存中的 `settings` 重建 token / server_id / host / port 等关键字段，
  * 防止一次 writeFile 半成品状态把整份配置带崩。
  *
- * NB: 这里没加跨调用的串行保护，若并发 persist 仍可能丢更新；那是另一个修。
+ * 所有 config 写入必须串行化。项目添加、设备 last_seen、admin token 续期可能
+ * 在同一轮请求里相邻发生；如果并发读旧文件再写回，后写者会覆盖前写者的字段。
  */
 async function writeConfigPreserving(
   mutator: (current: Record<string, unknown>) => void,
 ): Promise<void> {
-  let current: Record<string, unknown> = {};
-  if (existsSync(configPath)) {
-    try {
-      const text = readFileSync(configPath, 'utf-8').trim();
-      if (text) current = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      // 文件被写到一半 / 被外部破坏 —— 用 settings 重建，下面会补关键字段。
-      current = {};
+  const write = async () => {
+    let current: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try {
+        const text = readFileSync(configPath, 'utf-8').trim();
+        if (text) current = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        // 文件被写到一半 / 被外部破坏 —— 用 settings 重建，下面会补关键字段。
+        current = {};
+      }
     }
-  }
-  if (current['host'] === undefined) current['host'] = settings.host;
-  if (current['port'] === undefined) current['port'] = settings.port;
-  if (current['token'] === undefined) current['token'] = settings.adminToken;
-  if (current['server_id'] === undefined) current['server_id'] = settings.serverId;
-  mutator(current);
-  await writeFile(configPath, JSON.stringify(current, null, 2));
+    if (current['host'] === undefined) current['host'] = settings.host;
+    if (current['port'] === undefined) current['port'] = settings.port;
+    if (current['token'] === undefined) current['token'] = settings.adminToken;
+    if (current['server_id'] === undefined) current['server_id'] = settings.serverId;
+    mutator(current);
+    await writeFile(configPath, JSON.stringify(current, null, 2));
+  };
+  const run = configWriteQueue.then(write, write);
+  configWriteQueue = run.catch(() => {});
+  await run;
 }
 
 /** Returns true if `target` is inside any whitelisted project root. */

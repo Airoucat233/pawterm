@@ -1,4 +1,14 @@
-import { Bonjour, type Service } from 'bonjour-service';
+import bonjourService, { type Service } from 'bonjour-service';
+
+type BonjourInstance = InstanceType<typeof import('bonjour-service').default>;
+type BonjourConstructor = new (
+  ...args: ConstructorParameters<typeof import('bonjour-service').default>
+) => BonjourInstance;
+const Bonjour = (
+  (bonjourService as unknown as { Bonjour?: BonjourConstructor; default?: BonjourConstructor }).Bonjour ??
+  (bonjourService as unknown as { default?: BonjourConstructor }).default ??
+  bonjourService
+) as BonjourConstructor;
 
 export interface MdnsOptions {
   port: number;
@@ -21,7 +31,7 @@ function safeStop(svc: Service, cb?: () => void): void {
  * Returns a cleanup function that stops the advertisement.
  */
 export function startMdns(opts: MdnsOptions): () => void {
-  let bonjour: Bonjour | null = null;
+  let bonjour: BonjourInstance | null = null;
   let service: Service | null = null;
   let interval: ReturnType<typeof setInterval> | null = null;
 

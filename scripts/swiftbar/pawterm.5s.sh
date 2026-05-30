@@ -21,7 +21,7 @@ CONFIG="${PAWTERM_CONFIG:-$HOME/.config/pawterm/config.json}"
 
 # Probe localhost — server-side discovery starts at 127.0.0.1:<port>
 PORT=$(/usr/bin/grep -m1 '"port"' "$CONFIG" 2>/dev/null | /usr/bin/awk -F'[:,]' '{gsub(/ /,"",$2); print $2}')
-PORT="${PORT:-8765}"
+PORT="${PORT:-18765}"
 TOKEN=$(/usr/bin/grep -m1 '"token"' "$CONFIG" 2>/dev/null | /usr/bin/sed -E 's/.*"token": *"([^"]+)".*/\1/')
 
 if [ -z "$TOKEN" ]; then
@@ -42,11 +42,11 @@ if [ -z "$HEALTH" ]; then
 fi
 
 DEVICES_JSON=$(/usr/bin/curl -sf --max-time 1 -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:$PORT/admin/devices" 2>/dev/null)
+  "http://127.0.0.1:$PORT/api/admin/devices" 2>/dev/null)
 DEVICE_COUNT=$(echo "$DEVICES_JSON" | /usr/bin/grep -c '"deviceId"' 2>/dev/null)
 DEVICE_COUNT="${DEVICE_COUNT:-0}"
 
-ADMIN_URL="http://127.0.0.1:$PORT/admin?token=$TOKEN"
+ADMIN_URL="http://127.0.0.1:$PORT/admin"
 
 if [ "$DEVICE_COUNT" -gt 0 ]; then
   echo "🐾 $DEVICE_COUNT"
@@ -58,6 +58,6 @@ echo "PawTerm — :$PORT | color=#7dd3fc"
 echo "$DEVICE_COUNT paired devices"
 echo "---"
 echo "Open admin… | href=$ADMIN_URL"
-echo "Show QR | href=$ADMIN_URL#qr"
+echo "Show QR | href=$ADMIN_URL"
 echo "---"
 echo "Refresh | refresh=true"
