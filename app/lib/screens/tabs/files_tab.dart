@@ -198,14 +198,17 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   // ── file tap → action sheet ──────────────────────────────────────
 
   Future<void> _onTapFile(FsEntry entry) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final action = await showModalBottomSheet<_FileAction>(
       context: context,
+      requestFocus: false,
       builder: (ctx) => _FileActionSheet(
         entry: entry,
         previewEnabled: _previewTypeFor(entry.name) != _PreviewType.none,
       ),
     );
     if (action == null || !mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     switch (action) {
       case _FileAction.preview:
         await _doPreview(entry);
@@ -403,6 +406,7 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   }
 
   Future<void> _doInstall(FsEntry entry) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     // Android 8+ 需要先确认具备安装未知来源权限，否则跳到系统开关页
     if (Platform.isAndroid) {
       final status = await Permission.requestInstallPackages.status;
@@ -432,6 +436,7 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   }
 
   Future<void> _startApkDownloadInBackground(FsEntry entry) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final conn = ref.read(activeConnectionProvider);
     if (conn == null) return;
     final api = FilesApi(conn.apiBase, token: conn.token);
