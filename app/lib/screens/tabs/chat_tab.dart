@@ -1252,6 +1252,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     unawaited(_chatApi!.answer(_sessionId!, toolUseId, answers, annotations));
   }
 
+  /// 把 Codex app-server approval 决策通过 REST 回给 server。
+  void _sendCodexApproval(String requestId, String decision) {
+    if (_sessionId == null || _chatApi == null) return;
+    unawaited(_chatApi!.answerCodexApproval(_sessionId!, requestId, decision));
+  }
+
   /// 弹文件选择器，把每个选中的文件都登记为 uploading 状态并启动并发上传。
   Future<void> _pickAndUploadAttachments() async {
     final result = await FilePicker.platform.pickFiles(allowMultiple: true);
@@ -1450,6 +1456,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                             toolResults: toolResults,
                             subMsgsMap: _subMsgs,
                             onAnswerQuestion: _sendAnswerQuestion,
+                            onAnswerCodexApproval: _sendCodexApproval,
                             rawJson: kDebugMode ? _debugRaw[m] : null,
                           );
                         },

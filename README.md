@@ -179,6 +179,7 @@ Minimal local development files:
 ```json
 {
   "port": 8765,
+  "log_file": "../local/pawterm-server-dev.log",
   "projects": [
     { "path": "/Users/you/code/my-project" }
   ]
@@ -210,6 +211,7 @@ Common root workspace commands:
 
 ```bash
 pnpm dev              # run pnpm dev:server + pnpm dev:web; asks before killing 8765 conflicts
+pnpm dev:restart      # stop this repo's local dev server/web, then run pnpm dev again
 pnpm dev:server       # run pawterm-server from server/config.json on 8765
 pnpm dev:web          # run Vite web dev server; proxies to localhost:8765 by default
 pnpm build            # build web, then package it into server/dist-web

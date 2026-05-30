@@ -1,30 +1,8 @@
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import { execSync } from 'node:child_process';
 
 import type { PermissionMode } from '@pawterm/shared';
+import { buildAgentEnv } from '../../agent-env.js';
 import { type AskUserQuestionRegistry, makeAskUserMcpServer } from '../../ask-user-tool.js';
-
-/**
- * 启动一个 login shell 拿到用户的完整 PATH（包含 nvm、homebrew、flutter 等所有初始化）。
- * 服务启动时执行一次，结果缓存复用。
- * fallback：读 process.env.PATH（服务以交互 shell 启动时通常已经够用）。
- */
-function resolveLoginShellPath(): string {
-  try {
-    const shell = process.env.SHELL ?? '/bin/zsh';
-    // -i causes interactive-only plugins (gitstatus, p10k) to emit noise to stderr.
-    // Source .zshrc/.bashrc manually so nvm/conda paths are included without -i.
-    const rc = shell.includes('zsh') ? '[ -f ~/.zshrc ] && source ~/.zshrc' : '[ -f ~/.bashrc ] && source ~/.bashrc';
-    return execSync(`${shell} -lc '${rc}; echo $PATH'`, {
-      encoding: 'utf-8',
-      timeout: 5000,
-    }).trim();
-  } catch {
-    return process.env.PATH ?? '';
-  }
-}
-
-const LOGIN_SHELL_PATH = resolveLoginShellPath();
 
 /**
  * One ClaudeSDK conversation. We use the SDK's streaming `query()` with an
@@ -85,7 +63,7 @@ export class ChatSession {
     const options: Options = {
       cwd: this.cwd,
       permissionMode: this.permissionMode,
-      env: { ...process.env, PATH: LOGIN_SHELL_PATH },
+      env: buildAgentEnv(),
       // Emit SDKPartialAssistantMessage events for char-level streaming.
       includePartialMessages: true,
       // Forward sub-agent (Task tool) text/tool messages with parent_tool_use_id set,

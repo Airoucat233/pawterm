@@ -4,5 +4,5 @@
   "projects": [],
   "log_level": "info",
   "log_format": "pretty",
-  "log_file": null
+  "log_file": "../local/pawterm-server-dev.log"
 }

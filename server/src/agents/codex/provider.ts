@@ -1,5 +1,5 @@
 import type { AgentInfo, CodexRuntime, SessionSummary } from '@pawterm/shared';
-import { CodexAppServerProcess, type CodexJsonRpcClient } from './client.js';
+import { CodexAppServerProcess, type CodexJsonRpcClient, type CodexServerRequest } from './client.js';
 import { codexThreadItemToWire } from './serialize.js';
 import type { AgentHistoryPage, AgentProvider, AgentRun } from '../types.js';
 
@@ -135,6 +135,8 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
           threadId: input.sessionId,
           cwd: input.cwd,
           model: runtime.model ?? null,
+          sandbox: runtime.sandbox,
+          approvalPolicy: runtime.approval_policy,
           persistExtendedHistory: false,
         }).catch(() => startThread()) as { thread?: { id: string } }
       : await startThread();
@@ -156,6 +158,9 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
         if (!turnId) return;
         await client.request('turn/interrupt', { threadId, turnId });
       },
+      answerApproval: async (requestId, decision) => {
+        stream.answerApproval(requestId, decision);
+      },
       close: stream.close,
     };
   }
@@ -167,13 +172,16 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
 
   private createNotificationStream(client: CodexJsonRpcClient, threadId: string): {
     events: AsyncIterable<unknown>;
+    answerApproval: (requestId: string, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel') => void;
     close: () => void;
   } {
     const queue: unknown[] = [];
+    const pendingApprovals = new Map<string, CodexServerRequest>();
     let wake: (() => void) | null = null;
     let closed = false;
     let closeAfterDrain = false;
     let offClose: (() => void) | null = null;
+    let offRequest: (() => void) | null = null;
     const off = client.onNotification((notification) => {
       if (closed) return;
       const params = notification.params as { threadId?: string; item?: unknown; turn?: { items?: unknown[] } } | undefined;
@@ -185,11 +193,26 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
       wake?.();
       wake = null;
     });
+    offRequest = client.onRequest((request) => {
+      if (closed) return;
+      if (!isApprovalRequest(request.method)) {
+        client.reject(request.id, -32601, `Unhandled Codex app-server request: ${request.method}`);
+        return;
+      }
+      const params = request.params as { threadId?: string } | undefined;
+      if (params?.threadId && params.threadId !== threadId) return;
+      const requestId = String(request.id);
+      pendingApprovals.set(requestId, request);
+      queue.push({ id: requestId, method: request.method, params: request.params });
+      wake?.();
+      wake = null;
+    });
 
     const close = () => {
       if (closed) return;
       closed = true;
       off();
+      offRequest?.();
       offClose?.();
       wake?.();
       wake = null;
@@ -212,6 +235,52 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
       }
     }
 
-    return { events: events(), close };
+    const answerApproval = (requestId: string, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel') => {
+      const request = pendingApprovals.get(requestId);
+      if (!request) throw new Error(`No pending Codex approval request: ${requestId}`);
+      pendingApprovals.delete(requestId);
+      client.respond(request.id, approvalResponse(request, decision));
+      queue.push({
+        method: 'serverRequest/resolved',
+        params: { threadId, requestId, decision },
+      });
+      wake?.();
+      wake = null;
+    };
+
+    return { events: events(), answerApproval, close };
   }
+}
+
+function isApprovalRequest(method: string): boolean {
+  return method === 'item/commandExecution/requestApproval' ||
+    method === 'item/fileChange/requestApproval' ||
+    method === 'item/permissions/requestApproval';
+}
+
+function approvalResponse(
+  request: CodexServerRequest,
+  decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+): unknown {
+  if (request.method === 'item/permissions/requestApproval') {
+    if (decision === 'accept' || decision === 'acceptForSession') {
+      const permissions = (request.params as { permissions?: unknown } | undefined)?.permissions;
+      return {
+        permissions: normalizeGrantedPermissions(permissions),
+        scope: decision === 'acceptForSession' ? 'session' : 'turn',
+        strictAutoReview: false,
+      };
+    }
+    return { permissions: {}, scope: 'turn', strictAutoReview: false };
+  }
+  return { decision };
+}
+
+function normalizeGrantedPermissions(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const input = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (input.network && typeof input.network === 'object') out.network = input.network;
+  if (input.fileSystem && typeof input.fileSystem === 'object') out.fileSystem = input.fileSystem;
+  return out;
 }

@@ -60,4 +60,58 @@ describe('runMessagesToWire', () => {
       },
     }]);
   });
+
+  it('maps Codex approval requests to native tool cards', () => {
+    const wires = runMessagesToWire('codex', {
+      id: 'approval-1',
+      method: 'item/commandExecution/requestApproval',
+      params: { threadId: 'thread-1', itemId: 'item-1', command: 'git status' },
+    });
+
+    expect(wires).toEqual([{
+      uuid: 'approval-1',
+      wire: {
+        type: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'approval-1',
+          name: 'item/commandExecution/requestApproval',
+          input: { threadId: 'thread-1', itemId: 'item-1', command: 'git status' },
+          native_type: 'item/commandExecution/requestApproval',
+          native_event: 'item/commandExecution/requestApproval',
+          raw_payload: {
+            id: 'approval-1',
+            method: 'item/commandExecution/requestApproval',
+            params: { threadId: 'thread-1', itemId: 'item-1', command: 'git status' },
+          },
+        }],
+      },
+    }]);
+  });
+
+  it('maps Codex server request resolved events to tool results', () => {
+    const wires = runMessagesToWire('codex', {
+      method: 'serverRequest/resolved',
+      params: { threadId: 'thread-1', requestId: 'approval-1' },
+    });
+
+    expect(wires).toEqual([{
+      uuid: 'approval-1:resolved',
+      wire: {
+        type: 'assistant',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'approval-1',
+          content: 'resolved',
+          is_error: false,
+          native_type: 'serverRequest/resolved',
+          native_event: 'serverRequest/resolved',
+          raw_payload: {
+            method: 'serverRequest/resolved',
+            params: { threadId: 'thread-1', requestId: 'approval-1' },
+          },
+        }],
+      },
+    }]);
+  });
 });

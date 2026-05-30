@@ -135,6 +135,25 @@ class ChatApi {
     }
   }
 
+  Future<void> answerCodexApproval(
+    String uuid,
+    String requestId,
+    String decision,
+  ) async {
+    final resp = await http.post(
+      Uri.parse('$_apiBase/chat/codex-approval'),
+      headers: {'Content-Type': 'application/json', ..._auth},
+      body: jsonEncode({
+        'uuid': uuid,
+        'request_id': requestId,
+        'decision': decision,
+      }),
+    );
+    if (resp.statusCode != 200) {
+      throw ChatApiException(resp.statusCode, resp.body);
+    }
+  }
+
   /// Interrupt the active run.
   Future<void> interrupt(String uuid,
       {AgentKind agent = AgentKind.claude}) async {
