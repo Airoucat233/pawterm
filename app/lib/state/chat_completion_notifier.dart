@@ -112,8 +112,9 @@ class ChatCompletionNotifier {
     required bool appInForeground,
   }) async {
     _markPulse(payload);
-    if (appInForeground) return;
+    if (appInForeground || _appIsVisibleNow()) return;
     await _ensureAndroidPermission();
+    if (_appIsVisibleNow()) return;
     await _plugin.show(
       id: payload.key.hashCode & 0x7fffffff,
       title: '${_agentLabel(payload.agent)} 已完成回复',
@@ -131,6 +132,12 @@ class ChatCompletionNotifier {
       ),
       payload: jsonEncode(payload.toJson()),
     );
+  }
+
+  bool _appIsVisibleNow() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
   }
 
   Future<void> _ensureAndroidPermission() async {

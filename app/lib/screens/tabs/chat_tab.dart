@@ -219,10 +219,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _appInForeground = state == AppLifecycleState.resumed;
+    final appVisible = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+    _appInForeground = appVisible;
     unawaited(StreamingForegroundService.instance
         .setAppInForeground(_appInForeground));
-    if (!_appInForeground) {
+    if (!appVisible) {
       _syncForegroundStreamService();
     }
     if (state == AppLifecycleState.resumed) {

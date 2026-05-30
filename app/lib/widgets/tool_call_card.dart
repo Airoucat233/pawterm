@@ -1010,7 +1010,7 @@ class _JsonBlock extends StatelessWidget {
 
   Color _jsonKeyColor(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return isDark ? const Color(0xFFB996FF) : const Color(0xFF4F46E5);
+    return isDark ? const Color(0xFFB996FF) : const Color(0xFF7C3AED);
   }
 }
 
