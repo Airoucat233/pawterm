@@ -107,6 +107,7 @@ class _ChatSessionRuntime {
   String? unrespondedUserText;
   String? dismissedApprovalPopoverId;
   final Set<String> notifiedApprovalIds = {};
+  final Set<String> presentedApprovalSheetIds = {};
   final List<_AttachmentState> attachments = [];
   final Map<String, List<IncomingMessage>> subMsgs = {};
   final Map<String, StreamingAssistant> subStreaming = {};
@@ -255,6 +256,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   set _dismissedApprovalPopoverId(String? value) =>
       _runtime.dismissedApprovalPopoverId = value;
   Set<String> get _notifiedApprovalIds => _runtime.notifiedApprovalIds;
+  Set<String> get _presentedApprovalSheetIds =>
+      _runtime.presentedApprovalSheetIds;
 
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
@@ -1253,6 +1256,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _handleWireMessage(Map<String, dynamic> json) {
     if (!mounted) return;
+    final eventRuntime = _runtime;
     final msg = IncomingMessage.fromJson(json);
     final wireUuid = json['uuid'] as String?;
     final isCodexSnapshot = _isCodexRealtimeSnapshot(json, wireUuid);
@@ -1323,16 +1327,20 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // 当前轮结束 — 看看队列里有没有用户在 busy 期间堆的消息，
         // 有就出队继续发（递归触发下一轮）。
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _drainQueue();
+          if (mounted && _isActiveRuntime(eventRuntime)) {
+            _withRuntime(eventRuntime, _drainQueue);
+          }
         });
         // Turn finished — cancel subscription and close SSE proactively so the
         // SseClient's reconnect loop never fires after the server's grace period ends.
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
-            _sseSub?.cancel();
-            _sseSub = null;
-            unawaited(_sseClient?.close() ?? Future.value());
-            setState(() => _sseClient = null);
+            _withRuntime(eventRuntime, () {
+              _sseSub?.cancel();
+              _sseSub = null;
+              unawaited(_sseClient?.close() ?? Future.value());
+              setState(() => _sseClient = null);
+            });
           }
         });
       } else if (msg is ErrorMsg) {
@@ -1819,9 +1827,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 把 Codex app-server approval 决策通过 REST 回给 server。
   void _sendCodexApproval(String requestId, String decision) {
-    if (_sessionId == null || _chatApi == null) return;
-    _notifiedApprovalIds.remove(requestId);
-    unawaited(_chatApi!.answerCodexApproval(_sessionId!, requestId, decision));
+    _sendCodexApprovalForRuntime(_runtime, requestId, decision);
+  }
+
+  void _sendCodexApprovalForRuntime(
+    _ChatSessionRuntime runtime,
+    String requestId,
+    String decision,
+  ) {
+    final uuid = runtime.sessionId;
+    final api = runtime.chatApi;
+    if (uuid == null || api == null) return;
+    runtime.notifiedApprovalIds.remove(requestId);
+    unawaited(api.answerCodexApproval(uuid, requestId, decision));
   }
 
   void _notifyCodexApprovalIfNeeded(
@@ -1871,6 +1889,40 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     if (reason != null && reason.isNotEmpty) return reason;
     return '需要你确认后继续';
+  }
+
+  Future<void> _showCodexApprovalSheetIfNeeded(
+    _PendingCodexApproval approval,
+  ) async {
+    final requestId = approval.toolUse.id;
+    if (_dismissedApprovalPopoverId == requestId) return;
+    if (!_presentedApprovalSheetIds.add(requestId)) return;
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      requestFocus: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.32),
+      builder: (sheetContext) => _ApprovalBottomSheet(
+        toolUse: approval.toolUse,
+        result: approval.result,
+        onSubmit: (id, decision) {
+          _sendCodexApproval(id, decision);
+          Navigator.of(sheetContext).pop(true);
+        },
+      ),
+    );
+    if (!mounted) return;
+    if (submitted == true) {
+      setState(() => _dismissedApprovalPopoverId = requestId);
+    } else {
+      setState(() {
+        _dismissedApprovalPopoverId = requestId;
+        _presentedApprovalSheetIds.remove(requestId);
+      });
+    }
   }
 
   void _syncForegroundStreamService({
@@ -2047,7 +2099,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final activeApproval = _latestPendingCodexApproval(toolResults);
     if (activeApproval != null && config != null && _sessionId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _notifyCodexApprovalIfNeeded(activeApproval, config);
+        if (!mounted) return;
+        _notifyCodexApprovalIfNeeded(activeApproval, config);
+        _showCodexApprovalSheetIfNeeded(activeApproval);
       });
     }
 
@@ -2178,21 +2232,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                     onTap: () => _scrollToEnd(force: true),
                   ),
                 ),
-              if (activeApproval != null &&
-                  activeApproval.toolUse.id != _dismissedApprovalPopoverId)
-                _ApprovalPopoverOverlay(
-                  toolUse: activeApproval.toolUse,
-                  result: activeApproval.result,
-                  onDismiss: () => setState(() {
-                    _dismissedApprovalPopoverId = activeApproval.toolUse.id;
-                  }),
-                  onSubmit: (requestId, decision) {
-                    setState(() {
-                      _dismissedApprovalPopoverId = requestId;
-                    });
-                    _sendCodexApproval(requestId, decision);
-                  },
-                ),
             ],
           ),
         ),
@@ -2271,97 +2310,78 @@ bool _isCodexApprovalRequestName(String name) {
       name == 'item/permissions/requestApproval';
 }
 
-class _ApprovalPopoverOverlay extends StatelessWidget {
+class _ApprovalBottomSheet extends StatelessWidget {
   final ToolUseBlock toolUse;
   final ToolResultBlock? result;
-  final VoidCallback onDismiss;
   final void Function(String requestId, String decision) onSubmit;
 
-  const _ApprovalPopoverOverlay({
+  const _ApprovalBottomSheet({
     required this.toolUse,
     required this.result,
-    required this.onDismiss,
     required this.onSubmit,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return Positioned.fill(
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTap: onDismiss,
-              child: const SizedBox.expand(),
-            ),
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(18),
+            bottom: Radius.circular(10),
           ),
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: 12,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {},
-              child: Material(
-                color: Colors.transparent,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: t.surface,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: t.border, width: 0.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.14),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                  ),
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.privacy_tip_outlined,
-                              size: 14, color: t.warning),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              '当前会话需要审批',
-                              style: TextStyle(
-                                color: t.text,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          InkResponse(
-                            onTap: onDismiss,
-                            radius: 18,
-                            child: Padding(
-                              padding: const EdgeInsets.all(6),
-                              child: Icon(Icons.close_rounded,
-                                  size: 16, color: t.textDim),
-                            ),
-                          ),
-                        ],
-                      ),
-                      CodexApprovalCard(
-                        toolUse: toolUse,
-                        answeredResult: result,
-                        onSubmit: onSubmit,
-                      ),
-                    ],
-                  ),
+          border: Border.all(color: t.border, width: 0.5),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: t.border,
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(Icons.privacy_tip_outlined, size: 16, color: t.warning),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '当前会话需要审批',
+                    style: TextStyle(
+                      color: t.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  icon: Icon(Icons.close_rounded, size: 18, color: t.textDim),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '忽略',
+                ),
+              ],
+            ),
+            CodexApprovalCard(
+              toolUse: toolUse,
+              answeredResult: result,
+              initiallyExpanded: true,
+              onSubmit: onSubmit,
+            ),
+          ],
+        ),
       ),
     );
   }
