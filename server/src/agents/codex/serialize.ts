@@ -34,6 +34,28 @@ function toolResult(item: CodexItem, content: unknown, isError = false): Content
   };
 }
 
+function namedToolUse(item: CodexItem, name: string, input: Record<string, unknown>): ContentBlock {
+  return {
+    ...toolUse(item, input),
+    name,
+  };
+}
+
+function webSearchInput(item: CodexItem): Record<string, unknown> {
+  const action = safeInput(item.action);
+  const query = String(action.query ?? item.query ?? '').trim();
+  const queries = Array.isArray(action.queries)
+    ? action.queries.map(String).filter((q) => q.trim().length > 0)
+    : query
+      ? [query]
+      : [];
+  return {
+    query,
+    queries,
+    action: String(action.type ?? ''),
+  };
+}
+
 function isFinishedStatus(status: unknown): boolean {
   return status !== 'inProgress' && status !== undefined && status !== null;
 }
@@ -62,6 +84,22 @@ export function codexThreadItemToWire(item: CodexItem): ChatServerMessage | null
         type: 'assistant',
         content: [toolUse(item, { text: String(item.text ?? '') })],
       };
+    case 'webSearch': {
+      const input = webSearchInput(item);
+      if (!input.query && (input.queries as unknown[]).length === 0) {
+        return {
+          type: 'assistant',
+          content: [namedToolUse(item, 'WebSearch', input)],
+        };
+      }
+      return {
+        type: 'assistant',
+        content: [
+          namedToolUse(item, 'WebSearch', input),
+          toolResult(item, safeStringify(input), false),
+        ],
+      };
+    }
     case 'commandExecution':
       if (!isFinishedStatus(item.status) && item.exitCode == null && item.aggregatedOutput == null) {
         return {

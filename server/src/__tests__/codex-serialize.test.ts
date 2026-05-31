@@ -90,6 +90,53 @@ describe('codexThreadItemToWire', () => {
     });
   });
 
+  it('maps Codex webSearch items to WebSearch tool cards', () => {
+    const item = {
+      type: 'webSearch',
+      id: 'ws_1',
+      query: 'OpenAI Codex web search tool support',
+      action: {
+        type: 'search',
+        query: 'OpenAI Codex web search tool support',
+        queries: ['OpenAI Codex web search tool support'],
+      },
+    };
+
+    const wire = codexThreadItemToWire(item);
+
+    expect(wire).toEqual({
+      type: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'ws_1',
+          name: 'WebSearch',
+          input: {
+            query: 'OpenAI Codex web search tool support',
+            queries: ['OpenAI Codex web search tool support'],
+            action: 'search',
+          },
+          native_type: 'webSearch',
+          native_event: undefined,
+          raw_payload: item,
+        },
+        {
+          type: 'tool_result',
+          tool_use_id: 'ws_1',
+          content: JSON.stringify({
+            query: 'OpenAI Codex web search tool support',
+            queries: ['OpenAI Codex web search tool support'],
+            action: 'search',
+          }, null, 2),
+          is_error: false,
+          native_type: 'webSearch',
+          native_event: undefined,
+          raw_payload: item,
+        },
+      ],
+    });
+  });
+
   it('does not throw on circular native payloads', () => {
     const result: any = { ok: true };
     result.self = result;
