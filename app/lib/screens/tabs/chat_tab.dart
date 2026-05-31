@@ -20,6 +20,7 @@ import '../../api/sse_client.dart';
 import '../../api/upload_api.dart';
 import '../../i18n/locale_provider.dart';
 import '../../state/chat_completion_notifier.dart';
+import '../../state/open_chat_windows.dart';
 import '../../state/prefs.dart';
 import '../../state/projects_store.dart';
 import '../../state/server_config.dart';
@@ -1763,6 +1764,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         subtitle: s.chatEmptyPickProject,
       );
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final status = _error != null
+          ? OpenChatWindowStatus.error
+          : _busy
+              ? OpenChatWindowStatus.running
+              : OpenChatWindowStatus.idle;
+      ref
+          .read(openChatWindowsProvider.notifier)
+          .setStatus(sessionKey(session), status);
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _ensureConnected(session);
