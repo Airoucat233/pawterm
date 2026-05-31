@@ -1325,8 +1325,7 @@ class _FilterSegment extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(7),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
+        child: Container(
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: selected ? t.surface : Colors.transparent,

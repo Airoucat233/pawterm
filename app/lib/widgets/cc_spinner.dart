@@ -109,8 +109,10 @@ class CcSpinnerLine extends ConsumerStatefulWidget {
   final Color color;
   final Color dimColor;
   final VoidCallback? onStop;
+
   /// 放在右侧（Spacer 之后、Stop 之前）的可选附加 widget，比如 TodoChip。
   final Widget? trailing;
+  final List<Widget> actions;
 
   const CcSpinnerLine({
     super.key,
@@ -121,6 +123,7 @@ class CcSpinnerLine extends ConsumerStatefulWidget {
     required this.dimColor,
     this.onStop,
     this.trailing,
+    this.actions = const [],
   });
 
   @override
@@ -203,6 +206,10 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
           if (widget.trailing != null) ...[
             widget.trailing!,
             const SizedBox(width: 8),
+          ],
+          for (final action in widget.actions) ...[
+            action,
+            const SizedBox(width: 6),
           ],
           if (widget.onStop != null)
             InkWell(

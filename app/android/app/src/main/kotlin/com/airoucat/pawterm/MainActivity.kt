@@ -1,6 +1,9 @@
 package com.airoucat.pawterm
 
 import android.app.DownloadManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -11,12 +14,20 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.webkit.MimeTypeMap
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val apkInstallerChannel = "pawterm/apk_installer"
+    private val notificationsChannel = "pawterm/notifications"
+    private val sessionEventsChannelId = "session_events"
+    private val sessionEventsGroup = "pawterm.session_events"
+    private val sessionEventsSummaryId = 876501
+    private val sessionEvents = ArrayDeque<String>()
     private val pendingApkDownloads = mutableSetOf<Long>()
     private var downloadReceiverRegistered = false
     private val downloadReceiver = object : BroadcastReceiver() {
@@ -51,11 +62,31 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "addSessionEvent" -> {
+                        val title = call.argument<String>("title") ?: "PawTerm"
+                        val line = call.argument<String>("line") ?: ""
+                        val payload = call.argument<String>("payload")
+                        try {
+                            addSessionEvent(title, line, payload)
+                            result.success(null)
+                        } catch (e: SecurityException) {
+                            result.error("permission_denied", e.message, null)
+                        } catch (e: Exception) {
+                            result.error("notification_failed", e.message, null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ensureDownloadReceiver()
+        ensureSessionEventsChannel()
     }
 
     override fun onDestroy() {
@@ -120,6 +151,82 @@ class MainActivity : FlutterActivity() {
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             startActivity(intent)
         }
+    }
+
+    private fun showChatCompletionNotification(
+        title: String,
+        line: String,
+        payload: String?,
+    ) {
+        addSessionEvent(title, line, payload)
+    }
+
+    private fun addSessionEvent(title: String, line: String, payload: String?) {
+        ensureSessionEventsChannel()
+        val cleanLine = line.ifBlank { title }
+        sessionEvents.addFirst(cleanLine)
+        while (sessionEvents.size > 8) sessionEvents.removeLast()
+
+        val intent = Intent(this, MainActivity::class.java)
+            .setAction("pawterm.SESSION_EVENTS")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (!payload.isNullOrBlank()) {
+            intent.putExtra("payload", payload)
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        val pendingIntent = PendingIntent.getActivity(this, sessionEventsSummaryId, intent, flags)
+        val summaryTitle = "你收到了 ${sessionEvents.size} 条任务更新"
+        val inboxStyle = NotificationCompat.InboxStyle()
+        sessionEvents.take(5).forEach { inboxStyle.addLine(it) }
+        if (sessionEvents.size > 5) inboxStyle.setSummaryText("+ ${sessionEvents.size - 5}")
+        val eventId = (System.currentTimeMillis() and 0x7fffffff).toInt()
+
+        val summaryNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle("PawTerm")
+            .setContentText(summaryTitle)
+            .setStyle(inboxStyle)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setGroup(sessionEventsGroup)
+            .setGroupSummary(true)
+            .build()
+
+        val eventNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle(title)
+            .setContentText(cleanLine)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(cleanLine))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setGroup(sessionEventsGroup)
+            .build()
+
+        val manager = NotificationManagerCompat.from(this)
+        Log.i("PawTermNotify", "addSessionEvent enabled=${manager.areNotificationsEnabled()} count=${sessionEvents.size} line=$cleanLine")
+        manager.notify(sessionEventsSummaryId, summaryNotification)
+        manager.notify(eventId, eventNotification)
+    }
+
+    private fun ensureSessionEventsChannel() {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        manager.deleteNotificationChannel("chat_completion")
+        manager.deleteNotificationChannel("chat_completion_native")
+        val existing = manager.getNotificationChannel(sessionEventsChannelId)
+        if (existing != null) return
+        val channel = NotificationChannel(
+            sessionEventsChannelId,
+            "Session events",
+            NotificationManager.IMPORTANCE_HIGH,
+        )
+        channel.description = "Completed replies and approval requests"
+        manager.createNotificationChannel(channel)
     }
 
     private fun sanitizeFileName(input: String): String =

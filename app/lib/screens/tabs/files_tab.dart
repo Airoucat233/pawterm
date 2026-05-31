@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:permission_handler/permission_handler.dart';
@@ -13,6 +14,7 @@ import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfx/pdfx.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../api/files_api.dart';
 import '../../i18n/locale_provider.dart';
@@ -91,6 +93,8 @@ class FilesTab extends ConsumerStatefulWidget {
 }
 
 class _FilesTabState extends ConsumerState<FilesTab> {
+  static const _lastPathPrefsKey = 'files_last_path_by_root_v1';
+
   String? _path;
   String? _rootPath;
   List<FsEntry> _entries = const [];
@@ -101,14 +105,18 @@ class _FilesTabState extends ConsumerState<FilesTab> {
 
   String _sessionKey(CurrentSession s) => s.cwd;
 
-  void _initIfNeeded(CurrentSession session) {
+  Future<void> _initIfNeeded(CurrentSession session) async {
     if (_path != null && _rootPath == _sessionKey(session)) return;
-    _rootPath = _sessionKey(session);
+    final root = _sessionKey(session);
+    _rootPath = root;
     _path = session.cwd;
-    _ls(session.cwd);
+    final initialPath = await _loadLastPath(root) ?? session.cwd;
+    if (!mounted || _rootPath != root) return;
+    _ls(initialPath, fallbackPath: session.cwd);
   }
 
-  Future<void> _ls(String path, {bool force = false}) async {
+  Future<void> _ls(String path,
+      {bool force = false, String? fallbackPath}) async {
     final conn = ref.read(activeConnectionProvider);
     if (conn == null) return;
 
@@ -137,8 +145,13 @@ class _FilesTabState extends ConsumerState<FilesTab> {
         _entries = listing.entries;
         _loading = false;
       });
+      unawaited(_saveLastPath(listing.path));
     } catch (e) {
       if (!mounted) return;
+      if (fallbackPath != null && fallbackPath != path) {
+        await _ls(fallbackPath, force: true);
+        return;
+      }
       if (cached == null) {
         setState(() {
           _loading = false;
@@ -148,20 +161,54 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     }
   }
 
+  Future<String?> _loadLastPath(String root) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_lastPathPrefsKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final path = map[root] as String?;
+      if (path == null || path.isEmpty) return null;
+      return path;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _saveLastPath(String path) async {
+    final root = _rootPath;
+    if (root == null || path.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_lastPathPrefsKey);
+    var map = <String, dynamic>{};
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      } catch (_) {
+        map = <String, dynamic>{};
+      }
+    }
+    map[root] = path;
+    await prefs.setString(_lastPathPrefsKey, jsonEncode(map));
+  }
+
   String _humanPath(String path) =>
       path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
 
   // ── file tap → action sheet ──────────────────────────────────────
 
   Future<void> _onTapFile(FsEntry entry) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final action = await showModalBottomSheet<_FileAction>(
       context: context,
+      requestFocus: false,
       builder: (ctx) => _FileActionSheet(
         entry: entry,
         previewEnabled: _previewTypeFor(entry.name) != _PreviewType.none,
       ),
     );
     if (action == null || !mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     switch (action) {
       case _FileAction.preview:
         await _doPreview(entry);
@@ -359,6 +406,7 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   }
 
   Future<void> _doInstall(FsEntry entry) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     // Android 8+ 需要先确认具备安装未知来源权限，否则跳到系统开关页
     if (Platform.isAndroid) {
       final status = await Permission.requestInstallPackages.status;
@@ -388,6 +436,7 @@ class _FilesTabState extends ConsumerState<FilesTab> {
   }
 
   Future<void> _startApkDownloadInBackground(FsEntry entry) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final conn = ref.read(activeConnectionProvider);
     if (conn == null) return;
     final api = FilesApi(conn.apiBase, token: conn.token);

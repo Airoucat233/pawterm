@@ -50,6 +50,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final color = _colorFor(t, toolUse.name);
     final icon = _iconFor(toolUse.name);
     final title = _displayName(toolUse.name, toolUse.input);
+    final isFileChange = toolUse.name == 'fileChange';
     final hasInputBody = !_isBodyEmpty(toolUse.name);
     final hasOutput = result != null;
     final hasRawPayload = _rawPayload().isNotEmpty;
@@ -102,9 +103,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: _summary(t, toolUse.name, toolUse.input),
+                      child: _HeaderSummary(
+                        text: _summaryText(toolUse.name, toolUse.input),
+                        alignEnd: isFileChange,
                       ),
                     ),
                     _statusBadge(t),
@@ -120,7 +121,19 @@ class _ToolCallCardState extends State<ToolCallCard> {
                 ),
                 if (_expanded && canExpand) ...[
                   const SizedBox(height: 10),
-                  if (hasInputBody) ...[
+                  if (isFileChange && !_viewRaw) ...[
+                    Row(
+                      children: [
+                        const Spacer(),
+                        _SegmentedControl(
+                          isRaw: _viewRaw,
+                          onChanged: (v) => setState(() => _viewRaw = v),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    _renderBody(context, t, toolUse.name, toolUse.input),
+                  ] else if (hasInputBody) ...[
                     Row(
                       children: [
                         _SectionLabel('输入', t),
@@ -140,12 +153,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     if (hasInputBody) const SizedBox(height: 10),
                     _SubAgentTranscript(messages: widget.subAgentMsgs!),
                   ],
-                  if (hasOutput) ...[
+                  if (hasOutput && (!isFileChange || _viewRaw)) ...[
                     if (hasInputBody || widget.subAgentMsgs != null)
                       const SizedBox(height: 10),
                     _SectionLabel('输出', t),
                     const SizedBox(height: 4),
-                    _outputBody(t, result!),
+                    _outputBody(t, result!, raw: _viewRaw),
                   ],
                 ],
               ],
@@ -170,8 +183,15 @@ class _ToolCallCardState extends State<ToolCallCard> {
     return Icon(Icons.check_rounded, size: 14, color: t.success);
   }
 
-  Widget _outputBody(AppTokens t, ToolResultBlock r) {
+  Widget _outputBody(AppTokens t, ToolResultBlock r, {bool raw = false}) {
+    if (raw) {
+      return _JsonBlock(value: r.rawPayload ?? {'content': r.content});
+    }
     final text = _extractText(r.content);
+    final json = _tryDecodeJson(text);
+    if (json != null) {
+      return _JsonBlock(value: json);
+    }
     final truncated =
         text.length > 4000 ? '${text.substring(0, 4000)}\n…(truncated)' : text;
     return Container(
@@ -207,6 +227,17 @@ class _ToolCallCardState extends State<ToolCallCard> {
       }).join('\n');
     }
     return content.toString();
+  }
+
+  Object? _tryDecodeJson(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return null;
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+      return jsonDecode(trimmed);
+    } catch (_) {
+      return null;
+    }
   }
 
   bool _isBodyEmpty(String name) => false;
@@ -311,15 +342,38 @@ class _ToolCallCardState extends State<ToolCallCard> {
     if (changes is List && changes.isNotEmpty) {
       final first = changes.first;
       if (first is Map) {
-        final kind =
-            (first['kind'] ?? first['type'] ?? first['operation'] ?? '')
-                .toString()
-                .trim();
+        final kind = _fileChangeKind(first);
         if (kind.isNotEmpty) return kind;
       }
     }
     final status = (input['status'] ?? '').toString().trim();
     return status.isNotEmpty ? status : 'Edit';
+  }
+
+  String _fileChangeKind(Map<dynamic, dynamic> map) {
+    for (final key in const ['kind', 'type', 'operation']) {
+      final value = map[key];
+      if (value == null) continue;
+      if (value is String) {
+        final text = _normalizeFileChangeKind(value);
+        if (text.isNotEmpty) return text;
+      }
+      if (value is Map) {
+        for (final nestedKey in const ['kind', 'type', 'operation', 'name']) {
+          final nested = value[nestedKey]?.toString().trim() ?? '';
+          if (nested.isNotEmpty) return nested;
+        }
+      }
+    }
+    return '';
+  }
+
+  String _normalizeFileChangeKind(String raw) {
+    final text = raw.trim();
+    if (!text.startsWith('{')) return text;
+    final match =
+        RegExp(r'(?:type|kind|operation|name)\s*:\s*([^,}]+)').firstMatch(text);
+    return match?.group(1)?.trim() ?? text;
   }
 
   Color _colorFor(AppTokens t, String name) {
@@ -388,7 +442,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
   /// - Bash：主命令（第一个 token）+ … + 尾部（让用户同时看到命令类型和目标）
   /// - 文件操作：仅保留文件名（…/filename），路径可横划查看
   /// - 其他：完整 pattern 或空
-  Widget _summary(AppTokens t, String name, Map<String, dynamic> input) {
+  String _summaryText(String name, Map<String, dynamic> input) {
     final String text;
     switch (name) {
       case 'Edit':
@@ -404,17 +458,18 @@ class _ToolCallCardState extends State<ToolCallCard> {
         if (desc.isNotEmpty) {
           text = desc;
         } else {
-          final cmd = (input['command'] ?? '').toString().trim();
-          final firstSpace = cmd.indexOf(' ');
-          if (firstSpace < 0 || firstSpace >= cmd.length - 1) {
-            text = cmd;
+          final display = _displayCommand((input['command'] ?? '').toString());
+          final command = display.command;
+          final firstSpace = command.indexOf(' ');
+          if (firstSpace < 0 || firstSpace >= command.length - 1) {
+            text = command;
           } else {
-            final head = cmd.substring(0, firstSpace);
-            final rest = cmd.substring(firstSpace + 1);
+            final head = command.substring(0, firstSpace);
+            final rest = command.substring(firstSpace + 1);
             if (rest.length <= 28) {
               text = '$head $rest';
             } else {
-              final tailRaw = cmd.substring(cmd.length - 20);
+              final tailRaw = command.substring(command.length - 20);
               text = '$head … $tailRaw';
             }
           }
@@ -426,9 +481,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
           final rawPath = first is Map
               ? (first['path'] ?? first['file_path'] ?? '').toString()
               : '';
-          final path =
-              rawPath.contains('/') ? '…/${rawPath.split('/').last}' : rawPath;
-          text = path.isNotEmpty ? path : '${changes.length} changes';
+          text = rawPath.isNotEmpty ? rawPath : '${changes.length} changes';
         } else {
           text = (input['status'] ?? '').toString();
         }
@@ -445,25 +498,16 @@ class _ToolCallCardState extends State<ToolCallCard> {
         text = skill;
         break;
       default:
-        return const SizedBox.shrink();
+        return '';
     }
-    if (text.isEmpty) return const SizedBox.shrink();
-    return Text(
-      text,
-      style: TextStyle(
-        fontFamily: 'monospace',
-        fontSize: 11,
-        color: t.textMuted,
-      ),
-    );
+    return text;
   }
 
   Widget _renderBody(BuildContext context, AppTokens t, String name,
       Map<String, dynamic> input) {
     // raw 模式：直接显示 JSON
     if (_viewRaw) {
-      final raw = _rawPayload();
-      return _JsonBlock(value: raw);
+      return _JsonBlock(value: toolUse.rawPayload ?? {'input': input});
     }
 
     switch (name) {
@@ -478,7 +522,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
       case 'Bash':
       case 'commandExecution':
         return _BashLine(
-          command: (input['command'] ?? '').toString(),
+          command: _displayCommand((input['command'] ?? '').toString()),
           cwd: (input['cwd'] ?? '').toString(),
         );
       case 'fileChange':
@@ -490,6 +534,30 @@ class _ToolCallCardState extends State<ToolCallCard> {
         final hasNested = input.values.any((v) => v is Map || v is List);
         return hasNested ? _JsonBlock(value: input) : _KeyValueList(map: input);
     }
+  }
+
+  _DisplayCommand _displayCommand(String raw) {
+    final trimmed = raw.trim();
+    final match = RegExp(
+      r'^(?:(?:/usr)?/bin/)?(zsh|bash|sh)\s+-lc\s+([\s\S]+)$',
+    ).firstMatch(trimmed);
+    if (match == null) return _DisplayCommand(command: raw);
+    final shell = match.group(1)!;
+    final scriptRaw = match.group(2)!.trim();
+    final script = _unquoteShellArg(scriptRaw);
+    if (script.trim().isEmpty) return _DisplayCommand(command: raw);
+    return _DisplayCommand(command: script, wrapper: '$shell -lc');
+  }
+
+  String _unquoteShellArg(String raw) {
+    if (raw.length < 2) return raw;
+    final quote = raw[0];
+    if ((quote != '"' && quote != "'") || raw[raw.length - 1] != quote) {
+      return raw;
+    }
+    final inner = raw.substring(1, raw.length - 1);
+    if (quote == "'") return inner.replaceAll(r"'\''", "'");
+    return inner.replaceAllMapped(RegExp(r'\\(["\\$`])'), (m) => m.group(1)!);
   }
 
   Map<String, dynamic> _rawPayload() {
@@ -505,6 +573,71 @@ class _ToolCallCardState extends State<ToolCallCard> {
 }
 
 // ── Segmented control (pretty | raw) ─────────────────────────────────
+
+class _HeaderSummary extends StatefulWidget {
+  final String text;
+  final bool alignEnd;
+
+  const _HeaderSummary({
+    required this.text,
+    required this.alignEnd,
+  });
+
+  @override
+  State<_HeaderSummary> createState() => _HeaderSummaryState();
+}
+
+class _HeaderSummaryState extends State<_HeaderSummary> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleAlignEnd();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HeaderSummary oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text ||
+        oldWidget.alignEnd != widget.alignEnd) {
+      _scheduleAlignEnd();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _scheduleAlignEnd() {
+    if (!widget.alignEnd) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      _controller.jumpTo(_controller.position.maxScrollExtent);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.text.isEmpty) return const SizedBox.shrink();
+    final t = AppTokens.of(context);
+    return SingleChildScrollView(
+      controller: _controller,
+      scrollDirection: Axis.horizontal,
+      child: Text(
+        widget.text,
+        softWrap: false,
+        style: TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 11,
+          color: t.textMuted,
+        ),
+      ),
+    );
+  }
+}
 
 class _SegmentedControl extends StatelessWidget {
   final bool isRaw;
@@ -595,8 +728,15 @@ class _SectionLabel extends StatelessWidget {
 
 // ── Input body widgets ────────────────────────────────────────────────
 
-class _BashLine extends StatelessWidget {
+class _DisplayCommand {
   final String command;
+  final String? wrapper;
+
+  const _DisplayCommand({required this.command, this.wrapper});
+}
+
+class _BashLine extends StatelessWidget {
+  final _DisplayCommand command;
   final String cwd;
   const _BashLine({required this.command, this.cwd = ''});
   @override
@@ -624,8 +764,19 @@ class _BashLine extends StatelessWidget {
             ),
             const SizedBox(height: 4),
           ],
+          if (command.wrapper != null) ...[
+            Text(
+              'via ${command.wrapper}',
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 10.5,
+                color: t.textDim,
+              ),
+            ),
+            const SizedBox(height: 4),
+          ],
           SelectableText(
-            '\$ $command',
+            '\$ ${command.command}',
             style:
                 TextStyle(fontFamily: 'monospace', fontSize: 11, color: t.text),
           ),
@@ -695,14 +846,6 @@ class _CodexFileChange extends StatelessWidget {
 
   Widget _fileChangeRow(AppTokens t, dynamic row) {
     final map = row is Map ? row : const {};
-    final path = (map['path'] ?? map['file_path'] ?? '').toString();
-    final kind =
-        (map['kind'] ?? map['type'] ?? map['operation'] ?? 'change').toString();
-    final summary = [
-      if (map['additions'] != null) '+${map['additions']}',
-      if (map['deletions'] != null) '-${map['deletions']}',
-      if (map['status'] != null) '${map['status']}',
-    ].join(' ');
     final diff = _extractUnifiedDiff(map);
     final oldString =
         (map['old_string'] ?? map['oldString'] ?? map['before'])?.toString();
@@ -712,43 +855,11 @@ class _CodexFileChange extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            _KindPill(kind: kind),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                path.isEmpty ? row.toString() : path,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 11,
-                  color: t.text,
-                ),
-              ),
-            ),
-            if (summary.isNotEmpty) ...[
-              const SizedBox(width: 8),
-              Text(
-                summary,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 10.5,
-                  color: t.textDim,
-                ),
-              ),
-            ],
-          ],
-        ),
-        if (diff != null && diff.trim().isNotEmpty) ...[
-          const SizedBox(height: 8),
+        if (diff != null && diff.trim().isNotEmpty)
           _UnifiedDiffBlock(diff: diff),
-        ] else if ((oldString ?? '').isNotEmpty ||
-            (newString ?? '').isNotEmpty) ...[
-          const SizedBox(height: 8),
+        if ((diff == null || diff.trim().isEmpty) &&
+            ((oldString ?? '').isNotEmpty || (newString ?? '').isNotEmpty))
           DiffView(oldString: oldString ?? '', newString: newString ?? ''),
-        ],
       ],
     );
   }
@@ -767,34 +878,6 @@ class _CodexFileChange extends StatelessWidget {
   }
 }
 
-class _KindPill extends StatelessWidget {
-  final String kind;
-  const _KindPill({required this.kind});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: t.toolEdit.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(4),
-        border:
-            Border.all(color: t.toolEdit.withValues(alpha: 0.35), width: 0.5),
-      ),
-      child: Text(
-        kind,
-        style: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-          color: t.toolEdit,
-        ),
-      ),
-    );
-  }
-}
-
 class _UnifiedDiffBlock extends StatelessWidget {
   final String diff;
   const _UnifiedDiffBlock({required this.diff});
@@ -810,24 +893,31 @@ class _UnifiedDiffBlock extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
         border: Border.all(color: t.borderSubt, width: 0.5),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: diff.split('\n').map((line) {
-          final style = _styleForLine(context, t, line);
-          return Container(
-            color: style.$1,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
-            child: SelectableText(
-              line,
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 11,
-                color: style.$2,
-                height: 1.4,
-              ),
-            ),
-          );
-        }).toList(),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: IntrinsicWidth(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: diff.split('\n').map((line) {
+              final style = _styleForLine(context, t, line);
+              return Container(
+                color: style.$1,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
+                child: SelectableText(
+                  line,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    color: style.$2,
+                    height: 1.4,
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
       ),
     );
   }
@@ -904,7 +994,7 @@ class _JsonBlock extends StatelessWidget {
       ),
       child: SelectableText.rich(
         TextSpan(
-          children: _jsonSpans(truncated, t),
+          children: _jsonSpans(context, truncated, t),
           style: TextStyle(
             fontFamily: 'monospace',
             fontSize: 11,
@@ -916,7 +1006,7 @@ class _JsonBlock extends StatelessWidget {
     );
   }
 
-  List<TextSpan> _jsonSpans(String text, AppTokens t) {
+  List<TextSpan> _jsonSpans(BuildContext context, String text, AppTokens t) {
     final spans = <TextSpan>[];
     final token = RegExp(
       r'"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b',
@@ -928,7 +1018,7 @@ class _JsonBlock extends StatelessWidget {
       }
       final raw = match.group(0)!;
       final color = raw.startsWith('"') && _isJsonKey(text, match.end)
-          ? t.accent
+          ? _jsonKeyColor(context)
           : raw.startsWith('"')
               ? t.success
               : raw == 'true' || raw == 'false'
@@ -959,6 +1049,11 @@ class _JsonBlock extends StatelessWidget {
       i++;
     }
     return i < text.length && text[i] == ':';
+  }
+
+  Color _jsonKeyColor(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? const Color(0xFFB996FF) : const Color(0xFF7C3AED);
   }
 }
 

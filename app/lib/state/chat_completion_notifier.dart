@@ -1,16 +1,21 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 
+import '../api/chat_api.dart';
 import '../api/agents_api.dart';
 import '../screens/main_shell.dart';
 import 'projects_store.dart';
 
 final chatCompletionPulseProvider =
     StateProvider<Map<String, int>>((ref) => const {});
+
+const _nativeNotificationsChannel = MethodChannel('pawterm/notifications');
 
 class ChatCompletionPayload {
   final String cwd;
@@ -66,6 +71,15 @@ class ChatCompletionNotifier {
     description: 'AI turn completion alerts',
     importance: Importance.high,
   );
+  static const _approvalChannel = AndroidNotificationChannel(
+    'chat_approval',
+    'Chat approvals',
+    description: 'AI approval requests',
+    importance: Importance.high,
+  );
+  static const _actionDecline = 'approval_decline';
+  static const _actionAccept = 'approval_accept';
+  static const _actionAcceptForSession = 'approval_accept_for_session';
 
   final _plugin = FlutterLocalNotificationsPlugin();
   bool _initialized = false;
@@ -90,6 +104,10 @@ class ChatCompletionNotifier {
     await _plugin.initialize(
       settings: settings,
       onDidReceiveNotificationResponse: (response) {
+        if (response.actionId?.isNotEmpty == true) {
+          unawaited(handleApprovalAction(response));
+          return;
+        }
         _handlePayload(response.payload);
       },
     );
@@ -97,7 +115,12 @@ class ChatCompletionNotifier {
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(_channel);
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(_approvalChannel);
     _initialized = true;
+    unawaited(_requestAndroidPermissionIfForeground());
 
     final launchDetails = await _plugin.getNotificationAppLaunchDetails();
     final response = launchDetails?.notificationResponse;
@@ -107,48 +130,182 @@ class ChatCompletionNotifier {
     _flushPendingTap();
   }
 
+  Future<void> refreshForegroundPermission() async {
+    await _requestAndroidPermissionIfForeground();
+  }
+
   Future<void> notifyTurnComplete({
     required ChatCompletionPayload payload,
     required bool appInForeground,
   }) async {
     _markPulse(payload);
-    if (appInForeground) return;
-    await _ensureAndroidPermission();
+    if (appInForeground || _appIsVisibleNow()) return;
+    final id = payload.key.hashCode & 0x7fffffff;
+    final title = '${_agentLabel(payload.agent)} 已完成回复';
+    final body = payload.label.isEmpty ? payload.cwd : payload.label;
+    final line = '${_agentLabel(payload.agent)} · $body：已完成回复';
+    if (_appIsVisibleNow()) return;
+    try {
+      await _nativeNotificationsChannel.invokeMethod<void>(
+        'addSessionEvent',
+        {
+          'title': title,
+          'line': line,
+          'payload': jsonEncode(payload.toJson()),
+        },
+      );
+    } on MissingPluginException {
+      await _plugin.show(
+        id: id,
+        title: title,
+        body: body,
+        notificationDetails: NotificationDetails(
+          android: AndroidNotificationDetails(
+            _channel.id,
+            _channel.name,
+            channelDescription: _channel.description,
+            importance: Importance.high,
+            priority: Priority.high,
+            category: AndroidNotificationCategory.status,
+            ticker: 'AI turn complete',
+          ),
+        ),
+        payload: jsonEncode(payload.toJson()),
+      );
+    }
+  }
+
+  Future<void> notifyCodexApproval({
+    required ChatCompletionPayload payload,
+    required String apiBase,
+    required String? token,
+    required String uuid,
+    required String requestId,
+    required String title,
+    required String body,
+    required bool appInForeground,
+  }) async {
+    if (appInForeground || _appIsVisibleNow()) return;
+    if (!await _canNotifyWithoutPrompt()) return;
+    if (_appIsVisibleNow()) return;
+    final approvalPayload = {
+      'kind': 'codex_approval',
+      'api_base': apiBase,
+      if (token != null && token.isNotEmpty) 'token': token,
+      'uuid': uuid,
+      'request_id': requestId,
+      'session': payload.toJson(),
+    };
     await _plugin.show(
-      id: payload.key.hashCode & 0x7fffffff,
-      title: '${_agentLabel(payload.agent)} 已完成回复',
-      body: payload.label.isEmpty ? payload.cwd : payload.label,
+      id: 'approval|${payload.key}|$requestId'.hashCode & 0x7fffffff,
+      title: title,
+      body: body,
       notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
-          _channel.id,
-          _channel.name,
-          channelDescription: _channel.description,
+          _approvalChannel.id,
+          _approvalChannel.name,
+          channelDescription: _approvalChannel.description,
           importance: Importance.high,
           priority: Priority.high,
-          category: AndroidNotificationCategory.status,
-          ticker: 'AI turn complete',
+          category: AndroidNotificationCategory.recommendation,
+          ticker: 'Codex approval required',
+          actions: const [
+            AndroidNotificationAction(
+              _actionDecline,
+              '拒绝',
+              cancelNotification: true,
+            ),
+            AndroidNotificationAction(
+              _actionAccept,
+              '允许本次',
+              cancelNotification: true,
+            ),
+            AndroidNotificationAction(
+              _actionAcceptForSession,
+              '本会话允许',
+              cancelNotification: true,
+            ),
+          ],
         ),
       ),
-      payload: jsonEncode(payload.toJson()),
+      payload: jsonEncode(approvalPayload),
     );
   }
 
-  Future<void> _ensureAndroidPermission() async {
+  bool _appIsVisibleNow() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+  }
+
+  Future<void> _requestAndroidPermissionIfForeground() async {
+    if (!_appIsVisibleNow()) return;
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    final enabled = await android?.areNotificationsEnabled();
+    if (enabled == true) return;
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
   }
 
+  Future<bool> _canNotifyWithoutPrompt() async {
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    final enabled = await android?.areNotificationsEnabled();
+    return enabled ?? true;
+  }
+
   void _handlePayload(String? raw) {
     if (raw == null || raw.isEmpty) return;
     try {
-      _pendingTap = ChatCompletionPayload.fromJson(
-        jsonDecode(raw) as Map<String, dynamic>,
-      );
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      if (decoded['kind'] == 'codex_approval') {
+        final session = decoded['session'];
+        if (session is Map) {
+          _pendingTap = ChatCompletionPayload.fromJson(
+              Map<String, dynamic>.from(session));
+        }
+      } else {
+        _pendingTap = ChatCompletionPayload.fromJson(decoded);
+      }
       _flushPendingTap();
     } catch (err) {
       if (kDebugMode) debugPrint('Bad notification payload: $err');
+    }
+  }
+
+  Future<void> handleApprovalAction(NotificationResponse response) async {
+    final decision = switch (response.actionId) {
+      _actionDecline => 'decline',
+      _actionAccept => 'accept',
+      _actionAcceptForSession => 'acceptForSession',
+      _ => null,
+    };
+    final raw = response.payload;
+    if (decision == null || raw == null || raw.isEmpty) {
+      _handlePayload(raw);
+      return;
+    }
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      if (decoded['kind'] != 'codex_approval') return;
+      final apiBase = decoded['api_base'] as String;
+      final token = decoded['token'] as String?;
+      final uuid = decoded['uuid'] as String;
+      final requestId = decoded['request_id'] as String;
+      await ChatApi(apiBase, token: token)
+          .answerCodexApproval(uuid, requestId, decision);
+      final session = decoded['session'];
+      if (session is Map) {
+        _markPulse(ChatCompletionPayload.fromJson(
+          Map<String, dynamic>.from(session),
+        ));
+      }
+    } catch (err) {
+      if (kDebugMode) debugPrint('Bad approval action payload: $err');
+      _handlePayload(raw);
     }
   }
 
