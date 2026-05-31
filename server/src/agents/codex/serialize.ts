@@ -1,6 +1,7 @@
 import type { ChatServerMessage, ContentBlock } from '@pawterm/shared';
 
 type CodexItem = Record<string, any> & { type?: string; id?: string };
+type ToolUseBlock = Extract<ContentBlock, { type: 'tool_use' }>;
 
 function safeInput(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -8,7 +9,7 @@ function safeInput(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function toolUse(item: CodexItem, input: Record<string, unknown>): ContentBlock {
+function toolUse(item: CodexItem, input: Record<string, unknown>): ToolUseBlock {
   const native = String(item.type ?? 'unknown');
   return {
     type: 'tool_use',
@@ -34,7 +35,7 @@ function toolResult(item: CodexItem, content: unknown, isError = false): Content
   };
 }
 
-function namedToolUse(item: CodexItem, name: string, input: Record<string, unknown>): ContentBlock {
+function namedToolUse(item: CodexItem, name: string, input: Record<string, unknown>): ToolUseBlock {
   return {
     ...toolUse(item, input),
     name,
