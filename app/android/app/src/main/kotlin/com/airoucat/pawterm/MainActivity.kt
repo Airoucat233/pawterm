@@ -23,7 +23,11 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val apkInstallerChannel = "pawterm/apk_installer"
     private val notificationsChannel = "pawterm/notifications"
-    private val chatCompletionChannelId = "chat_completion_native"
+    private val sessionEventsChannelId = "session_events"
+    private val sessionEventsGroup = "pawterm.session_events"
+    private val sessionEventsSummaryId = 876501
+    private val sessionEventsInboxId = 876502
+    private val sessionEvents = ArrayDeque<String>()
     private val pendingApkDownloads = mutableSetOf<Long>()
     private var downloadReceiverRegistered = false
     private val downloadReceiver = object : BroadcastReceiver() {
@@ -61,13 +65,12 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "showChatCompletion" -> {
-                        val title = call.argument<String>("title") ?: "AI 已完成回复"
-                        val body = call.argument<String>("body") ?: ""
+                    "addSessionEvent" -> {
+                        val title = call.argument<String>("title") ?: "PawTerm"
+                        val line = call.argument<String>("line") ?: ""
                         val payload = call.argument<String>("payload")
-                        val id = call.argument<Int>("id") ?: title.hashCode()
                         try {
-                            showChatCompletionNotification(id, title, body, payload)
+                            addSessionEvent(title, line, payload)
                             result.success(null)
                         } catch (e: SecurityException) {
                             result.error("permission_denied", e.message, null)
@@ -150,45 +153,75 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun showChatCompletionNotification(
-        id: Int,
         title: String,
-        body: String,
+        line: String,
         payload: String?,
     ) {
-        ensureChatCompletionChannel()
+        addSessionEvent(title, line, payload)
+    }
+
+    private fun addSessionEvent(title: String, line: String, payload: String?) {
+        ensureSessionEventsChannel()
+        val cleanLine = line.ifBlank { title }
+        sessionEvents.addFirst(cleanLine)
+        while (sessionEvents.size > 8) sessionEvents.removeLast()
+
         val intent = Intent(this, MainActivity::class.java)
-            .setAction("pawterm.CHAT_COMPLETION")
+            .setAction("pawterm.SESSION_EVENTS")
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         if (!payload.isNullOrBlank()) {
             intent.putExtra("payload", payload)
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
-        val pendingIntent = PendingIntent.getActivity(this, id, intent, flags)
-        val notification = NotificationCompat.Builder(this, chatCompletionChannelId)
+        val pendingIntent = PendingIntent.getActivity(this, sessionEventsSummaryId, intent, flags)
+        val summaryTitle = "你收到了 ${sessionEvents.size} 条任务更新"
+        val inboxStyle = NotificationCompat.InboxStyle()
+        sessionEvents.take(5).forEach { inboxStyle.addLine(it) }
+        if (sessionEvents.size > 5) inboxStyle.setSummaryText("+ ${sessionEvents.size - 5}")
+
+        val summaryNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
             .setSmallIcon(applicationInfo.icon)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentTitle("PawTerm")
+            .setContentText(summaryTitle)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setGroup(sessionEventsGroup)
+            .setGroupSummary(true)
             .build()
-        NotificationManagerCompat.from(this).notify(id, notification)
+
+        val inboxNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle("PawTerm")
+            .setContentText(cleanLine)
+            .setStyle(inboxStyle)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setGroup(sessionEventsGroup)
+            .build()
+
+        val manager = NotificationManagerCompat.from(this)
+        manager.notify(sessionEventsSummaryId, summaryNotification)
+        manager.notify(sessionEventsInboxId, inboxNotification)
     }
 
-    private fun ensureChatCompletionChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    private fun ensureSessionEventsChannel() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val existing = manager.getNotificationChannel(chatCompletionChannelId)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        manager.deleteNotificationChannel("chat_completion")
+        manager.deleteNotificationChannel("chat_completion_native")
+        val existing = manager.getNotificationChannel(sessionEventsChannelId)
         if (existing != null) return
         val channel = NotificationChannel(
-            chatCompletionChannelId,
-            "Chat completion",
+            sessionEventsChannelId,
+            "Session events",
             NotificationManager.IMPORTANCE_HIGH,
         )
-        channel.description = "AI turn completion alerts"
+        channel.description = "Completed replies and approval requests"
         manager.createNotificationChannel(channel)
     }
 
