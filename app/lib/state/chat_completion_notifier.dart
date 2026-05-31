@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 
 import '../api/chat_api.dart';
 import '../api/agents_api.dart';
@@ -13,6 +14,8 @@ import 'projects_store.dart';
 
 final chatCompletionPulseProvider =
     StateProvider<Map<String, int>>((ref) => const {});
+
+const _nativeNotificationsChannel = MethodChannel('pawterm/notifications');
 
 class ChatCompletionPayload {
   final String cwd;
@@ -139,23 +142,38 @@ class ChatCompletionNotifier {
     if (appInForeground || _appIsVisibleNow()) return;
     if (!await _canNotifyWithoutPrompt()) return;
     if (_appIsVisibleNow()) return;
-    await _plugin.show(
-      id: payload.key.hashCode & 0x7fffffff,
-      title: '${_agentLabel(payload.agent)} 已完成回复',
-      body: payload.label.isEmpty ? payload.cwd : payload.label,
-      notificationDetails: NotificationDetails(
-        android: AndroidNotificationDetails(
-          _channel.id,
-          _channel.name,
-          channelDescription: _channel.description,
-          importance: Importance.high,
-          priority: Priority.high,
-          category: AndroidNotificationCategory.status,
-          ticker: 'AI turn complete',
+    final id = payload.key.hashCode & 0x7fffffff;
+    final title = '${_agentLabel(payload.agent)} 已完成回复';
+    final body = payload.label.isEmpty ? payload.cwd : payload.label;
+    try {
+      await _nativeNotificationsChannel.invokeMethod<void>(
+        'showChatCompletion',
+        {
+          'id': id,
+          'title': title,
+          'body': body,
+          'payload': jsonEncode(payload.toJson()),
+        },
+      );
+    } on MissingPluginException {
+      await _plugin.show(
+        id: id,
+        title: title,
+        body: body,
+        notificationDetails: NotificationDetails(
+          android: AndroidNotificationDetails(
+            _channel.id,
+            _channel.name,
+            channelDescription: _channel.description,
+            importance: Importance.high,
+            priority: Priority.high,
+            category: AndroidNotificationCategory.status,
+            ticker: 'AI turn complete',
+          ),
         ),
-      ),
-      payload: jsonEncode(payload.toJson()),
-    );
+        payload: jsonEncode(payload.toJson()),
+      );
+    }
   }
 
   Future<void> notifyCodexApproval({

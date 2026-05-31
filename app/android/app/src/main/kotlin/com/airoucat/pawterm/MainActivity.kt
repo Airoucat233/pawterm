@@ -1,6 +1,9 @@
 package com.airoucat.pawterm
 
 import android.app.DownloadManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -11,12 +14,16 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.webkit.MimeTypeMap
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val apkInstallerChannel = "pawterm/apk_installer"
+    private val notificationsChannel = "pawterm/notifications"
+    private val chatCompletionChannelId = "chat_completion_native"
     private val pendingApkDownloads = mutableSetOf<Long>()
     private var downloadReceiverRegistered = false
     private val downloadReceiver = object : BroadcastReceiver() {
@@ -46,6 +53,26 @@ class MainActivity : FlutterActivity() {
                             result.success(id)
                         } catch (e: Exception) {
                             result.error("download_failed", e.message, null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "showChatCompletion" -> {
+                        val title = call.argument<String>("title") ?: "AI 已完成回复"
+                        val body = call.argument<String>("body") ?: ""
+                        val payload = call.argument<String>("payload")
+                        val id = call.argument<Int>("id") ?: title.hashCode()
+                        try {
+                            showChatCompletionNotification(id, title, body, payload)
+                            result.success(null)
+                        } catch (e: SecurityException) {
+                            result.error("permission_denied", e.message, null)
+                        } catch (e: Exception) {
+                            result.error("notification_failed", e.message, null)
                         }
                     }
                     else -> result.notImplemented()
@@ -120,6 +147,49 @@ class MainActivity : FlutterActivity() {
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             startActivity(intent)
         }
+    }
+
+    private fun showChatCompletionNotification(
+        id: Int,
+        title: String,
+        body: String,
+        payload: String?,
+    ) {
+        ensureChatCompletionChannel()
+        val intent = Intent(this, MainActivity::class.java)
+            .setAction("pawterm.CHAT_COMPLETION")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (!payload.isNullOrBlank()) {
+            intent.putExtra("payload", payload)
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        val pendingIntent = PendingIntent.getActivity(this, id, intent, flags)
+        val notification = NotificationCompat.Builder(this, chatCompletionChannelId)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .build()
+        NotificationManagerCompat.from(this).notify(id, notification)
+    }
+
+    private fun ensureChatCompletionChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val existing = manager.getNotificationChannel(chatCompletionChannelId)
+        if (existing != null) return
+        val channel = NotificationChannel(
+            chatCompletionChannelId,
+            "Chat completion",
+            NotificationManager.IMPORTANCE_HIGH,
+        )
+        channel.description = "AI turn completion alerts"
+        manager.createNotificationChannel(channel)
     }
 
     private fun sanitizeFileName(input: String): String =
