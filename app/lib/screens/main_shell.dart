@@ -90,7 +90,6 @@ class _MainShellState extends ConsumerState<MainShell> {
             _BottomNav(
               tabs: tabs,
               index: _index,
-              openChatCount: openWindows.windows.length,
               hasRunningChat: openWindows.windows.any(
                 (window) => window.status == OpenChatWindowStatus.running,
               ),
@@ -109,10 +108,13 @@ class _MainShellState extends ConsumerState<MainShell> {
   }
 
   void _showOpenChatWindows(BuildContext context) {
-    showModalBottomSheet<void>(
+    showGeneralDialog<void>(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _OpenChatWindowsSheet(
+      barrierDismissible: true,
+      barrierLabel: '打开的会话',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 140),
+      pageBuilder: (ctx, _, __) => _OpenChatWindowsPopup(
         onSelect: (session) {
           ref.read(currentSessionProvider.notifier).state = session;
           ref
@@ -132,6 +134,20 @@ class _MainShellState extends ConsumerState<MainShell> {
           }
         },
       ),
+      transitionBuilder: (_, animation, __, child) {
+        final curved =
+            CurvedAnimation(parent: animation, curve: Curves.easeOut);
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.04),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
+        );
+      },
     );
   }
 
@@ -1220,13 +1236,11 @@ class _SheetChip extends StatelessWidget {
 class _BottomNav extends StatelessWidget {
   final List<_TabSpec> tabs;
   final int index;
-  final int openChatCount;
   final bool hasRunningChat;
   final ValueChanged<int> onChanged;
   const _BottomNav({
     required this.tabs,
     required this.index,
-    this.openChatCount = 0,
     this.hasRunningChat = false,
     required this.onChanged,
   });
@@ -1251,7 +1265,6 @@ class _BottomNav extends StatelessWidget {
                   label: tabs[i].label,
                   icon: tabs[i].icon,
                   selected: selected,
-                  badgeCount: i == 0 ? openChatCount : 0,
                   showRunningDot: i == 0 && hasRunningChat,
                   onTap: () => onChanged(i),
                 ),
@@ -1268,14 +1281,12 @@ class _NavItem extends StatelessWidget {
   final String label;
   final IconData icon;
   final bool selected;
-  final int badgeCount;
   final bool showRunningDot;
   final VoidCallback onTap;
   const _NavItem({
     required this.label,
     required this.icon,
     required this.selected,
-    this.badgeCount = 0,
     this.showRunningDot = false,
     required this.onTap,
   });
@@ -1301,29 +1312,6 @@ class _NavItem extends StatelessWidget {
                     top: -2,
                     child: _StatusDot(color: t.success, size: 7),
                   ),
-                if (badgeCount > 1)
-                  Positioned(
-                    right: -13,
-                    top: -8,
-                    child: Container(
-                      constraints:
-                          const BoxConstraints(minWidth: 15, minHeight: 15),
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      decoration: BoxDecoration(
-                        color: t.accent,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        '$badgeCount',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 9,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  ),
               ],
             ),
             const SizedBox(height: 4),
@@ -1343,11 +1331,11 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-class _OpenChatWindowsSheet extends ConsumerWidget {
+class _OpenChatWindowsPopup extends ConsumerWidget {
   final ValueChanged<CurrentSession> onSelect;
   final ValueChanged<String> onClose;
 
-  const _OpenChatWindowsSheet({
+  const _OpenChatWindowsPopup({
     required this.onSelect,
     required this.onClose,
   });
@@ -1357,84 +1345,100 @@ class _OpenChatWindowsSheet extends ConsumerWidget {
     final t = AppTokens.of(context);
     final state = ref.watch(openChatWindowsProvider);
     final windows = state.windows;
-    return SafeArea(
-      top: false,
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: t.border, width: 0.5),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.14),
-              blurRadius: 18,
-              offset: const Offset(0, 8),
+    final media = MediaQuery.of(context);
+    final width = min(media.size.width - 20, 390.0);
+    return Material(
+      color: Colors.transparent,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => Navigator.of(context).pop(),
             ),
-          ],
-        ),
-        constraints: const BoxConstraints(maxHeight: 360),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 10, 8),
-              child: Row(
-                children: [
-                  Icon(Icons.chat_bubble_outline, size: 16, color: t.accent),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '打开的会话',
-                      style: TextStyle(
-                        color: t.text,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    '${windows.length}',
-                    style: TextStyle(
-                      color: t.textDim,
-                      fontSize: 11,
-                      fontFamily: 'monospace',
-                    ),
+          ),
+          Positioned(
+            left: 10,
+            bottom: media.padding.bottom + 62,
+            width: width,
+            child: Container(
+              decoration: BoxDecoration(
+                color: t.surface,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: t.border, width: 0.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.16),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
                   ),
                 ],
               ),
-            ),
-            Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
-            if (windows.isEmpty)
-              Padding(
-                padding: const EdgeInsets.all(22),
-                child: Text(
-                  '暂无打开会话',
-                  style: TextStyle(color: t.textDim, fontSize: 12),
-                ),
-              )
-            else
-              Flexible(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  itemCount: windows.length,
-                  separatorBuilder: (_, __) =>
-                      Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
-                  itemBuilder: (_, i) {
-                    final window = windows[i];
-                    final selected = window.key == state.currentKey;
-                    return _OpenChatWindowRow(
-                      window: window,
-                      selected: selected,
-                      onSelect: () => onSelect(window.session),
-                      onClose: () => onClose(window.key),
-                    );
-                  },
+              constraints: BoxConstraints(
+                maxHeight: min(media.size.height * 0.54, 420.0),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 12, 10, 8),
+                      child: Row(
+                        children: [
+                          Icon(Icons.chat_bubble_outline,
+                              size: 16, color: t.accent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '打开的会话',
+                              style: TextStyle(
+                                color: t.text,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          Icon(Icons.keyboard_arrow_down_rounded,
+                              size: 18, color: t.textDim),
+                        ],
+                      ),
+                    ),
+                    Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
+                    if (windows.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(22),
+                        child: Text(
+                          '暂无打开会话',
+                          style: TextStyle(color: t.textDim, fontSize: 12),
+                        ),
+                      )
+                    else
+                      Flexible(
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          itemCount: windows.length,
+                          separatorBuilder: (_, __) => Divider(
+                              color: t.borderSubt, height: 0.5, thickness: 0.5),
+                          itemBuilder: (_, i) {
+                            final window = windows[i];
+                            final selected = window.key == state.currentKey;
+                            return _OpenChatWindowRow(
+                              window: window,
+                              selected: selected,
+                              onSelect: () => onSelect(window.session),
+                              onClose: () => onClose(window.key),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
                 ),
               ),
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1457,77 +1461,87 @@ class _OpenChatWindowRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final session = window.session;
-    return InkWell(
-      onTap: onSelect,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 9, 6, 9),
-        child: Row(
-          children: [
-            _StatusDot(color: _statusColor(t, window.status), size: 9),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color:
+              selected ? t.accent.withValues(alpha: 0.08) : Colors.transparent,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(
+            color: selected
+                ? t.accent.withValues(alpha: 0.24)
+                : Colors.transparent,
+            width: 0.5,
+          ),
+        ),
+        child: InkWell(
+          onTap: onSelect,
+          borderRadius: BorderRadius.circular(7),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+            child: Row(
+              children: [
+                _WindowStatusDot(status: window.status),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        _agentLabel(session.agent),
-                        style: TextStyle(
-                          color: selected ? t.accent : t.textMuted,
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          session.label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: t.text,
-                            fontSize: 13,
-                            fontWeight:
-                                selected ? FontWeight.w700 : FontWeight.w600,
+                      Row(
+                        children: [
+                          Text(
+                            _agentLabel(session.agent),
+                            style: TextStyle(
+                              color: selected ? t.accent : t.textMuted,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              session.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: t.text,
+                                fontSize: 13,
+                                fontWeight: selected
+                                    ? FontWeight.w700
+                                    : FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _compactPath(session.cwd),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: t.textDim,
+                          fontSize: 10.5,
+                          fontFamily: 'monospace',
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 3),
-                  Text(
-                    _compactPath(session.cwd),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: t.textDim,
-                      fontSize: 10.5,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                ],
-              ),
+                ),
+                IconButton(
+                  onPressed: onClose,
+                  icon: Icon(Icons.close_rounded, size: 16, color: t.textDim),
+                  padding: const EdgeInsets.all(8),
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 36),
+                ),
+              ],
             ),
-            IconButton(
-              onPressed: onClose,
-              icon: Icon(Icons.close_rounded, size: 16, color: t.textDim),
-              padding: const EdgeInsets.all(8),
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            ),
-          ],
+          ),
         ),
       ),
     );
-  }
-
-  Color _statusColor(AppTokens t, OpenChatWindowStatus status) {
-    return switch (status) {
-      OpenChatWindowStatus.running => t.success,
-      OpenChatWindowStatus.waiting => t.warning,
-      OpenChatWindowStatus.error => t.error,
-      OpenChatWindowStatus.idle => t.textDim,
-    };
   }
 
   String _agentLabel(AgentKind agent) {
@@ -1544,6 +1558,94 @@ class _OpenChatWindowRow extends StatelessWidget {
     final parts = folded.split('/');
     if (parts.length <= 2) return folded;
     return '${parts.first}/…/${parts.last}';
+  }
+}
+
+class _WindowStatusDot extends StatelessWidget {
+  final OpenChatWindowStatus status;
+
+  const _WindowStatusDot({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final color = _statusColor(t, status);
+    final animated = status == OpenChatWindowStatus.running ||
+        status == OpenChatWindowStatus.waiting;
+    if (!animated) {
+      return _StatusDot(color: color, size: 9);
+    }
+    return SizedBox(
+      width: 20,
+      height: 20,
+      child: _PulsingStatusDot(color: color),
+    );
+  }
+
+  Color _statusColor(AppTokens t, OpenChatWindowStatus status) {
+    return switch (status) {
+      OpenChatWindowStatus.running => t.success,
+      OpenChatWindowStatus.waiting => t.warning,
+      OpenChatWindowStatus.error => t.error,
+      OpenChatWindowStatus.idle => t.textDim,
+    };
+  }
+}
+
+class _PulsingStatusDot extends StatefulWidget {
+  final Color color;
+
+  const _PulsingStatusDot({required this.color});
+
+  @override
+  State<_PulsingStatusDot> createState() => _PulsingStatusDotState();
+}
+
+class _PulsingStatusDotState extends State<_PulsingStatusDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, __) {
+        final value = _controller.value;
+        final pulseSize = 9.0 + value * 11.0;
+        final opacity = (1.0 - value).clamp(0.0, 1.0) * 0.28;
+        return Center(
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: pulseSize,
+                height: pulseSize,
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: opacity),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              _StatusDot(color: widget.color, size: 9),
+            ],
+          ),
+        );
+      },
+    );
   }
 }
 
