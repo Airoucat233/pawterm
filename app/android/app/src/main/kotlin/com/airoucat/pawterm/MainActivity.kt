@@ -1,5 +1,6 @@
 package com.airoucat.pawterm
 
+import android.app.ActivityManager
 import android.app.DownloadManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -85,8 +86,20 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        updateTaskLabel()
         ensureDownloadReceiver()
         ensureSessionEventsChannel()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun updateTaskLabel() {
+        setTaskDescription(
+            ActivityManager.TaskDescription(
+                getString(R.string.app_name),
+                R.mipmap.ic_launcher,
+                0,
+            ),
+        )
     }
 
     override fun onDestroy() {

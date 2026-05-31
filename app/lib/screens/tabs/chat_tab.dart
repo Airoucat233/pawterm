@@ -1727,7 +1727,26 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _interrupt() {
     final session = _runtime.session ?? ref.read(currentSessionProvider);
     if (_busy && _sessionId != null && _chatApi != null && session != null) {
-      unawaited(_chatApi!.interrupt(_sessionId!, agent: session.agent));
+      final uuid = _sessionId!;
+      final api = _chatApi!;
+      unawaited(api.interrupt(uuid, agent: session.agent).catchError((error) {
+        if (!mounted) return;
+        if (error is ChatApiException && error.status == 404) {
+          _closeSse();
+          setState(() {
+            _busy = false;
+            _busyStartedAt = null;
+            _mode = CcStreamMode.requesting;
+            _currentBlockKind = null;
+            _thinkingStartedAt = null;
+            _thoughtSeconds = null;
+            _thoughtForTimer?.cancel();
+            _error = null;
+          });
+          _syncForegroundStreamService(session: session, busy: false);
+          unawaited(_refreshActiveRunState());
+        }
+      }));
     }
   }
 
@@ -2967,6 +2986,7 @@ class _ModelPickerButton extends StatelessWidget {
   });
 
   Future<void> _open(BuildContext context) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     ServerModels? serverModels;
     if (chatApi != null) {
       try {
@@ -2983,6 +3003,7 @@ class _ModelPickerButton extends StatelessWidget {
     final current = _currentFromServer(model, serverModels, models);
     final picked = await showModalBottomSheet<ModelOption>(
       context: context,
+      requestFocus: false,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       isScrollControlled: true,
@@ -3067,8 +3088,10 @@ class _RuntimeSettingsButton extends StatelessWidget {
   });
 
   Future<void> _open(BuildContext context) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     await showModalBottomSheet<void>(
       context: context,
+      requestFocus: false,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       isScrollControlled: true,
@@ -3194,8 +3217,10 @@ class _RuntimeSettingsSheet extends StatelessWidget {
   }
 
   Future<CcPermissionMode?> _pickPermission(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
     return showModalBottomSheet<CcPermissionMode>(
       context: context,
+      requestFocus: false,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       builder: (_) => _PermissionModeSheet(current: permissionMode),
@@ -3203,8 +3228,10 @@ class _RuntimeSettingsSheet extends StatelessWidget {
   }
 
   Future<void> _pickCodexRuntime(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
     return showModalBottomSheet<void>(
       context: context,
+      requestFocus: false,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       isScrollControlled: true,

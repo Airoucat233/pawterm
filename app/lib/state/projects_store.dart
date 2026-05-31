@@ -200,8 +200,15 @@ class ModelOption {
               },
       );
 
-  static ModelOption custom(String id) => ModelOption(
-      id, id.split('.').last.split('-').take(3).join('-'), 'fast', '自定义');
+  static ModelOption custom(String id) =>
+      ModelOption(id, _customModelLabel(id), 'fast', '自定义');
+}
+
+String _customModelLabel(String id) {
+  final trimmed = id.trim();
+  if (trimmed.isEmpty) return trimmed;
+  final providerParts = trimmed.split(RegExp(r'[/:\s]'));
+  return providerParts.isNotEmpty ? providerParts.last : trimmed;
 }
 
 const knownModels = <ModelOption>[

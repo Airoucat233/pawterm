@@ -107,7 +107,7 @@ class SettingsBody extends ConsumerWidget {
             label: s.settingsVersion,
             valueWidget: ref.watch(packageInfoProvider).when(
                   data: (info) => Text(
-                    'v${info.version}',
+                    formatPackageVersion(info),
                     style: TextStyle(
                       fontSize: 13,
                       color: AppTokens.of(context).textMuted,
