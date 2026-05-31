@@ -25,6 +25,7 @@ export interface AgentRun {
   events: AsyncIterable<unknown>;
   pushUserMessage?(text: string): void;
   setRuntime?(runtime: Partial<AgentRuntime>): Promise<void>;
+  answerApproval?(requestId: string, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): Promise<void>;
   interrupt(): Promise<void>;
   close(): void;
 }

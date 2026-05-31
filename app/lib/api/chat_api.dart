@@ -25,7 +25,7 @@ class TurnStatus {
         'running' => TurnState.running,
         _ => TurnState.unknown,
       },
-      holderDeviceId: j['holder_device_id'] as String?,
+      holderDeviceId: (j['holder_device_id'] ?? j['holder']) as String?,
     );
   }
 }
@@ -128,6 +128,25 @@ class ChatApi {
         'tool_use_id': toolUseId,
         'answers': answers,
         if (annotations != null) 'annotations': annotations,
+      }),
+    );
+    if (resp.statusCode != 200) {
+      throw ChatApiException(resp.statusCode, resp.body);
+    }
+  }
+
+  Future<void> answerCodexApproval(
+    String uuid,
+    String requestId,
+    String decision,
+  ) async {
+    final resp = await http.post(
+      Uri.parse('$_apiBase/chat/codex-approval'),
+      headers: {'Content-Type': 'application/json', ..._auth},
+      body: jsonEncode({
+        'uuid': uuid,
+        'request_id': requestId,
+        'decision': decision,
       }),
     );
     if (resp.statusCode != 200) {

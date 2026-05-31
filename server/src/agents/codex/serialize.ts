@@ -1,6 +1,7 @@
 import type { ChatServerMessage, ContentBlock } from '@pawterm/shared';
 
 type CodexItem = Record<string, any> & { type?: string; id?: string };
+type ToolUseBlock = Extract<ContentBlock, { type: 'tool_use' }>;
 
 function safeInput(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -8,7 +9,7 @@ function safeInput(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function toolUse(item: CodexItem, input: Record<string, unknown>): ContentBlock {
+function toolUse(item: CodexItem, input: Record<string, unknown>): ToolUseBlock {
   const native = String(item.type ?? 'unknown');
   return {
     type: 'tool_use',
@@ -31,6 +32,28 @@ function toolResult(item: CodexItem, content: unknown, isError = false): Content
     native_type: native,
     native_event: undefined,
     raw_payload: safe(item),
+  };
+}
+
+function namedToolUse(item: CodexItem, name: string, input: Record<string, unknown>): ToolUseBlock {
+  return {
+    ...toolUse(item, input),
+    name,
+  };
+}
+
+function webSearchInput(item: CodexItem): Record<string, unknown> {
+  const action = safeInput(item.action);
+  const query = String(action.query ?? item.query ?? '').trim();
+  const queries = Array.isArray(action.queries)
+    ? action.queries.map(String).filter((q) => q.trim().length > 0)
+    : query
+      ? [query]
+      : [];
+  return {
+    query,
+    queries,
+    action: String(action.type ?? ''),
   };
 }
 
@@ -62,6 +85,22 @@ export function codexThreadItemToWire(item: CodexItem): ChatServerMessage | null
         type: 'assistant',
         content: [toolUse(item, { text: String(item.text ?? '') })],
       };
+    case 'webSearch': {
+      const input = webSearchInput(item);
+      if (!input.query && (input.queries as unknown[]).length === 0) {
+        return {
+          type: 'assistant',
+          content: [namedToolUse(item, 'WebSearch', input)],
+        };
+      }
+      return {
+        type: 'assistant',
+        content: [
+          namedToolUse(item, 'WebSearch', input),
+          toolResult(item, safeStringify(input), false),
+        ],
+      };
+    }
     case 'commandExecution':
       if (!isFinishedStatus(item.status) && item.exitCode == null && item.aggregatedOutput == null) {
         return {

@@ -6,7 +6,9 @@ type RequestCall = { method: string; params: unknown };
 class FakeCodexClient {
   readonly requests: RequestCall[] = [];
   readonly handlers = new Set<(notification: { method: string; params?: unknown }) => void>();
+  readonly requestHandlers = new Set<(request: { id: string | number; method: string; params?: unknown }) => void>();
   readonly closeHandlers = new Set<() => void>();
+  readonly responses: Array<{ id: string | number; result: unknown }> = [];
   handlersAtTurnStart = 0;
 
   async request(method: string, params: unknown): Promise<unknown> {
@@ -45,6 +47,15 @@ class FakeCodexClient {
   onNotification(handler: (notification: { method: string; params?: unknown }) => void): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
+  }
+
+  onRequest(handler: (request: { id: string | number; method: string; params?: unknown }) => void): () => void {
+    this.requestHandlers.add(handler);
+    return () => this.requestHandlers.delete(handler);
+  }
+
+  respond(id: string | number, result: unknown): void {
+    this.responses.push({ id, result });
   }
 
   onClose(handler: () => void): () => void {
@@ -119,6 +130,73 @@ describe('CodexAgentProvider', () => {
     ]);
     expect(client.handlersAtTurnStart).toBe(1);
     expect(run.sessionId).toBe('new-thread');
+  });
+
+  it('passes Codex sandbox and approval policy when resuming a thread', async () => {
+    const client = new FakeCodexClient();
+    const provider = providerWith(client);
+
+    await provider.startTurn({
+      cwd: '/repo',
+      sessionId: 'thread-1',
+      text: 'hello',
+      runtime: { agent: 'codex', sandbox: 'danger-full-access', approval_policy: 'never' },
+      deviceId: 'phone',
+    });
+
+    expect(client.requests[0]).toEqual({
+      method: 'thread/resume',
+      params: expect.objectContaining({
+        threadId: 'thread-1',
+        cwd: '/repo',
+        sandbox: 'danger-full-access',
+        approvalPolicy: 'never',
+      }),
+    });
+  });
+
+  it('emits approval requests and responds to approval decisions', async () => {
+    const client = new FakeCodexClient();
+    const provider = providerWith(client);
+
+    const run = await provider.startTurn({
+      cwd: '/repo',
+      sessionId: 'thread-1',
+      text: 'hello',
+      runtime: { agent: 'codex', sandbox: 'workspace-write', approval_policy: 'on-request' },
+      deviceId: 'phone',
+    });
+
+    const iterator = run.events[Symbol.asyncIterator]();
+    for (const handler of client.requestHandlers) {
+      handler({
+        id: 'approval-1',
+        method: 'item/commandExecution/requestApproval',
+        params: { threadId: 'new-thread', turnId: 'turn-1', itemId: 'item-1', command: 'git status' },
+      });
+    }
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: {
+        id: 'approval-1',
+        method: 'item/commandExecution/requestApproval',
+        params: { threadId: 'new-thread', turnId: 'turn-1', itemId: 'item-1', command: 'git status' },
+      },
+    });
+
+    await run.answerApproval?.('approval-1', 'acceptForSession');
+    expect(client.responses).toEqual([
+      { id: 'approval-1', result: { decision: 'acceptForSession' } },
+    ]);
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: {
+        method: 'serverRequest/resolved',
+        params: { threadId: 'new-thread', requestId: 'approval-1', decision: 'acceptForSession' },
+      },
+    });
+    await iterator.return?.();
   });
 
   it('interrupts the active turn with threadId and turnId', async () => {

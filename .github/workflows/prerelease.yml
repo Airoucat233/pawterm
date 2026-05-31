@@ -39,6 +39,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - uses: gradle/actions/setup-gradle@v4
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.32.0'
@@ -50,7 +52,7 @@ jobs:
           printf '%s' "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > app/android/release.jks
 
       - name: Build APKs
-        run: CI=true bash app/scripts/build-apk.sh --prod
+        run: CI=true bash app/scripts/build-apk.sh --prod --arm64-only
         env:
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/app/android/release.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -133,7 +135,6 @@ jobs:
 
             **Android APK**
             - `pawterm-prerelease-*-arm64-v8a.apk` — modern devices
-            - `pawterm-prerelease-*-armeabi-v7a.apk` — older devices
 
             **Mac**
             - `PawTerm-prerelease-*-mac.zip` — macOS (Apple Silicon)

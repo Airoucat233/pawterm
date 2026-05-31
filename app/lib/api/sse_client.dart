@@ -18,7 +18,7 @@ class SseClient {
   final Map<String, String> headers;
   String? _lastEventId;
   http.Client? _httpClient;
-  StreamSubscription<List<int>>? _sub;
+  StreamSubscription<String>? _sub;
   final _events = StreamController<SseEvent>.broadcast();
   bool _closed = false;
   int _backoffMs = 1000;
@@ -63,7 +63,13 @@ class SseClient {
       return;
     }
     if (response.statusCode == 401) {
-      _events.add(SseEvent(type: '__auth_error', data: 'token rejected by server'));
+      _events.add(
+          SseEvent(type: '__auth_error', data: 'token rejected by server'));
+      _closed = true;
+      return;
+    }
+    if (response.statusCode == 404) {
+      _events.add(SseEvent(type: '__not_found', data: 'no active run'));
       _closed = true;
       return;
     }
@@ -74,9 +80,9 @@ class SseClient {
 
     final buffer = StringBuffer();
     final completer = Completer<void>();
-    _sub = response.stream.listen(
-      (chunk) {
-        buffer.write(utf8.decode(chunk, allowMalformed: true));
+    _sub = response.stream.transform(utf8.decoder).listen(
+      (text) {
+        buffer.write(text);
         _drainBuffer(buffer);
       },
       onDone: () {

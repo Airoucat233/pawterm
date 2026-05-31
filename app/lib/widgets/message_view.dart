@@ -7,6 +7,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../api/protocol.dart';
 import '../theme.dart';
 import 'ask_user_question.dart';
+import 'codex_approval_card.dart';
 import 'tool_call_card.dart';
 
 class MessageView extends StatelessWidget {
@@ -27,6 +28,9 @@ class MessageView extends StatelessWidget {
     Map<String, Map<String, String>>? annotations,
   )? onAnswerQuestion;
 
+  /// 提交 Codex app-server approval 决策的回调。
+  final void Function(String requestId, String decision)? onAnswerCodexApproval;
+
   /// 原始 SSE event data（仅 debug 打包时传入，release 为 null）。
   /// 长按消息可查看。
   final Map<String, dynamic>? rawJson;
@@ -37,6 +41,7 @@ class MessageView extends StatelessWidget {
     this.toolResults,
     this.subMsgsMap,
     this.onAnswerQuestion,
+    this.onAnswerCodexApproval,
     this.rawJson,
   });
 
@@ -321,6 +326,15 @@ class MessageView extends StatelessWidget {
 
     if (block is ToolUseBlock) {
       final result = toolResults?[block.id];
+      if (_isCodexApprovalRequest(block.name) &&
+          onAnswerCodexApproval != null &&
+          result?.isError != true) {
+        return CodexApprovalCard(
+          toolUse: block,
+          answeredResult: result,
+          onSubmit: onAnswerCodexApproval!,
+        );
+      }
       // 仅在工具调用 pending 或成功时渲染交互 Widget；
       // error result 说明调用失败（工具不存在 / 超时），fallback 到 ToolCallCard。
       if (block.name.endsWith('AskUserQuestion') &&
@@ -358,6 +372,12 @@ class MessageView extends StatelessWidget {
 
     return const SizedBox.shrink();
   }
+}
+
+bool _isCodexApprovalRequest(String name) {
+  return name == 'item/commandExecution/requestApproval' ||
+      name == 'item/fileChange/requestApproval' ||
+      name == 'item/permissions/requestApproval';
 }
 
 // ── command / system-reminder 标签解析 ────────────────────────
