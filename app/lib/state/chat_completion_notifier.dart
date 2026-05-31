@@ -144,6 +144,7 @@ class ChatCompletionNotifier {
     final title = '${_agentLabel(payload.agent)} 已完成回复';
     final body = payload.label.isEmpty ? payload.cwd : payload.label;
     final line = '${_agentLabel(payload.agent)} · $body：已完成回复';
+    if (_appIsVisibleNow()) return;
     try {
       await _nativeNotificationsChannel.invokeMethod<void>(
         'addSessionEvent',
