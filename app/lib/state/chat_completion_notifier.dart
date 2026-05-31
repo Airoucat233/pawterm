@@ -140,8 +140,6 @@ class ChatCompletionNotifier {
   }) async {
     _markPulse(payload);
     if (appInForeground || _appIsVisibleNow()) return;
-    if (!await _canNotifyWithoutPrompt()) return;
-    if (_appIsVisibleNow()) return;
     final id = payload.key.hashCode & 0x7fffffff;
     final title = '${_agentLabel(payload.agent)} 已完成回复';
     final body = payload.label.isEmpty ? payload.cwd : payload.label;

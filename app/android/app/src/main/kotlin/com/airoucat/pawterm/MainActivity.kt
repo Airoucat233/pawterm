@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.webkit.MimeTypeMap
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import io.flutter.embedding.engine.FlutterEngine
@@ -26,7 +27,6 @@ class MainActivity : FlutterActivity() {
     private val sessionEventsChannelId = "session_events"
     private val sessionEventsGroup = "pawterm.session_events"
     private val sessionEventsSummaryId = 876501
-    private val sessionEventsInboxId = 876502
     private val sessionEvents = ArrayDeque<String>()
     private val pendingApkDownloads = mutableSetOf<Long>()
     private var downloadReceiverRegistered = false
@@ -86,6 +86,7 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ensureDownloadReceiver()
+        ensureSessionEventsChannel()
     }
 
     override fun onDestroy() {
@@ -179,11 +180,13 @@ class MainActivity : FlutterActivity() {
         val inboxStyle = NotificationCompat.InboxStyle()
         sessionEvents.take(5).forEach { inboxStyle.addLine(it) }
         if (sessionEvents.size > 5) inboxStyle.setSummaryText("+ ${sessionEvents.size - 5}")
+        val eventId = (System.currentTimeMillis() and 0x7fffffff).toInt()
 
         val summaryNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
             .setSmallIcon(applicationInfo.icon)
             .setContentTitle("PawTerm")
             .setContentText(summaryTitle)
+            .setStyle(inboxStyle)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -192,11 +195,11 @@ class MainActivity : FlutterActivity() {
             .setGroupSummary(true)
             .build()
 
-        val inboxNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
+        val eventNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
             .setSmallIcon(applicationInfo.icon)
-            .setContentTitle("PawTerm")
+            .setContentTitle(title)
             .setContentText(cleanLine)
-            .setStyle(inboxStyle)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(cleanLine))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -205,8 +208,9 @@ class MainActivity : FlutterActivity() {
             .build()
 
         val manager = NotificationManagerCompat.from(this)
+        Log.i("PawTermNotify", "addSessionEvent enabled=${manager.areNotificationsEnabled()} count=${sessionEvents.size} line=$cleanLine")
         manager.notify(sessionEventsSummaryId, summaryNotification)
-        manager.notify(sessionEventsInboxId, inboxNotification)
+        manager.notify(eventId, eventNotification)
     }
 
     private fun ensureSessionEventsChannel() {
