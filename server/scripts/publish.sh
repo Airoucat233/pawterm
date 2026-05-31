@@ -31,8 +31,8 @@ fi
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-if [[ $PRERELEASE -eq 1 && "$CURRENT_BRANCH" != "feature/next" ]]; then
-  echo "✗ prerelease must be run from feature/next (current: $CURRENT_BRANCH)" >&2
+if [[ $PRERELEASE -eq 1 && "$CURRENT_BRANCH" != "feature/next" && "$CURRENT_BRANCH" != "main" ]]; then
+  echo "✗ prerelease must be run from feature/next or main (current: $CURRENT_BRANCH)" >&2
   exit 1
 fi
 if [[ $PRERELEASE -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then

@@ -55,6 +55,17 @@ CURRENT=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")
 [[ -z "$CURRENT" ]] && { echo "✗ Could not read version from pubspec.yaml" >&2; exit 1; }
 SEMVER="${CURRENT%%+*}"
 
+resolve_server_version() {
+  local version
+  version=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
+  if [[ $PRERELEASE -eq 1 ]]; then
+    local tag
+    tag=$(git -C "$REPO_ROOT" tag -l 'prerelease-server-v*' | sed 's/^prerelease-server-v//' | sort -V | tail -n 1)
+    [[ -n "$tag" ]] && version="$tag"
+  fi
+  echo "$version"
+}
+
 # ══════════════════════════════════════════════════════════════
 # --local: verify artifacts exist for current version, then release
 # ══════════════════════════════════════════════════════════════
@@ -144,7 +155,7 @@ print(pl.get('CFBundleShortVersionString', ''))
   fi
 
   # ---- Release ----
-  SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
+  SERVER_VERSION=$(resolve_server_version)
   if [[ $PRERELEASE -eq 1 ]]; then
     TITLE="[prerelease] v$SEMVER"
     [[ -n "$SERVER_VERSION" ]] && TITLE="[prerelease] v$SEMVER  ·  server v$SERVER_VERSION"
@@ -257,7 +268,7 @@ else
   TAG="release-v${APP_NEW%%+*}"
 fi
 
-SERVER_VERSION=$(/usr/bin/python3 -c "import json; print(json.load(open('$REPO_ROOT/server/package.json'))['version'])" 2>/dev/null || echo "")
+SERVER_VERSION=$(resolve_server_version)
 
 echo
 printf "  Android version : \033[32m%s\033[0m\n" "$APP_NEW"
