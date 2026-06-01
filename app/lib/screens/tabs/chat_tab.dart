@@ -32,6 +32,7 @@ import '../../widgets/cc_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/todo_chip.dart';
+import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -2517,10 +2518,11 @@ class _StatusRow extends StatelessWidget {
             GestureDetector(
               onTap: () {
                 Clipboard.setData(ClipboardData(text: uuid!));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('UUID copied'),
-                      duration: Duration(seconds: 1)),
+                showTopToast(
+                  context,
+                  'UUID copied',
+                  duration: const Duration(seconds: 1),
+                  icon: Icons.copy_rounded,
                 );
               },
               child: Container(

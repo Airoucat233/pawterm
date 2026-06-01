@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../i18n/locale_provider.dart';
 import '../../theme.dart';
+import '../../widgets/top_toast.dart';
 
 /// 终端上方的 cwd 状态条。
 ///
@@ -25,8 +26,7 @@ class ShellCwdBar extends ConsumerStatefulWidget {
 class _ShellCwdBarState extends ConsumerState<ShellCwdBar> {
   bool _expanded = false;
 
-  String _homeFold(String p) =>
-      p.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
+  String _homeFold(String p) => p.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
 
   /// 智能折叠：始终保留最后两段，其余压成 `…/`。
   /// 例：`~/workspace/shulex/claude-companion/server` → `~/…/claude-companion/server`
@@ -34,7 +34,8 @@ class _ShellCwdBarState extends ConsumerState<ShellCwdBar> {
     final folded = _homeFold(p);
     final segs = folded.split('/').where((e) => e.isNotEmpty).toList();
     final startsWithHome = folded.startsWith('~');
-    final headPrefix = startsWithHome ? '~' : (folded.startsWith('/') ? '' : '');
+    final headPrefix =
+        startsWithHome ? '~' : (folded.startsWith('/') ? '' : '');
 
     if (segs.length <= 2) return folded;
     if (startsWithHome && segs.length <= 3) return folded;
@@ -49,13 +50,11 @@ class _ShellCwdBarState extends ConsumerState<ShellCwdBar> {
     await Clipboard.setData(ClipboardData(text: widget.cwd));
     if (!mounted) return;
     final s = ref.read(stringsProvider);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(s.shellCwdCopied),
-        duration: const Duration(seconds: 1),
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
-      ),
+    showTopToast(
+      context,
+      s.shellCwdCopied,
+      duration: const Duration(seconds: 1),
+      icon: Icons.copy_rounded,
     );
   }
 

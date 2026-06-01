@@ -15,7 +15,7 @@ class CodexApprovalCard extends StatefulWidget {
     super.key,
     required this.toolUse,
     required this.answeredResult,
-    this.initiallyExpanded = false,
+    this.initiallyExpanded = true,
     required this.onSubmit,
   });
 

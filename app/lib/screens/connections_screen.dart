@@ -7,6 +7,7 @@ import '../i18n/locale_provider.dart' show stringsProvider;
 import '../i18n/strings.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
+import '../widgets/top_toast.dart';
 import 'add_connection_sheet.dart';
 import 'project_picker_screen.dart';
 import 'settings_screen.dart';
@@ -39,7 +40,8 @@ class _ConnectionsScreenState extends ConsumerState<ConnectionsScreen> {
                   Expanded(
                     child: connections.isEmpty
                         ? _EmptyState(onAdd: () => _showAddSheet(context))
-                        : _ConnectionList(connections: connections, active: active),
+                        : _ConnectionList(
+                            connections: connections, active: active),
                   ),
                 ],
               )
@@ -91,7 +93,11 @@ class _NavItem extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
-  const _NavItem({required this.icon, required this.label, required this.selected, required this.onTap});
+  const _NavItem(
+      {required this.icon,
+      required this.label,
+      required this.selected,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -183,12 +189,14 @@ class _EmptyState extends ConsumerWidget {
                 border: Border.all(color: t.border),
                 borderRadius: BorderRadius.circular(24),
               ),
-              child: const Center(child: Text('🖥️', style: TextStyle(fontSize: 36))),
+              child: const Center(
+                  child: Text('🖥️', style: TextStyle(fontSize: 36))),
             ),
             const SizedBox(height: 20),
             Text(
               s.connectionsEmpty,
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: t.text),
+              style: TextStyle(
+                  fontSize: 17, fontWeight: FontWeight.w600, color: t.text),
             ),
             const SizedBox(height: 8),
             Text(
@@ -217,9 +225,7 @@ class _ConnectionList extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(stringsProvider);
-    final recent = connections
-        .where((e) => e.lastConnected != null)
-        .toList()
+    final recent = connections.where((e) => e.lastConnected != null).toList()
       ..sort((a, b) => b.lastConnected!.compareTo(a.lastConnected!));
     final others = connections.where((e) => e.lastConnected == null).toList();
 
@@ -232,7 +238,9 @@ class _ConnectionList extends ConsumerWidget {
             _ConnCard(entry: e, isActive: e.id == active?.id),
         ],
         if (others.isNotEmpty) ...[
-          _SectionLabel(recent.isEmpty ? s.connectionsSectionAll : s.connectionsSectionOther),
+          _SectionLabel(recent.isEmpty
+              ? s.connectionsSectionAll
+              : s.connectionsSectionOther),
           for (final e in others)
             _ConnCard(entry: e, isActive: e.id == active?.id),
         ],
@@ -279,9 +287,7 @@ class _ConnCard extends ConsumerWidget {
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         decoration: BoxDecoration(
-          color: isActive
-              ? Color.lerp(t.surface, t.accent, 0.04)
-              : t.surface,
+          color: isActive ? Color.lerp(t.surface, t.accent, 0.04) : t.surface,
           border: Border.all(
             color: isActive ? t.accent.withValues(alpha: 0.3) : t.border,
           ),
@@ -324,8 +330,9 @@ class _ConnCard extends ConsumerWidget {
                         if (isActive)
                           _Tag(label: s.connectionsTagConnected, accent: true)
                         else if (entry.lastConnected != null)
-                          _Tag(label: s.connectionsTagLastUsedTpl
-                              .replaceAll('{ago}', _ago(entry.lastConnected!, s))),
+                          _Tag(
+                              label: s.connectionsTagLastUsedTpl.replaceAll(
+                                  '{ago}', _ago(entry.lastConnected!, s))),
                       ],
                     ),
                   ],
@@ -373,11 +380,16 @@ class _ConnCard extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 8),
-            Container(width: 36, height: 4, decoration: BoxDecoration(color: t.border, borderRadius: BorderRadius.circular(2))),
+            Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: t.border, borderRadius: BorderRadius.circular(2))),
             const SizedBox(height: 8),
             ListTile(
               leading: Icon(Icons.edit_outlined, color: t.textMuted),
-              title: Text(s.connectionsEdit, style: TextStyle(color: t.text, fontSize: 15)),
+              title: Text(s.connectionsEdit,
+                  style: TextStyle(color: t.text, fontSize: 15)),
               onTap: () {
                 Navigator.pop(ctx);
                 showModalBottomSheet(
@@ -392,12 +404,16 @@ class _ConnCard extends ConsumerWidget {
               Divider(color: t.borderSubt, height: 1),
               ListTile(
                 leading: Icon(Icons.copy_outlined, color: t.textMuted),
-                title: Text(s.connectionsCopyToken, style: TextStyle(color: t.text, fontSize: 15)),
+                title: Text(s.connectionsCopyToken,
+                    style: TextStyle(color: t.text, fontSize: 15)),
                 onTap: () {
                   Navigator.pop(ctx);
                   Clipboard.setData(ClipboardData(text: entry.token!));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(s.connectionsTokenCopied), duration: const Duration(seconds: 1)),
+                  showTopToast(
+                    context,
+                    s.connectionsTokenCopied,
+                    duration: const Duration(seconds: 1),
+                    icon: Icons.copy_rounded,
                   );
                 },
               ),
@@ -405,7 +421,8 @@ class _ConnCard extends ConsumerWidget {
             Divider(color: t.borderSubt, height: 1),
             ListTile(
               leading: Icon(Icons.delete_outline, color: t.error),
-              title: Text(s.connectionsRemove, style: TextStyle(color: t.error, fontSize: 15)),
+              title: Text(s.connectionsRemove,
+                  style: TextStyle(color: t.error, fontSize: 15)),
               onTap: () {
                 Navigator.pop(ctx);
                 ref.read(connectionsProvider.notifier).remove(entry.id);
@@ -424,9 +441,15 @@ class _ConnCard extends ConsumerWidget {
   String _ago(DateTime dt, Strings s) {
     final diff = DateTime.now().difference(dt);
     if (diff.inMinutes < 1) return s.timeJustNow;
-    if (diff.inHours < 1) return s.timeMinutesAgoTpl.replaceAll('{n}', '${diff.inMinutes}');
-    if (diff.inDays < 1) return s.timeHoursAgoTpl.replaceAll('{n}', '${diff.inHours}');
-    if (diff.inDays < 7) return s.timeDaysAgoTpl.replaceAll('{n}', '${diff.inDays}');
+    if (diff.inHours < 1) {
+      return s.timeMinutesAgoTpl.replaceAll('{n}', '${diff.inMinutes}');
+    }
+    if (diff.inDays < 1) {
+      return s.timeHoursAgoTpl.replaceAll('{n}', '${diff.inHours}');
+    }
+    if (diff.inDays < 7) {
+      return s.timeDaysAgoTpl.replaceAll('{n}', '${diff.inDays}');
+    }
     return s.timeWeeksAgoTpl.replaceAll('{n}', '${(diff.inDays / 7).floor()}');
   }
 }
@@ -448,7 +471,8 @@ class _Avatar extends StatelessWidget {
             color: t.accentSubt,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Center(child: Text(emoji, style: const TextStyle(fontSize: 20))),
+          child:
+              Center(child: Text(emoji, style: const TextStyle(fontSize: 20))),
         ),
         Positioned(
           bottom: -1,
