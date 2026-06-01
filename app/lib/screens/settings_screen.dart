@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,6 +8,8 @@ import '../state/app_info.dart';
 import '../state/prefs.dart';
 import '../theme.dart';
 import '../utils/update_checker.dart';
+
+const _apkInstallerChannel = MethodChannel('pawterm/apk_installer');
 
 // ── Public standalone screen (used from MainShell top-bar gear button) ────────
 
@@ -457,14 +460,13 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
       });
       return;
     }
-    // Prerelease channel: always offer the newest prerelease if it exists.
-    final hasUpdate =
-        prereleaseChannel ? true : isNewerVersion(release.tagName, current);
+    final hasUpdate = isNewerVersion(release.tagName, current);
     if (hasUpdate) {
       setState(() {
         _status = _UpdateStatus.hasUpdate;
         _release = release;
       });
+      await _showUpdateDialog(release);
     } else {
       setState(() => _status = _UpdateStatus.upToDate);
       Future.delayed(const Duration(seconds: 3), () {
@@ -473,12 +475,75 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
     }
   }
 
-  Future<void> _openReleasePage() async {
-    if (_release == null) return;
-    final url = Uri.parse(
-        'https://github.com/Airoucat233/pawterm/releases/tag/${_release!.tagName}');
+  Future<void> _showUpdateDialog(GithubRelease release) async {
+    final s = ref.read(stringsProvider);
+    final asset = findApkAsset(release);
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(s.updateDialogTitle),
+        content: Text(
+          s.updateDialogMessageTpl.replaceAll('{version}', release.tagName),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(s.genericCancel),
+          ),
+          TextButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _openDownloadInBrowser(release);
+            },
+            icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+            label: Text(s.updateOpenInBrowser),
+          ),
+          if (asset != null)
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _downloadAndInstall(asset);
+              },
+              icon: const Icon(Icons.system_update_alt_rounded, size: 18),
+              label: Text(s.updateInstallInApp),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openDownloadInBrowser(GithubRelease release) async {
+    final asset = findApkAsset(release);
+    final url = Uri.parse(asset?.downloadUrl ??
+        'https://github.com/Airoucat233/pawterm/releases/tag/${release.tagName}');
     if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
+      final opened = await launchUrl(url, mode: LaunchMode.inAppBrowserView);
+      if (!opened) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    }
+  }
+
+  Future<void> _downloadAndInstall(GithubAsset asset) async {
+    final s = ref.read(stringsProvider);
+    try {
+      await _apkInstallerChannel.invokeMethod<void>('downloadAndInstallApk', {
+        'url': asset.downloadUrl,
+        'fileName': asset.name,
+        'headers': const <String, String>{},
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text(s.updateInstallStartedTpl.replaceAll('{name}', asset.name)),
+        ),
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message ?? e.code)),
+      );
     }
   }
 
@@ -517,7 +582,9 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
     }
 
     return InkWell(
-      onTap: _status == _UpdateStatus.hasUpdate ? _openReleasePage : _check,
+      onTap: _status == _UpdateStatus.hasUpdate && _release != null
+          ? () => _showUpdateDialog(_release!)
+          : _check,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
