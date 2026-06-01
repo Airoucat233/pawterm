@@ -102,3 +102,27 @@ class PrereleaseChannelNotifier extends StateNotifier<bool> {
 final prereleaseChannelProvider =
     StateNotifierProvider<PrereleaseChannelNotifier, bool>(
         (_) => PrereleaseChannelNotifier());
+
+class FileToolCardsExpandedNotifier extends StateNotifier<bool> {
+  FileToolCardsExpandedNotifier() : super(true) {
+    _load();
+  }
+
+  static const _key = 'file_tool_cards_expanded_v1';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? true;
+  }
+
+  Future<void> set(bool value) async {
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, value);
+  }
+}
+
+final fileToolCardsExpandedProvider =
+    StateNotifierProvider<FileToolCardsExpandedNotifier, bool>(
+  (_) => FileToolCardsExpandedNotifier(),
+);

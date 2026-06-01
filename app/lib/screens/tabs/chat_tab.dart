@@ -32,6 +32,7 @@ import '../../widgets/cc_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/todo_chip.dart';
+import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -107,6 +108,7 @@ class _ChatSessionRuntime {
   String? unrespondedUserText;
   String? dismissedApprovalPopoverId;
   final Set<String> notifiedApprovalIds = {};
+  final Set<String> presentedApprovalSheetIds = {};
   final List<_AttachmentState> attachments = [];
   final Map<String, List<IncomingMessage>> subMsgs = {};
   final Map<String, StreamingAssistant> subStreaming = {};
@@ -255,6 +257,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   set _dismissedApprovalPopoverId(String? value) =>
       _runtime.dismissedApprovalPopoverId = value;
   Set<String> get _notifiedApprovalIds => _runtime.notifiedApprovalIds;
+  Set<String> get _presentedApprovalSheetIds =>
+      _runtime.presentedApprovalSheetIds;
 
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
@@ -906,12 +910,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final nextRuntime = {...session.runtime, ...patch};
     final next = session.copyWith(runtime: nextRuntime);
     ref.read(currentSessionProvider.notifier).state = next;
+    _runtime.session = next;
     unawaited(ref
         .read(projectAgentRuntimeProvider.notifier)
         .setRuntime(next.cwd, next.agent, next.runtime));
-    if (next.agent == AgentKind.claude &&
-        _sessionId != null &&
-        _chatApi != null) {
+    if (_sessionId != null && _chatApi != null) {
       unawaited(_chatApi!.runtime(_sessionId!, next.agent, next.runtime));
     }
   }
@@ -1253,6 +1256,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _handleWireMessage(Map<String, dynamic> json) {
     if (!mounted) return;
+    final eventRuntime = _runtime;
     final msg = IncomingMessage.fromJson(json);
     final wireUuid = json['uuid'] as String?;
     final isCodexSnapshot = _isCodexRealtimeSnapshot(json, wireUuid);
@@ -1323,16 +1327,20 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // 当前轮结束 — 看看队列里有没有用户在 busy 期间堆的消息，
         // 有就出队继续发（递归触发下一轮）。
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _drainQueue();
+          if (mounted && _isActiveRuntime(eventRuntime)) {
+            _withRuntime(eventRuntime, _drainQueue);
+          }
         });
         // Turn finished — cancel subscription and close SSE proactively so the
         // SseClient's reconnect loop never fires after the server's grace period ends.
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
-            _sseSub?.cancel();
-            _sseSub = null;
-            unawaited(_sseClient?.close() ?? Future.value());
-            setState(() => _sseClient = null);
+            _withRuntime(eventRuntime, () {
+              _sseSub?.cancel();
+              _sseSub = null;
+              unawaited(_sseClient?.close() ?? Future.value());
+              setState(() => _sseClient = null);
+            });
           }
         });
       } else if (msg is ErrorMsg) {
@@ -1650,13 +1658,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                   await _persistPendingQueue();
                 }));
               }
-              final current = ref.read(currentSessionProvider);
-              if (current != null &&
-                  current.agent == session.agent &&
-                  current.cwd == session.cwd &&
-                  current.resumeId == session.resumeId) {
+              final adoptedSession =
+                  session.copyWith(resumeId: actualSessionId);
+              runtime.session = adoptedSession;
+              if (_isActiveRuntime(runtime)) {
                 ref.read(currentSessionProvider.notifier).state =
-                    current.copyWith(resumeId: actualSessionId);
+                    adoptedSession;
               }
             }
           }
@@ -1727,7 +1734,26 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _interrupt() {
     final session = _runtime.session ?? ref.read(currentSessionProvider);
     if (_busy && _sessionId != null && _chatApi != null && session != null) {
-      unawaited(_chatApi!.interrupt(_sessionId!, agent: session.agent));
+      final uuid = _sessionId!;
+      final api = _chatApi!;
+      unawaited(api.interrupt(uuid, agent: session.agent).catchError((error) {
+        if (!mounted) return;
+        if (error is ChatApiException && error.status == 404) {
+          _closeSse();
+          setState(() {
+            _busy = false;
+            _busyStartedAt = null;
+            _mode = CcStreamMode.requesting;
+            _currentBlockKind = null;
+            _thinkingStartedAt = null;
+            _thoughtSeconds = null;
+            _thoughtForTimer?.cancel();
+            _error = null;
+          });
+          _syncForegroundStreamService(session: session, busy: false);
+          unawaited(_refreshActiveRunState());
+        }
+      }));
     }
   }
 
@@ -1800,9 +1826,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 把 Codex app-server approval 决策通过 REST 回给 server。
   void _sendCodexApproval(String requestId, String decision) {
-    if (_sessionId == null || _chatApi == null) return;
-    _notifiedApprovalIds.remove(requestId);
-    unawaited(_chatApi!.answerCodexApproval(_sessionId!, requestId, decision));
+    _sendCodexApprovalForRuntime(_runtime, requestId, decision);
+  }
+
+  void _sendCodexApprovalForRuntime(
+    _ChatSessionRuntime runtime,
+    String requestId,
+    String decision,
+  ) {
+    final uuid = runtime.sessionId;
+    final api = runtime.chatApi;
+    if (uuid == null || api == null) return;
+    runtime.notifiedApprovalIds.remove(requestId);
+    unawaited(api.answerCodexApproval(uuid, requestId, decision));
   }
 
   void _notifyCodexApprovalIfNeeded(
@@ -1814,6 +1850,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (_appInForeground || uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
     if (!_notifiedApprovalIds.add(requestId)) return;
+    unawaited(StreamingForegroundService.instance.upsert(
+      _completionPayloadFor(session),
+      activity: '等待审批',
+    ));
     unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
       payload: _completionPayloadFor(session),
       apiBase: config.apiBase,
@@ -1854,6 +1894,40 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     return '需要你确认后继续';
   }
 
+  Future<void> _showCodexApprovalSheetIfNeeded(
+    _PendingCodexApproval approval,
+  ) async {
+    final requestId = approval.toolUse.id;
+    if (_dismissedApprovalPopoverId == requestId) return;
+    if (!_presentedApprovalSheetIds.add(requestId)) return;
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      requestFocus: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.32),
+      builder: (sheetContext) => _ApprovalBottomSheet(
+        toolUse: approval.toolUse,
+        result: approval.result,
+        onSubmit: (id, decision) {
+          _sendCodexApproval(id, decision);
+          Navigator.of(sheetContext).pop(true);
+        },
+      ),
+    );
+    if (!mounted) return;
+    if (submitted == true) {
+      setState(() => _dismissedApprovalPopoverId = requestId);
+    } else {
+      setState(() {
+        _dismissedApprovalPopoverId = requestId;
+        _presentedApprovalSheetIds.remove(requestId);
+      });
+    }
+  }
+
   void _syncForegroundStreamService({
     CurrentSession? session,
     bool? busy,
@@ -1874,11 +1948,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   String _foregroundActivityLabel() {
     return switch (_mode) {
-      CcStreamMode.requesting => '正在建立请求',
-      CcStreamMode.thinking => '正在思考',
+      CcStreamMode.requesting => '连接中',
+      CcStreamMode.thinking => '思考中',
       CcStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
-      CcStreamMode.responding => '正在生成回复',
-      CcStreamMode.toolInput => '正在准备工具调用',
+      CcStreamMode.responding => '生成回复',
+      CcStreamMode.toolInput => '准备工具',
     };
   }
 
@@ -2028,7 +2102,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final activeApproval = _latestPendingCodexApproval(toolResults);
     if (activeApproval != null && config != null && _sessionId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _notifyCodexApprovalIfNeeded(activeApproval, config);
+        if (!mounted) return;
+        _notifyCodexApprovalIfNeeded(activeApproval, config);
+        _showCodexApprovalSheetIfNeeded(activeApproval);
       });
     }
 
@@ -2159,21 +2235,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                     onTap: () => _scrollToEnd(force: true),
                   ),
                 ),
-              if (activeApproval != null &&
-                  activeApproval.toolUse.id != _dismissedApprovalPopoverId)
-                _ApprovalPopoverOverlay(
-                  toolUse: activeApproval.toolUse,
-                  result: activeApproval.result,
-                  onDismiss: () => setState(() {
-                    _dismissedApprovalPopoverId = activeApproval.toolUse.id;
-                  }),
-                  onSubmit: (requestId, decision) {
-                    setState(() {
-                      _dismissedApprovalPopoverId = requestId;
-                    });
-                    _sendCodexApproval(requestId, decision);
-                  },
-                ),
             ],
           ),
         ),
@@ -2252,97 +2313,78 @@ bool _isCodexApprovalRequestName(String name) {
       name == 'item/permissions/requestApproval';
 }
 
-class _ApprovalPopoverOverlay extends StatelessWidget {
+class _ApprovalBottomSheet extends StatelessWidget {
   final ToolUseBlock toolUse;
   final ToolResultBlock? result;
-  final VoidCallback onDismiss;
   final void Function(String requestId, String decision) onSubmit;
 
-  const _ApprovalPopoverOverlay({
+  const _ApprovalBottomSheet({
     required this.toolUse,
     required this.result,
-    required this.onDismiss,
     required this.onSubmit,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return Positioned.fill(
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTap: onDismiss,
-              child: const SizedBox.expand(),
-            ),
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(18),
+            bottom: Radius.circular(10),
           ),
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: 12,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {},
-              child: Material(
-                color: Colors.transparent,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: t.surface,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: t.border, width: 0.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.14),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                  ),
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.privacy_tip_outlined,
-                              size: 14, color: t.warning),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              '当前会话需要审批',
-                              style: TextStyle(
-                                color: t.text,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          InkResponse(
-                            onTap: onDismiss,
-                            radius: 18,
-                            child: Padding(
-                              padding: const EdgeInsets.all(6),
-                              child: Icon(Icons.close_rounded,
-                                  size: 16, color: t.textDim),
-                            ),
-                          ),
-                        ],
-                      ),
-                      CodexApprovalCard(
-                        toolUse: toolUse,
-                        answeredResult: result,
-                        onSubmit: onSubmit,
-                      ),
-                    ],
-                  ),
+          border: Border.all(color: t.border, width: 0.5),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: t.border,
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(Icons.privacy_tip_outlined, size: 16, color: t.warning),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '当前会话需要审批',
+                    style: TextStyle(
+                      color: t.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  icon: Icon(Icons.close_rounded, size: 18, color: t.textDim),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '忽略',
+                ),
+              ],
+            ),
+            CodexApprovalCard(
+              toolUse: toolUse,
+              answeredResult: result,
+              initiallyExpanded: true,
+              onSubmit: onSubmit,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2478,10 +2520,11 @@ class _StatusRow extends StatelessWidget {
             GestureDetector(
               onTap: () {
                 Clipboard.setData(ClipboardData(text: uuid!));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text('UUID copied'),
-                      duration: Duration(seconds: 1)),
+                showTopToast(
+                  context,
+                  'UUID copied',
+                  duration: const Duration(seconds: 1),
+                  icon: Icons.copy_rounded,
                 );
               },
               child: Container(
@@ -2967,6 +3010,7 @@ class _ModelPickerButton extends StatelessWidget {
   });
 
   Future<void> _open(BuildContext context) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     ServerModels? serverModels;
     if (chatApi != null) {
       try {
@@ -2983,6 +3027,7 @@ class _ModelPickerButton extends StatelessWidget {
     final current = _currentFromServer(model, serverModels, models);
     final picked = await showModalBottomSheet<ModelOption>(
       context: context,
+      requestFocus: false,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       isScrollControlled: true,
@@ -3067,8 +3112,10 @@ class _RuntimeSettingsButton extends StatelessWidget {
   });
 
   Future<void> _open(BuildContext context) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     await showModalBottomSheet<void>(
       context: context,
+      requestFocus: false,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
       isScrollControlled: true,
@@ -3102,7 +3149,7 @@ class _RuntimeSettingsButton extends StatelessWidget {
   }
 }
 
-class _RuntimeSettingsSheet extends StatelessWidget {
+class _RuntimeSettingsSheet extends StatefulWidget {
   final AgentKind agent;
   final Map<String, dynamic> runtime;
   final CcPermissionMode permissionMode;
@@ -3117,14 +3164,46 @@ class _RuntimeSettingsSheet extends StatelessWidget {
   });
 
   @override
+  State<_RuntimeSettingsSheet> createState() => _RuntimeSettingsSheetState();
+}
+
+class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
+  late Map<String, dynamic> _runtime =
+      Map<String, dynamic>.from(widget.runtime);
+  late CcPermissionMode _permissionMode = widget.permissionMode;
+  bool _showPermissionPage = false;
+
+  void _patchRuntime(Map<String, dynamic> patch) {
+    setState(() => _runtime = {..._runtime, ...patch});
+    widget.onPatchRuntime(patch);
+  }
+
+  void _setPermissionMode(CcPermissionMode mode) {
+    setState(() => _permissionMode = mode);
+    widget.onSwitchPermissionMode(mode);
+  }
+
+  @override
+  void didUpdateWidget(covariant _RuntimeSettingsSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.runtime != widget.runtime) {
+      _runtime = Map<String, dynamic>.from(widget.runtime);
+    }
+    if (oldWidget.permissionMode != widget.permissionMode) {
+      _permissionMode = widget.permissionMode;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final title = switch (agent) {
+    final title = switch (widget.agent) {
       AgentKind.claude => 'Claude 运行设置',
       AgentKind.codex => 'Codex 运行设置',
       AgentKind.gemini => 'Gemini 运行设置',
     };
     return Container(
+      height: 420,
       margin: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: t.surface,
@@ -3149,70 +3228,111 @@ class _RuntimeSettingsSheet extends StatelessWidget {
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              child: Row(
-                children: [
-                  Icon(Icons.tune_rounded, size: 16, color: t.textMuted),
-                  const SizedBox(width: 8),
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: t.text,
-                    ),
-                  ),
-                ],
-              ),
+            _RuntimeSheetHeader(
+              title: _showPermissionPage ? '权限设置' : title,
+              icon: _showPermissionPage
+                  ? Icons.shield_outlined
+                  : Icons.tune_rounded,
+              showBack: _showPermissionPage,
+              onBack: () => setState(() => _showPermissionPage = false),
             ),
             Divider(color: t.borderSubt, height: 0.5),
-            if (agent == AgentKind.claude)
-              _RuntimeActionRow(
-                icon: Icons.shield_outlined,
-                title: '权限',
-                value: _permissionLabel(permissionMode),
-                onTap: () async {
-                  final picked = await _pickPermission(context);
-                  if (picked != null) onSwitchPermissionMode(picked);
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                transitionBuilder: (child, animation) {
+                  final enteringPermission =
+                      child.key == const ValueKey('permission');
+                  final begin = enteringPermission
+                      ? const Offset(1, 0)
+                      : const Offset(-1, 0);
+                  return SlideTransition(
+                    position: Tween<Offset>(
+                      begin: begin,
+                      end: Offset.zero,
+                    ).animate(CurvedAnimation(
+                      parent: animation,
+                      curve: Curves.easeOutCubic,
+                    )),
+                    child: FadeTransition(opacity: animation, child: child),
+                  );
                 },
-              )
-            else if (agent == AgentKind.codex) ...[
-              _RuntimeActionRow(
-                icon: Icons.rule_folder_outlined,
-                title: '权限',
-                value:
-                    '${_approvalLabel((runtime['approval_policy'] ?? 'on-request').toString())} · ${_sandboxLabel((runtime['sandbox'] ?? 'workspace-write').toString())}',
-                onTap: () => _pickCodexRuntime(context),
+                child: _showPermissionPage
+                    ? _runtimePermissionPage()
+                    : _runtimeOverviewPage(),
               ),
-            ],
-            const SizedBox(height: 6),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Future<CcPermissionMode?> _pickPermission(BuildContext context) {
-    return showModalBottomSheet<CcPermissionMode>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      builder: (_) => _PermissionModeSheet(current: permissionMode),
+  Widget _runtimeOverviewPage() {
+    if (widget.agent == AgentKind.codex) {
+      return ListView(
+        key: const ValueKey('overview'),
+        padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
+        children: [
+          _RuntimeActionRow(
+            icon: Icons.rule_folder_outlined,
+            title: '权限',
+            value:
+                '${_approvalLabel((_runtime['approval_policy'] ?? 'on-request').toString())} · ${_sandboxLabel((_runtime['sandbox'] ?? 'workspace-write').toString())}',
+            onTap: () => setState(() => _showPermissionPage = true),
+          ),
+        ],
+      );
+    }
+    return ListView(
+      key: const ValueKey('overview'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
+      children: [
+        _RuntimeActionRow(
+          icon: Icons.shield_outlined,
+          title: '权限',
+          value: _permissionLabel(_permissionMode),
+          onTap: () => setState(() => _showPermissionPage = true),
+        ),
+      ],
     );
   }
 
-  Future<void> _pickCodexRuntime(BuildContext context) {
-    return showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      isScrollControlled: true,
-      builder: (_) => _CodexRuntimeSheet(
-        approvalPolicy: (runtime['approval_policy'] ?? 'on-request').toString(),
-        sandbox: (runtime['sandbox'] ?? 'workspace-write').toString(),
-        onPatchRuntime: onPatchRuntime,
-      ),
+  Widget _runtimePermissionPage() {
+    if (widget.agent == AgentKind.codex) {
+      return _CodexRuntimePermissionPage(
+        key: const ValueKey('permission'),
+        approvalPolicy:
+            (_runtime['approval_policy'] ?? 'on-request').toString(),
+        sandbox: (_runtime['sandbox'] ?? 'workspace-write').toString(),
+        onPatchRuntime: _patchRuntime,
+      );
+    }
+    return ListView.separated(
+      key: const ValueKey('permission'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
+      itemCount: CcPermissionMode.values.length,
+      separatorBuilder: (context, index) {
+        final t = AppTokens.of(context);
+        return Divider(
+          color: t.borderSubt,
+          height: 0.5,
+          indent: 16,
+          endIndent: 16,
+        );
+      },
+      itemBuilder: (context, index) {
+        final mode = CcPermissionMode.values[index];
+        final t = AppTokens.of(context);
+        return _PermissionModeRow(
+          mode: mode,
+          label: _permissionLabel(mode),
+          description: _permissionDescription(mode),
+          glyph: _permissionGlyph(mode, t),
+          selected: mode == _permissionMode,
+          onTap: () => _setPermissionMode(mode),
+        );
+      },
     );
   }
 
@@ -3236,6 +3356,67 @@ class _RuntimeSettingsSheet extends StatelessWidget {
         'danger-full-access' => '完全访问',
         _ => value,
       };
+
+  String _permissionDescription(CcPermissionMode m) => switch (m) {
+        CcPermissionMode.defaultMode => '按 Claude Code 默认策略询问',
+        CcPermissionMode.acceptEdits => '自动接受文件编辑，高风险操作仍询问',
+        CcPermissionMode.plan => '只规划，不直接修改文件',
+        CcPermissionMode.bypass => '跳过权限检查，完整访问',
+      };
+
+  (IconData, Color) _permissionGlyph(CcPermissionMode m, AppTokens t) =>
+      switch (m) {
+        CcPermissionMode.defaultMode => (Icons.front_hand_outlined, t.warning),
+        CcPermissionMode.acceptEdits => (Icons.edit_note_outlined, t.accent),
+        CcPermissionMode.plan => (Icons.checklist_outlined, t.toolRead),
+        CcPermissionMode.bypass => (Icons.rocket_launch_outlined, t.toolBash),
+      };
+}
+
+class _RuntimeSheetHeader extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final bool showBack;
+  final VoidCallback onBack;
+  const _RuntimeSheetHeader({
+    required this.title,
+    required this.icon,
+    required this.showBack,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 16, 8),
+      child: Row(
+        children: [
+          if (showBack)
+            IconButton(
+              onPressed: onBack,
+              icon: Icon(Icons.arrow_back_rounded, size: 18, color: t.text),
+              visualDensity: VisualDensity.compact,
+              tooltip: '返回',
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(left: 8, right: 8),
+              child: Icon(icon, size: 16, color: t.textMuted),
+            ),
+          if (showBack) const SizedBox(width: 2),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: t.text,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _RuntimeActionRow extends StatelessWidget {
@@ -3284,146 +3465,111 @@ class _RuntimeActionRow extends StatelessWidget {
   }
 }
 
-class _CodexRuntimeSheet extends StatefulWidget {
+class _CodexRuntimePermissionPage extends StatefulWidget {
   final String approvalPolicy;
   final String sandbox;
   final void Function(Map<String, dynamic>) onPatchRuntime;
-  const _CodexRuntimeSheet({
+  const _CodexRuntimePermissionPage({
+    super.key,
     required this.approvalPolicy,
     required this.sandbox,
     required this.onPatchRuntime,
   });
 
   @override
-  State<_CodexRuntimeSheet> createState() => _CodexRuntimeSheetState();
+  State<_CodexRuntimePermissionPage> createState() =>
+      _CodexRuntimePermissionPageState();
 }
 
-class _CodexRuntimeSheetState extends State<_CodexRuntimeSheet> {
+class _CodexRuntimePermissionPageState
+    extends State<_CodexRuntimePermissionPage> {
   late String _approvalPolicy = widget.approvalPolicy;
   late String _sandbox = widget.sandbox;
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return Container(
-      margin: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: t.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: t.border),
-      ),
-      child: SafeArea(
-        top: false,
-        child: DefaultTabController(
-          length: 2,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 10, bottom: 4),
-                child: Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: t.border,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.rule_folder_outlined,
-                        size: 16, color: t.textMuted),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Codex 权限',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: t.text,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              TabBar(
-                labelColor: t.text,
-                unselectedLabelColor: t.textDim,
-                indicatorColor: t.accent,
-                indicatorSize: TabBarIndicatorSize.tab,
-                dividerColor: t.borderSubt,
-                tabs: const [
-                  Tab(text: '审批'),
-                  Tab(text: '沙箱'),
-                ],
-              ),
-              SizedBox(
-                height: 232,
-                child: TabBarView(
-                  children: [
-                    _CodexRuntimeOptionList(
-                      value: _approvalPolicy,
-                      options: const [
-                        _RuntimeOption(
-                          value: 'on-request',
-                          label: '按需审批',
-                          description: '需要越权或高风险操作时询问',
-                          icon: Icons.front_hand_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'untrusted',
-                          label: '严格审批',
-                          description: '更保守地请求确认',
-                          icon: Icons.verified_user_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'never',
-                          label: '不询问',
-                          description: '不弹审批请求，失败则直接返回',
-                          icon: Icons.not_interested_outlined,
-                        ),
-                      ],
-                      onPick: (v) {
-                        setState(() => _approvalPolicy = v);
-                        widget.onPatchRuntime({'approval_policy': v});
-                      },
-                    ),
-                    _CodexRuntimeOptionList(
-                      value: _sandbox,
-                      options: const [
-                        _RuntimeOption(
-                          value: 'workspace-write',
-                          label: '工作区可写',
-                          description: '允许修改当前工作区文件',
-                          icon: Icons.folder_copy_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'read-only',
-                          label: '只读',
-                          description: '只能读取文件和上下文',
-                          icon: Icons.visibility_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'danger-full-access',
-                          label: '完全访问',
-                          description: '不限制文件系统访问',
-                          icon: Icons.warning_amber_rounded,
-                        ),
-                      ],
-                      onPick: (v) {
-                        setState(() => _sandbox = v);
-                        widget.onPatchRuntime({'sandbox': v});
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+    return ListView(
+      key: const ValueKey('permission'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 12),
+      children: [
+        _InlineSectionLabel(label: '审批', t: t),
+        _CodexRuntimeOptionList(
+          value: _approvalPolicy,
+          options: const [
+            _RuntimeOption(
+              value: 'on-request',
+              label: '按需审批',
+              description: '需要越权或高风险操作时询问',
+              icon: Icons.front_hand_outlined,
+            ),
+            _RuntimeOption(
+              value: 'untrusted',
+              label: '严格审批',
+              description: '更保守地请求确认',
+              icon: Icons.verified_user_outlined,
+            ),
+            _RuntimeOption(
+              value: 'never',
+              label: '不询问',
+              description: '不弹审批请求，失败则直接返回',
+              icon: Icons.not_interested_outlined,
+            ),
+          ],
+          onPick: (v) {
+            setState(() => _approvalPolicy = v);
+            widget.onPatchRuntime({'approval_policy': v});
+          },
+        ),
+        Divider(color: t.borderSubt, height: 16),
+        _InlineSectionLabel(label: '沙箱', t: t),
+        _CodexRuntimeOptionList(
+          value: _sandbox,
+          options: const [
+            _RuntimeOption(
+              value: 'workspace-write',
+              label: '工作区可写',
+              description: '允许修改当前工作区文件',
+              icon: Icons.folder_copy_outlined,
+            ),
+            _RuntimeOption(
+              value: 'read-only',
+              label: '只读',
+              description: '只能读取文件和上下文',
+              icon: Icons.visibility_outlined,
+            ),
+            _RuntimeOption(
+              value: 'danger-full-access',
+              label: '完全访问',
+              description: '不限制文件系统访问',
+              icon: Icons.warning_amber_rounded,
+            ),
+          ],
+          onPick: (v) {
+            setState(() => _sandbox = v);
+            widget.onPatchRuntime({'sandbox': v});
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _InlineSectionLabel extends StatelessWidget {
+  final String label;
+  final AppTokens t;
+  const _InlineSectionLabel({required this.label, required this.t});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: t.textDim,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );
@@ -3543,101 +3689,6 @@ class _CodexRuntimeOptionRow extends StatelessWidget {
       ),
     );
   }
-}
-
-class _PermissionModeSheet extends StatelessWidget {
-  final CcPermissionMode current;
-  const _PermissionModeSheet({required this.current});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Container(
-      margin: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: t.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: t.border),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 10, bottom: 4),
-              child: Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: t.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              child: Row(
-                children: [
-                  Icon(Icons.shield_outlined, size: 16, color: t.textMuted),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Claude 权限',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: t.text,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            for (final mode in CcPermissionMode.values) ...[
-              Divider(
-                color: t.borderSubt,
-                height: 0.5,
-                indent: 16,
-                endIndent: 16,
-              ),
-              _PermissionModeRow(
-                mode: mode,
-                label: _permissionLabel(mode),
-                description: _permissionDescription(mode),
-                glyph: _permissionGlyph(mode, t),
-                selected: mode == current,
-                onTap: () => Navigator.of(context).pop(mode),
-              ),
-            ],
-            const SizedBox(height: 6),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _permissionLabel(CcPermissionMode m) => switch (m) {
-        CcPermissionMode.defaultMode => 'Default',
-        CcPermissionMode.acceptEdits => 'Accept Edits',
-        CcPermissionMode.plan => 'Plan',
-        CcPermissionMode.bypass => 'Bypass',
-      };
-
-  String _permissionDescription(CcPermissionMode m) => switch (m) {
-        CcPermissionMode.defaultMode => '按 Claude Code 默认策略询问',
-        CcPermissionMode.acceptEdits => '自动接受文件编辑，高风险操作仍询问',
-        CcPermissionMode.plan => '只规划，不直接修改文件',
-        CcPermissionMode.bypass => '跳过权限检查，完整访问',
-      };
-
-  (IconData, Color) _permissionGlyph(CcPermissionMode m, AppTokens t) =>
-      switch (m) {
-        CcPermissionMode.defaultMode => (Icons.front_hand_outlined, t.warning),
-        CcPermissionMode.acceptEdits => (Icons.edit_note_outlined, t.accent),
-        CcPermissionMode.plan => (Icons.checklist_outlined, t.toolRead),
-        CcPermissionMode.bypass => (Icons.rocket_launch_outlined, t.toolBash),
-      };
 }
 
 /// 输入框右侧的 40×40 圆形按钮（黑白主题，对照 cxclaw）。

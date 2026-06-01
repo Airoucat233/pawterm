@@ -108,8 +108,10 @@ class _MainShellState extends ConsumerState<MainShell> {
   }
 
   void _showOpenChatWindows(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
     showGeneralDialog<void>(
       context: context,
+      requestFocus: false,
       barrierDismissible: true,
       barrierLabel: '打开的会话',
       barrierColor: Colors.transparent,
@@ -152,8 +154,10 @@ class _MainShellState extends ConsumerState<MainShell> {
   }
 
   void _showSessionSwitcher(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
     showModalBottomSheet(
       context: context,
+      requestFocus: false,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => _SessionSwitcherSheet(
@@ -171,8 +175,10 @@ class _MainShellState extends ConsumerState<MainShell> {
     Connection conn,
     CurrentSession session,
   ) {
+    FocusManager.instance.primaryFocus?.unfocus();
     showGeneralDialog(
       context: context,
+      requestFocus: false,
       barrierDismissible: true,
       barrierLabel: 'Git',
       barrierColor: Colors.black.withValues(alpha: 0.28),

@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../i18n/locale_provider.dart';
 import '../state/app_info.dart';
 import '../state/prefs.dart';
-import '../state/projects_store.dart';
 import '../theme.dart';
 import '../utils/update_checker.dart';
+
+const _apkInstallerChannel = MethodChannel('pawterm/apk_installer');
 
 // ── Public standalone screen (used from MainShell top-bar gear button) ────────
 
@@ -43,7 +45,7 @@ class SettingsBody extends ConsumerWidget {
     final s = ref.watch(stringsProvider);
     final themeMode = ref.watch(prefsProvider);
     final langPref = ref.watch(langPrefProvider);
-    final model = ref.watch(currentModelProvider);
+    final fileToolExpanded = ref.watch(fileToolCardsExpandedProvider);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
@@ -84,19 +86,17 @@ class SettingsBody extends ConsumerWidget {
           ),
         ]),
 
-        // ── Claude 模型 ───────────────────────────────
-        _SettingSection(s.settingsClaudeModel),
+        // ── 对话 ──────────────────────────────────────
+        const _SettingSection('对话'),
         _SettingCard(children: [
-          for (final m in knownModels) ...[
-            _RadioRow(
-              label: m.label,
-              icon: Icons.auto_awesome_outlined,
-              subtitle: m.description,
-              selected: model.id == m.id,
-              onTap: () => ref.read(currentModelProvider.notifier).state = m,
-            ),
-            if (m != knownModels.last) _Divider(),
-          ],
+          _SwitchRow(
+            label: '文件工具默认展开',
+            subtitle: '控制文件修改、补丁等工具卡片进入对话时是否自动展开',
+            icon: Icons.description_outlined,
+            value: fileToolExpanded,
+            onChanged: (v) =>
+                ref.read(fileToolCardsExpandedProvider.notifier).set(v),
+          ),
         ]),
 
         // ── 关于 ──────────────────────────────────────
@@ -107,7 +107,7 @@ class SettingsBody extends ConsumerWidget {
             label: s.settingsVersion,
             valueWidget: ref.watch(packageInfoProvider).when(
                   data: (info) => Text(
-                    'v${info.version}',
+                    formatPackageVersion(info),
                     style: TextStyle(
                       fontSize: 13,
                       color: AppTokens.of(context).textMuted,
@@ -263,56 +263,50 @@ class _SegmentRow extends StatelessWidget {
   }
 }
 
-class _RadioRow extends StatelessWidget {
+class _SwitchRow extends StatelessWidget {
   final String label;
-  final IconData icon;
   final String subtitle;
-  final bool selected;
-  final VoidCallback onTap;
-  const _RadioRow({
+  final IconData icon;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _SwitchRow({
     required this.label,
-    required this.icon,
     required this.subtitle,
-    required this.selected,
-    required this.onTap,
+    required this.icon,
+    required this.value,
+    required this.onChanged,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     return InkWell(
-      onTap: onTap,
+      onTap: () => onChanged(!value),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         child: Row(
           children: [
-            Icon(icon, size: 18, color: selected ? t.accent : t.textMuted),
+            Icon(icon, size: 18, color: t.textMuted),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      color: t.text,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
+                  Text(label, style: TextStyle(fontSize: 14, color: t.text)),
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      color: t.textDim.withValues(alpha: 0.85),
-                      letterSpacing: 0.1,
-                    ),
+                    style: TextStyle(fontSize: 11, color: t.textMuted),
                   ),
                 ],
               ),
             ),
-            if (selected) Icon(Icons.check_rounded, size: 18, color: t.accent),
+            Switch(
+              value: value,
+              onChanged: onChanged,
+              activeColor: t.accent,
+            ),
           ],
         ),
       ),
@@ -466,14 +460,13 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
       });
       return;
     }
-    // Prerelease channel: always offer the newest prerelease if it exists.
-    final hasUpdate =
-        prereleaseChannel ? true : isNewerVersion(release.tagName, current);
+    final hasUpdate = isNewerVersion(release.tagName, current);
     if (hasUpdate) {
       setState(() {
         _status = _UpdateStatus.hasUpdate;
         _release = release;
       });
+      await _showUpdateDialog(release);
     } else {
       setState(() => _status = _UpdateStatus.upToDate);
       Future.delayed(const Duration(seconds: 3), () {
@@ -482,12 +475,75 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
     }
   }
 
-  Future<void> _openReleasePage() async {
-    if (_release == null) return;
-    final url = Uri.parse(
-        'https://github.com/Airoucat233/pawterm/releases/tag/${_release!.tagName}');
+  Future<void> _showUpdateDialog(GithubRelease release) async {
+    final s = ref.read(stringsProvider);
+    final asset = findApkAsset(release);
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(s.updateDialogTitle),
+        content: Text(
+          s.updateDialogMessageTpl.replaceAll('{version}', release.tagName),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(s.genericCancel),
+          ),
+          TextButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _openDownloadInBrowser(release);
+            },
+            icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+            label: Text(s.updateOpenInBrowser),
+          ),
+          if (asset != null)
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _downloadAndInstall(asset);
+              },
+              icon: const Icon(Icons.system_update_alt_rounded, size: 18),
+              label: Text(s.updateInstallInApp),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openDownloadInBrowser(GithubRelease release) async {
+    final asset = findApkAsset(release);
+    final url = Uri.parse(asset?.downloadUrl ??
+        'https://github.com/Airoucat233/pawterm/releases/tag/${release.tagName}');
     if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
+      final opened = await launchUrl(url, mode: LaunchMode.inAppBrowserView);
+      if (!opened) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    }
+  }
+
+  Future<void> _downloadAndInstall(GithubAsset asset) async {
+    final s = ref.read(stringsProvider);
+    try {
+      await _apkInstallerChannel.invokeMethod<void>('downloadAndInstallApk', {
+        'url': asset.downloadUrl,
+        'fileName': asset.name,
+        'headers': const <String, String>{},
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text(s.updateInstallStartedTpl.replaceAll('{name}', asset.name)),
+        ),
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message ?? e.code)),
+      );
     }
   }
 
@@ -526,7 +582,9 @@ class _CheckUpdateTileState extends ConsumerState<_CheckUpdateTile> {
     }
 
     return InkWell(
-      onTap: _status == _UpdateStatus.hasUpdate ? _openReleasePage : _check,
+      onTap: _status == _UpdateStatus.hasUpdate && _release != null
+          ? () => _showUpdateDialog(_release!)
+          : _check,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(

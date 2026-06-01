@@ -72,8 +72,8 @@ Future<GithubRelease?> _fetchPrereleaseRelease() async {
 bool isNewerVersion(String latestTag, String currentVersion) {
   final latest = versionFromTag(latestTag);
   final current = currentVersion.split('+').first;
-  final l = latest.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-  final c = current.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+  final l = _versionParts(latest);
+  final c = _versionParts(current);
   for (var i = 0; i < 3; i++) {
     final lv = i < l.length ? l[i] : 0;
     final cv = i < c.length ? c[i] : 0;
@@ -81,6 +81,13 @@ bool isNewerVersion(String latestTag, String currentVersion) {
     if (lv < cv) return false;
   }
   return false;
+}
+
+List<int> _versionParts(String version) {
+  return version
+      .split('.')
+      .map((s) => int.tryParse(s.replaceAll(RegExp(r'[^0-9].*$'), '')) ?? 0)
+      .toList();
 }
 
 String versionFromTag(String tagName) {
