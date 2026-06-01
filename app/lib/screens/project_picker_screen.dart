@@ -10,6 +10,7 @@ import '../api/projects_api.dart';
 import '../api/sessions_api.dart';
 import '../main.dart' show routeObserver;
 import '../state/agents_store.dart';
+import '../state/chat_completion_notifier.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
@@ -1114,14 +1115,20 @@ class _ProjectCardState extends ConsumerState<_ProjectCard> {
       path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
 }
 
-class _SessionRow extends StatelessWidget {
+class _SessionRow extends ConsumerWidget {
   final SessionSummary session;
   final VoidCallback onTap;
   const _SessionRow({required this.session, required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
+    final hasPendingApproval =
+        ref.watch(inAppChatNotificationsProvider).any((item) =>
+            item.kind == InAppChatNotificationKind.approval &&
+            item.payload.resumeId == session.sessionId &&
+            item.payload.agent == session.agent &&
+            (session.cwd == null || item.payload.cwd == session.cwd));
     final ts = session.lastModified;
     final timeText = ts == null
         ? ''
@@ -1162,7 +1169,17 @@ class _SessionRow extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (session.holderDeviceId != null) ...[
+                      if (hasPendingApproval) ...[
+                        const SizedBox(width: 6),
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: _PulsingStatusDot(color: t.warning),
+                        ),
+                        const SizedBox(width: 3),
+                        Text('待审批',
+                            style: TextStyle(fontSize: 10, color: t.warning)),
+                      ] else if (session.holderDeviceId != null) ...[
                         const SizedBox(width: 6),
                         Container(
                           width: 6,
@@ -1247,6 +1264,69 @@ class _SessionListViewport extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _PulsingStatusDot extends StatefulWidget {
+  final Color color;
+  const _PulsingStatusDot({required this.color});
+
+  @override
+  State<_PulsingStatusDot> createState() => _PulsingStatusDotState();
+}
+
+class _PulsingStatusDotState extends State<_PulsingStatusDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, __) {
+        final value = _controller.value;
+        final pulseSize = 7.0 + value * 10.0;
+        final opacity = (1.0 - value).clamp(0.0, 1.0) * 0.30;
+        return Center(
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: pulseSize,
+                height: pulseSize,
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: opacity),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

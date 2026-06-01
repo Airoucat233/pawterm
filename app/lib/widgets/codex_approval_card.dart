@@ -67,6 +67,9 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
           children: [
             InkWell(
               onTap: () => setState(() => _expanded = !_expanded),
+              onDoubleTap: _expanded
+                  ? () => setState(() => _expanded = false)
+                  : null,
               borderRadius: BorderRadius.circular(6),
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),

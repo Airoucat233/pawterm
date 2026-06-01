@@ -65,6 +65,9 @@ class _ToolCallCardState extends ConsumerState<ToolCallCard> {
 
     return InkWell(
       onTap: canExpand ? () => setState(() => _expanded = !_expanded) : null,
+      onDoubleTap: canExpand && _expanded
+          ? () => setState(() => _expanded = false)
+          : null,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.only(top: 0, bottom: 1),
@@ -271,6 +274,9 @@ class _ToolCallCardState extends ConsumerState<ToolCallCard> {
 
     return InkWell(
       onTap: () => setState(() => _expanded = !_expanded),
+      onDoubleTap: _expanded
+          ? () => setState(() => _expanded = false)
+          : null,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),

@@ -1838,6 +1838,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final api = runtime.chatApi;
     if (uuid == null || api == null) return;
     runtime.notifiedApprovalIds.remove(requestId);
+    ref
+        .read(inAppChatNotificationsProvider.notifier)
+        .dismissApprovalsForRequest(requestId);
     unawaited(api.answerCodexApproval(uuid, requestId, decision));
   }
 
@@ -1847,21 +1850,33 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   ) {
     final uuid = _sessionId;
     final session = ref.read(currentSessionProvider);
-    if (_appInForeground || uuid == null || session == null) return;
+    if (uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
     if (!_notifiedApprovalIds.add(requestId)) return;
+    final payload = _completionPayloadFor(session);
+    final title = _approvalNotificationTitle(session, approval.toolUse.name);
+    final body = _approvalNotificationBody(approval.toolUse);
+    if (_appInForeground) {
+      ChatCompletionNotifier.instance.showInAppApproval(
+        payload: payload,
+        requestId: requestId,
+        title: title,
+        body: body,
+      );
+      return;
+    }
     unawaited(StreamingForegroundService.instance.upsert(
-      _completionPayloadFor(session),
+      payload,
       activity: '等待审批',
     ));
     unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
-      payload: _completionPayloadFor(session),
+      payload: payload,
       apiBase: config.apiBase,
       token: config.token,
       uuid: uuid,
       requestId: requestId,
-      title: _approvalNotificationTitle(session, approval.toolUse.name),
-      body: _approvalNotificationBody(approval.toolUse),
+      title: title,
+      body: body,
       appInForeground: _appInForeground,
     ));
   }

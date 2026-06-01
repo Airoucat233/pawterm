@@ -10,6 +10,7 @@ import '../api/git_api.dart';
 import '../api/sessions_api.dart';
 import '../i18n/locale_provider.dart';
 import '../state/agents_store.dart';
+import '../state/chat_completion_notifier.dart';
 import '../state/open_chat_windows.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
@@ -52,57 +53,62 @@ class _MainShellState extends ConsumerState<MainShell> {
     ];
 
     return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            _TopBar(
-              conn: conn,
-              session: session,
-              tabIndex: _index,
-              onSessionTap: () => _showSessionSwitcher(context),
+      body: Stack(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Column(
+              children: [
+                _TopBar(
+                  conn: conn,
+                  session: session,
+                  tabIndex: _index,
+                  onSessionTap: () => _showSessionSwitcher(context),
+                ),
+                Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
+                Expanded(
+                  child: _LazyTabSwitcher(
+                    index: _index,
+                    builders: [
+                      _LazyBuilder(
+                          builder: () => ChatTab(
+                                onGitTap: () {
+                                  final currentConn =
+                                      ref.read(activeConnectionProvider);
+                                  final currentSession =
+                                      ref.read(currentSessionProvider);
+                                  if (currentConn == null ||
+                                      currentSession == null) {
+                                    return;
+                                  }
+                                  _showGitPanel(
+                                      context, currentConn, currentSession);
+                                },
+                              )),
+                      const _LazyBuilder(builder: _buildShell),
+                      const _LazyBuilder(builder: _buildFiles),
+                    ],
+                  ),
+                ),
+                _BottomNav(
+                  tabs: tabs,
+                  index: _index,
+                  hasRunningChat: openWindows.windows.any(
+                    (window) => window.status == OpenChatWindowStatus.running,
+                  ),
+                  onChanged: (i) {
+                    if (i == 0 && _index == 0) {
+                      _showOpenChatWindows(context);
+                      return;
+                    }
+                    setState(() => _index = i);
+                  },
+                ),
+              ],
             ),
-            Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
-            Expanded(
-              child: _LazyTabSwitcher(
-                index: _index,
-                builders: [
-                  _LazyBuilder(
-                      builder: () => ChatTab(
-                            onGitTap: () {
-                              final currentConn =
-                                  ref.read(activeConnectionProvider);
-                              final currentSession =
-                                  ref.read(currentSessionProvider);
-                              if (currentConn == null ||
-                                  currentSession == null) {
-                                return;
-                              }
-                              _showGitPanel(
-                                  context, currentConn, currentSession);
-                            },
-                          )),
-                  const _LazyBuilder(builder: _buildShell),
-                  const _LazyBuilder(builder: _buildFiles),
-                ],
-              ),
-            ),
-            _BottomNav(
-              tabs: tabs,
-              index: _index,
-              hasRunningChat: openWindows.windows.any(
-                (window) => window.status == OpenChatWindowStatus.running,
-              ),
-              onChanged: (i) {
-                if (i == 0 && _index == 0) {
-                  _showOpenChatWindows(context);
-                  return;
-                }
-                setState(() => _index = i);
-              },
-            ),
-          ],
-        ),
+          ),
+          const _InAppChatNotificationHost(),
+        ],
       ),
     );
   }
@@ -200,6 +206,196 @@ class _MainShellState extends ConsumerState<MainShell> {
           child: child,
         );
       },
+    );
+  }
+}
+
+class _InAppChatNotificationHost extends ConsumerWidget {
+  const _InAppChatNotificationHost();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(inAppChatNotificationsProvider);
+    if (items.isEmpty) return const SizedBox.shrink();
+    final item = items.first;
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 12,
+      right: 12,
+      child: _InAppChatNotificationCard(
+        key: ValueKey(item.id),
+        item: item,
+        onTap: () {
+          ref.read(currentSessionProvider.notifier).state = CurrentSession(
+                cwd: item.payload.cwd,
+                label: item.payload.label,
+                resumeId: item.payload.resumeId,
+                agent: item.payload.agent,
+                runtime: item.payload.runtime.isEmpty
+                    ? null
+                    : item.payload.runtime,
+              );
+          if (!item.persistent) {
+            ref
+                .read(inAppChatNotificationsProvider.notifier)
+                .dismiss(item.id);
+          }
+        },
+        onDismiss: () => ref
+            .read(inAppChatNotificationsProvider.notifier)
+            .dismiss(item.id),
+      ),
+    );
+  }
+}
+
+class _InAppChatNotificationCard extends StatefulWidget {
+  final InAppChatNotification item;
+  final VoidCallback onTap;
+  final VoidCallback? onDismiss;
+
+  const _InAppChatNotificationCard({
+    super.key,
+    required this.item,
+    required this.onTap,
+    this.onDismiss,
+  });
+
+  @override
+  State<_InAppChatNotificationCard> createState() =>
+      _InAppChatNotificationCardState();
+}
+
+class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<Offset> _slide;
+  late final Animation<double> _fade;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+      reverseDuration: const Duration(milliseconds: 150),
+    );
+    final curved =
+        CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+    _slide = Tween<Offset>(
+      begin: const Offset(1.05, 0),
+      end: Offset.zero,
+    ).animate(curved);
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+    _controller.forward();
+    if (!widget.item.persistent) {
+      _timer = Timer(const Duration(seconds: 4), _dismiss);
+    }
+  }
+
+  Future<void> _dismiss() async {
+    _timer?.cancel();
+    if (!mounted) return;
+    await _controller.reverse();
+    if (mounted) widget.onDismiss?.call();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final isApproval =
+        widget.item.kind == InAppChatNotificationKind.approval;
+    final accent = isApproval ? t.warning : t.success;
+    final width = min(MediaQuery.sizeOf(context).width - 24, 340.0);
+    return SlideTransition(
+      position: _slide,
+      child: FadeTransition(
+        opacity: _fade,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onTap,
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              width: width,
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+              decoration: BoxDecoration(
+                color: t.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: accent.withValues(alpha: 0.55)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    blurRadius: 22,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Icon(
+                      isApproval
+                          ? Icons.priority_high_rounded
+                          : Icons.done_rounded,
+                      size: 18,
+                      color: accent,
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          widget.item.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: t.text,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          widget.item.body,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: t.textMuted,
+                            fontSize: 12,
+                            height: 1.25,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (widget.item.persistent)
+                    IconButton(
+                      icon: Icon(Icons.close_rounded,
+                          color: t.textDim, size: 16),
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 28, minHeight: 28),
+                      onPressed: _dismiss,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -967,6 +1163,7 @@ class _SheetProjectNode extends ConsumerWidget {
     final t = AppTokens.of(context);
     final isCurrent = currentCwd == project.path;
     final myDeviceId = ref.watch(deviceIdProvider).valueOrNull ?? '';
+    final inAppNotifications = ref.watch(inAppChatNotificationsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1063,6 +1260,8 @@ class _SheetProjectNode extends ConsumerWidget {
                             _SheetSessionTile(
                               session: s,
                               isCurrent: s.sessionId == currentSessionId,
+                              hasPendingApproval:
+                                  _hasPendingApproval(inAppNotifications, s),
                               onTap: () => onPickSession(s),
                               myDeviceId: myDeviceId,
                             ),
@@ -1077,16 +1276,29 @@ class _SheetProjectNode extends ConsumerWidget {
       ],
     );
   }
+
+  bool _hasPendingApproval(
+    List<InAppChatNotification> notifications,
+    SessionSummary session,
+  ) {
+    return notifications.any((item) =>
+        item.kind == InAppChatNotificationKind.approval &&
+        item.payload.resumeId == session.sessionId &&
+        item.payload.agent == session.agent &&
+        (session.cwd == null || item.payload.cwd == session.cwd));
+  }
 }
 
 class _SheetSessionTile extends StatelessWidget {
   final SessionSummary session;
   final bool isCurrent;
+  final bool hasPendingApproval;
   final VoidCallback onTap;
   final String myDeviceId;
   const _SheetSessionTile(
       {required this.session,
       required this.isCurrent,
+      required this.hasPendingApproval,
       required this.onTap,
       required this.myDeviceId});
 
@@ -1126,7 +1338,14 @@ class _SheetSessionTile extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      if (isCurrent)
+                      if (hasPendingApproval) ...[
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: _PulsingStatusDot(color: t.warning),
+                        ),
+                        const SizedBox(width: 4),
+                      ] else if (isCurrent)
                         Container(
                           width: 5,
                           height: 5,
@@ -1151,7 +1370,11 @@ class _SheetSessionTile extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (session.holderDeviceId != null) ...[
+                      if (hasPendingApproval) ...[
+                        const SizedBox(width: 6),
+                        Text('待审批',
+                            style: TextStyle(fontSize: 10, color: t.warning)),
+                      ] else if (session.holderDeviceId != null) ...[
                         const SizedBox(width: 6),
                         if (session.holderDeviceId == myDeviceId) ...[
                           Container(
