@@ -147,7 +147,7 @@ class StreamingForegroundService {
 
   Future<void> _updateProgressNotification() async {
     final items = _progressItems();
-    if (items.length <= 1) {
+    if (items.isEmpty) {
       await _clearProgressNotification();
       return;
     }

@@ -101,6 +101,12 @@ class ChatCompletionNotifier {
     const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
     const settings = InitializationSettings(android: androidSettings);
+    _nativeNotificationsChannel.setMethodCallHandler((call) async {
+      if (call.method == 'notificationTapped') {
+        final payload = call.arguments;
+        if (payload is String) _handlePayload(payload);
+      }
+    });
     await _plugin.initialize(
       settings: settings,
       onDidReceiveNotificationResponse: (response) {
@@ -127,11 +133,24 @@ class ChatCompletionNotifier {
     if (launchDetails?.didNotificationLaunchApp == true && response != null) {
       _handlePayload(response.payload);
     }
+    await _handleInitialNativePayload();
     _flushPendingTap();
   }
 
   Future<void> refreshForegroundPermission() async {
     await _requestAndroidPermissionIfForeground();
+  }
+
+  Future<void> clearSessionNotifications() async {
+    try {
+      await _nativeNotificationsChannel.invokeMethod<void>(
+        'clearSessionNotifications',
+      );
+    } on MissingPluginException {
+      // Native notification aggregation is Android-only.
+    } on PlatformException catch (err) {
+      if (kDebugMode) debugPrint('Clear session notifications failed: $err');
+    }
   }
 
   Future<void> notifyTurnComplete({
@@ -141,9 +160,11 @@ class ChatCompletionNotifier {
     _markPulse(payload);
     if (appInForeground || _appIsVisibleNow()) return;
     final id = payload.key.hashCode & 0x7fffffff;
-    final title = '${_agentLabel(payload.agent)} 已完成回复';
-    final body = _sessionDisplayName(payload);
-    final line = '${_agentLabel(payload.agent)} · $body：已完成回复';
+    final sessionName = _sessionDisplayName(payload);
+    final agentName = _agentLabel(payload.agent);
+    final title = '$sessionName 有新回复';
+    final body = '$agentName 已完成回复';
+    final line = '$sessionName · $agentName 已完成回复';
     if (_appIsVisibleNow()) return;
     try {
       await _nativeNotificationsChannel.invokeMethod<void>(
@@ -234,8 +255,7 @@ class ChatCompletionNotifier {
 
   bool _appIsVisibleNow() {
     final state = WidgetsBinding.instance.lifecycleState;
-    return state == AppLifecycleState.resumed ||
-        state == AppLifecycleState.inactive;
+    return state == AppLifecycleState.resumed;
   }
 
   Future<void> _requestAndroidPermissionIfForeground() async {
@@ -255,6 +275,18 @@ class ChatCompletionNotifier {
         AndroidFlutterLocalNotificationsPlugin>();
     final enabled = await android?.areNotificationsEnabled();
     return enabled ?? true;
+  }
+
+  Future<void> _handleInitialNativePayload() async {
+    try {
+      final payload = await _nativeNotificationsChannel
+          .invokeMethod<String>('getInitialNotificationPayload');
+      _handlePayload(payload);
+    } on MissingPluginException {
+      // Native notification aggregation is Android-only.
+    } on PlatformException catch (err) {
+      if (kDebugMode) debugPrint('Initial notification payload failed: $err');
+    }
   }
 
   void _handlePayload(String? raw) {
