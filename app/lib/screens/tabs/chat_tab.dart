@@ -3170,10 +3170,17 @@ class _RuntimeSettingsSheet extends StatefulWidget {
 class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
   late Map<String, dynamic> _runtime =
       Map<String, dynamic>.from(widget.runtime);
+  late CcPermissionMode _permissionMode = widget.permissionMode;
+  bool _showPermissionPage = false;
 
   void _patchRuntime(Map<String, dynamic> patch) {
     setState(() => _runtime = {..._runtime, ...patch});
     widget.onPatchRuntime(patch);
+  }
+
+  void _setPermissionMode(CcPermissionMode mode) {
+    setState(() => _permissionMode = mode);
+    widget.onSwitchPermissionMode(mode);
   }
 
   @override
@@ -3181,6 +3188,9 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.runtime != widget.runtime) {
       _runtime = Map<String, dynamic>.from(widget.runtime);
+    }
+    if (oldWidget.permissionMode != widget.permissionMode) {
+      _permissionMode = widget.permissionMode;
     }
   }
 
@@ -3193,6 +3203,7 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
       AgentKind.gemini => 'Gemini 运行设置',
     };
     return Container(
+      height: 420,
       margin: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: t.surface,
@@ -3217,75 +3228,111 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              child: Row(
-                children: [
-                  Icon(Icons.tune_rounded, size: 16, color: t.textMuted),
-                  const SizedBox(width: 8),
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: t.text,
-                    ),
-                  ),
-                ],
-              ),
+            _RuntimeSheetHeader(
+              title: _showPermissionPage ? '权限设置' : title,
+              icon: _showPermissionPage
+                  ? Icons.shield_outlined
+                  : Icons.tune_rounded,
+              showBack: _showPermissionPage,
+              onBack: () => setState(() => _showPermissionPage = false),
             ),
             Divider(color: t.borderSubt, height: 0.5),
-            if (widget.agent == AgentKind.claude)
-              _RuntimeActionRow(
-                icon: Icons.shield_outlined,
-                title: '权限',
-                value: _permissionLabel(widget.permissionMode),
-                onTap: () async {
-                  final picked = await _pickPermission(context);
-                  if (picked != null) widget.onSwitchPermissionMode(picked);
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                transitionBuilder: (child, animation) {
+                  final enteringPermission =
+                      child.key == const ValueKey('permission');
+                  final begin = enteringPermission
+                      ? const Offset(1, 0)
+                      : const Offset(-1, 0);
+                  return SlideTransition(
+                    position: Tween<Offset>(
+                      begin: begin,
+                      end: Offset.zero,
+                    ).animate(CurvedAnimation(
+                      parent: animation,
+                      curve: Curves.easeOutCubic,
+                    )),
+                    child: FadeTransition(opacity: animation, child: child),
+                  );
                 },
-              )
-            else if (widget.agent == AgentKind.codex) ...[
-              _RuntimeActionRow(
-                icon: Icons.rule_folder_outlined,
-                title: '权限',
-                value:
-                    '${_approvalLabel((_runtime['approval_policy'] ?? 'on-request').toString())} · ${_sandboxLabel((_runtime['sandbox'] ?? 'workspace-write').toString())}',
-                onTap: () => _pickCodexRuntime(context),
+                child: _showPermissionPage
+                    ? _runtimePermissionPage()
+                    : _runtimeOverviewPage(),
               ),
-            ],
-            const SizedBox(height: 6),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Future<CcPermissionMode?> _pickPermission(BuildContext context) {
-    FocusManager.instance.primaryFocus?.unfocus();
-    return showModalBottomSheet<CcPermissionMode>(
-      context: context,
-      requestFocus: false,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      builder: (_) => _PermissionModeSheet(current: widget.permissionMode),
+  Widget _runtimeOverviewPage() {
+    if (widget.agent == AgentKind.codex) {
+      return ListView(
+        key: const ValueKey('overview'),
+        padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
+        children: [
+          _RuntimeActionRow(
+            icon: Icons.rule_folder_outlined,
+            title: '权限',
+            value:
+                '${_approvalLabel((_runtime['approval_policy'] ?? 'on-request').toString())} · ${_sandboxLabel((_runtime['sandbox'] ?? 'workspace-write').toString())}',
+            onTap: () => setState(() => _showPermissionPage = true),
+          ),
+        ],
+      );
+    }
+    return ListView(
+      key: const ValueKey('overview'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
+      children: [
+        _RuntimeActionRow(
+          icon: Icons.shield_outlined,
+          title: '权限',
+          value: _permissionLabel(_permissionMode),
+          onTap: () => setState(() => _showPermissionPage = true),
+        ),
+      ],
     );
   }
 
-  Future<void> _pickCodexRuntime(BuildContext context) {
-    FocusManager.instance.primaryFocus?.unfocus();
-    return showModalBottomSheet<void>(
-      context: context,
-      requestFocus: false,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      isScrollControlled: true,
-      builder: (_) => _CodexRuntimeSheet(
+  Widget _runtimePermissionPage() {
+    if (widget.agent == AgentKind.codex) {
+      return _CodexRuntimePermissionPage(
+        key: const ValueKey('permission'),
         approvalPolicy:
             (_runtime['approval_policy'] ?? 'on-request').toString(),
         sandbox: (_runtime['sandbox'] ?? 'workspace-write').toString(),
         onPatchRuntime: _patchRuntime,
-      ),
+      );
+    }
+    return ListView.separated(
+      key: const ValueKey('permission'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
+      itemCount: CcPermissionMode.values.length,
+      separatorBuilder: (context, index) {
+        final t = AppTokens.of(context);
+        return Divider(
+          color: t.borderSubt,
+          height: 0.5,
+          indent: 16,
+          endIndent: 16,
+        );
+      },
+      itemBuilder: (context, index) {
+        final mode = CcPermissionMode.values[index];
+        final t = AppTokens.of(context);
+        return _PermissionModeRow(
+          mode: mode,
+          label: _permissionLabel(mode),
+          description: _permissionDescription(mode),
+          glyph: _permissionGlyph(mode, t),
+          selected: mode == _permissionMode,
+          onTap: () => _setPermissionMode(mode),
+        );
+      },
     );
   }
 
@@ -3309,6 +3356,67 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
         'danger-full-access' => '完全访问',
         _ => value,
       };
+
+  String _permissionDescription(CcPermissionMode m) => switch (m) {
+        CcPermissionMode.defaultMode => '按 Claude Code 默认策略询问',
+        CcPermissionMode.acceptEdits => '自动接受文件编辑，高风险操作仍询问',
+        CcPermissionMode.plan => '只规划，不直接修改文件',
+        CcPermissionMode.bypass => '跳过权限检查，完整访问',
+      };
+
+  (IconData, Color) _permissionGlyph(CcPermissionMode m, AppTokens t) =>
+      switch (m) {
+        CcPermissionMode.defaultMode => (Icons.front_hand_outlined, t.warning),
+        CcPermissionMode.acceptEdits => (Icons.edit_note_outlined, t.accent),
+        CcPermissionMode.plan => (Icons.checklist_outlined, t.toolRead),
+        CcPermissionMode.bypass => (Icons.rocket_launch_outlined, t.toolBash),
+      };
+}
+
+class _RuntimeSheetHeader extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final bool showBack;
+  final VoidCallback onBack;
+  const _RuntimeSheetHeader({
+    required this.title,
+    required this.icon,
+    required this.showBack,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 16, 8),
+      child: Row(
+        children: [
+          if (showBack)
+            IconButton(
+              onPressed: onBack,
+              icon: Icon(Icons.arrow_back_rounded, size: 18, color: t.text),
+              visualDensity: VisualDensity.compact,
+              tooltip: '返回',
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(left: 8, right: 8),
+              child: Icon(icon, size: 16, color: t.textMuted),
+            ),
+          if (showBack) const SizedBox(width: 2),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: t.text,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _RuntimeActionRow extends StatelessWidget {
@@ -3357,146 +3465,111 @@ class _RuntimeActionRow extends StatelessWidget {
   }
 }
 
-class _CodexRuntimeSheet extends StatefulWidget {
+class _CodexRuntimePermissionPage extends StatefulWidget {
   final String approvalPolicy;
   final String sandbox;
   final void Function(Map<String, dynamic>) onPatchRuntime;
-  const _CodexRuntimeSheet({
+  const _CodexRuntimePermissionPage({
+    super.key,
     required this.approvalPolicy,
     required this.sandbox,
     required this.onPatchRuntime,
   });
 
   @override
-  State<_CodexRuntimeSheet> createState() => _CodexRuntimeSheetState();
+  State<_CodexRuntimePermissionPage> createState() =>
+      _CodexRuntimePermissionPageState();
 }
 
-class _CodexRuntimeSheetState extends State<_CodexRuntimeSheet> {
+class _CodexRuntimePermissionPageState
+    extends State<_CodexRuntimePermissionPage> {
   late String _approvalPolicy = widget.approvalPolicy;
   late String _sandbox = widget.sandbox;
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return Container(
-      margin: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: t.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: t.border),
-      ),
-      child: SafeArea(
-        top: false,
-        child: DefaultTabController(
-          length: 2,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 10, bottom: 4),
-                child: Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: t.border,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.rule_folder_outlined,
-                        size: 16, color: t.textMuted),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Codex 权限',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: t.text,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              TabBar(
-                labelColor: t.text,
-                unselectedLabelColor: t.textDim,
-                indicatorColor: t.accent,
-                indicatorSize: TabBarIndicatorSize.tab,
-                dividerColor: t.borderSubt,
-                tabs: const [
-                  Tab(text: '审批'),
-                  Tab(text: '沙箱'),
-                ],
-              ),
-              SizedBox(
-                height: 232,
-                child: TabBarView(
-                  children: [
-                    _CodexRuntimeOptionList(
-                      value: _approvalPolicy,
-                      options: const [
-                        _RuntimeOption(
-                          value: 'on-request',
-                          label: '按需审批',
-                          description: '需要越权或高风险操作时询问',
-                          icon: Icons.front_hand_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'untrusted',
-                          label: '严格审批',
-                          description: '更保守地请求确认',
-                          icon: Icons.verified_user_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'never',
-                          label: '不询问',
-                          description: '不弹审批请求，失败则直接返回',
-                          icon: Icons.not_interested_outlined,
-                        ),
-                      ],
-                      onPick: (v) {
-                        setState(() => _approvalPolicy = v);
-                        widget.onPatchRuntime({'approval_policy': v});
-                      },
-                    ),
-                    _CodexRuntimeOptionList(
-                      value: _sandbox,
-                      options: const [
-                        _RuntimeOption(
-                          value: 'workspace-write',
-                          label: '工作区可写',
-                          description: '允许修改当前工作区文件',
-                          icon: Icons.folder_copy_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'read-only',
-                          label: '只读',
-                          description: '只能读取文件和上下文',
-                          icon: Icons.visibility_outlined,
-                        ),
-                        _RuntimeOption(
-                          value: 'danger-full-access',
-                          label: '完全访问',
-                          description: '不限制文件系统访问',
-                          icon: Icons.warning_amber_rounded,
-                        ),
-                      ],
-                      onPick: (v) {
-                        setState(() => _sandbox = v);
-                        widget.onPatchRuntime({'sandbox': v});
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+    return ListView(
+      key: const ValueKey('permission'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 12),
+      children: [
+        _InlineSectionLabel(label: '审批', t: t),
+        _CodexRuntimeOptionList(
+          value: _approvalPolicy,
+          options: const [
+            _RuntimeOption(
+              value: 'on-request',
+              label: '按需审批',
+              description: '需要越权或高风险操作时询问',
+              icon: Icons.front_hand_outlined,
+            ),
+            _RuntimeOption(
+              value: 'untrusted',
+              label: '严格审批',
+              description: '更保守地请求确认',
+              icon: Icons.verified_user_outlined,
+            ),
+            _RuntimeOption(
+              value: 'never',
+              label: '不询问',
+              description: '不弹审批请求，失败则直接返回',
+              icon: Icons.not_interested_outlined,
+            ),
+          ],
+          onPick: (v) {
+            setState(() => _approvalPolicy = v);
+            widget.onPatchRuntime({'approval_policy': v});
+          },
+        ),
+        Divider(color: t.borderSubt, height: 16),
+        _InlineSectionLabel(label: '沙箱', t: t),
+        _CodexRuntimeOptionList(
+          value: _sandbox,
+          options: const [
+            _RuntimeOption(
+              value: 'workspace-write',
+              label: '工作区可写',
+              description: '允许修改当前工作区文件',
+              icon: Icons.folder_copy_outlined,
+            ),
+            _RuntimeOption(
+              value: 'read-only',
+              label: '只读',
+              description: '只能读取文件和上下文',
+              icon: Icons.visibility_outlined,
+            ),
+            _RuntimeOption(
+              value: 'danger-full-access',
+              label: '完全访问',
+              description: '不限制文件系统访问',
+              icon: Icons.warning_amber_rounded,
+            ),
+          ],
+          onPick: (v) {
+            setState(() => _sandbox = v);
+            widget.onPatchRuntime({'sandbox': v});
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _InlineSectionLabel extends StatelessWidget {
+  final String label;
+  final AppTokens t;
+  const _InlineSectionLabel({required this.label, required this.t});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: t.textDim,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );
@@ -3616,101 +3689,6 @@ class _CodexRuntimeOptionRow extends StatelessWidget {
       ),
     );
   }
-}
-
-class _PermissionModeSheet extends StatelessWidget {
-  final CcPermissionMode current;
-  const _PermissionModeSheet({required this.current});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Container(
-      margin: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: t.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: t.border),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 10, bottom: 4),
-              child: Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: t.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              child: Row(
-                children: [
-                  Icon(Icons.shield_outlined, size: 16, color: t.textMuted),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Claude 权限',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: t.text,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            for (final mode in CcPermissionMode.values) ...[
-              Divider(
-                color: t.borderSubt,
-                height: 0.5,
-                indent: 16,
-                endIndent: 16,
-              ),
-              _PermissionModeRow(
-                mode: mode,
-                label: _permissionLabel(mode),
-                description: _permissionDescription(mode),
-                glyph: _permissionGlyph(mode, t),
-                selected: mode == current,
-                onTap: () => Navigator.of(context).pop(mode),
-              ),
-            ],
-            const SizedBox(height: 6),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _permissionLabel(CcPermissionMode m) => switch (m) {
-        CcPermissionMode.defaultMode => 'Default',
-        CcPermissionMode.acceptEdits => 'Accept Edits',
-        CcPermissionMode.plan => 'Plan',
-        CcPermissionMode.bypass => 'Bypass',
-      };
-
-  String _permissionDescription(CcPermissionMode m) => switch (m) {
-        CcPermissionMode.defaultMode => '按 Claude Code 默认策略询问',
-        CcPermissionMode.acceptEdits => '自动接受文件编辑，高风险操作仍询问',
-        CcPermissionMode.plan => '只规划，不直接修改文件',
-        CcPermissionMode.bypass => '跳过权限检查，完整访问',
-      };
-
-  (IconData, Color) _permissionGlyph(CcPermissionMode m, AppTokens t) =>
-      switch (m) {
-        CcPermissionMode.defaultMode => (Icons.front_hand_outlined, t.warning),
-        CcPermissionMode.acceptEdits => (Icons.edit_note_outlined, t.accent),
-        CcPermissionMode.plan => (Icons.checklist_outlined, t.toolRead),
-        CcPermissionMode.bypass => (Icons.rocket_launch_outlined, t.toolBash),
-      };
 }
 
 /// 输入框右侧的 40×40 圆形按钮（黑白主题，对照 cxclaw）。
