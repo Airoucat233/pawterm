@@ -32,6 +32,8 @@ class MainActivity : FlutterActivity() {
     private val activeSessionsNotificationId = 876502
     private val sessionEvents = ArrayDeque<String>()
     private val pendingApkDownloads = mutableSetOf<Long>()
+    private var notificationsMethodChannel: MethodChannel? = null
+    private var pendingNotificationPayload: String? = null
     private var downloadReceiverRegistered = false
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -65,9 +67,15 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
+        notificationsMethodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
+        notificationsMethodChannel
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "getInitialNotificationPayload" -> {
+                        val payload = pendingNotificationPayload ?: notificationPayloadFrom(intent)
+                        pendingNotificationPayload = null
+                        result.success(payload)
+                    }
                     "addSessionEvent" -> {
                         val title = call.argument<String>("title") ?: "PawTerm"
                         val line = call.argument<String>("line") ?: ""
@@ -99,6 +107,10 @@ class MainActivity : FlutterActivity() {
                         NotificationManagerCompat.from(this).cancel(activeSessionsNotificationId)
                         result.success(null)
                     }
+                    "clearSessionNotifications" -> {
+                        clearSessionNotifications()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -110,6 +122,12 @@ class MainActivity : FlutterActivity() {
         ensureDownloadReceiver()
         ensureSessionEventsChannel()
         ensureActiveSessionsChannel()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deliverNotificationPayload(intent)
     }
 
     @Suppress("DEPRECATION")
@@ -129,6 +147,33 @@ class MainActivity : FlutterActivity() {
             downloadReceiverRegistered = false
         }
         super.onDestroy()
+    }
+
+    private fun deliverNotificationPayload(intent: Intent?) {
+        val payload = notificationPayloadFrom(intent) ?: return
+        clearSessionNotifications()
+        val channel = notificationsMethodChannel
+        if (channel == null) {
+            pendingNotificationPayload = payload
+            return
+        }
+        channel.invokeMethod("notificationTapped", payload)
+    }
+
+    private fun notificationPayloadFrom(intent: Intent?): String? {
+        if (intent == null) return null
+        val action = intent.action
+        if (action != "pawterm.SESSION_EVENTS" && action != "pawterm.ACTIVE_SESSION_PROGRESS") {
+            return null
+        }
+        return intent.getStringExtra("payload")?.takeIf { it.isNotBlank() }
+    }
+
+    private fun clearSessionNotifications() {
+        val manager = NotificationManagerCompat.from(this)
+        manager.cancel(sessionEventsSummaryId)
+        manager.cancel(activeSessionsNotificationId)
+        sessionEvents.clear()
     }
 
     private fun ensureDownloadReceiver() {
@@ -201,6 +246,7 @@ class MainActivity : FlutterActivity() {
         sessionEvents.addFirst(cleanLine)
         while (sessionEvents.size > 8) sessionEvents.removeLast()
 
+        val eventId = (System.currentTimeMillis() and 0x7fffffff).toInt()
         val intent = Intent(this, MainActivity::class.java)
             .setAction("pawterm.SESSION_EVENTS")
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -209,19 +255,19 @@ class MainActivity : FlutterActivity() {
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
-        val pendingIntent = PendingIntent.getActivity(this, sessionEventsSummaryId, intent, flags)
-        val summaryTitle = "你收到了 ${sessionEvents.size} 条任务更新"
+        val pendingIntent = PendingIntent.getActivity(this, eventId, intent, flags)
+        val summaryPendingIntent = PendingIntent.getActivity(this, sessionEventsSummaryId, intent, flags)
+        val summaryTitle = "${sessionEvents.size} 条会话更新"
         val inboxStyle = NotificationCompat.InboxStyle()
         sessionEvents.take(5).forEach { inboxStyle.addLine(it) }
         if (sessionEvents.size > 5) inboxStyle.setSummaryText("+ ${sessionEvents.size - 5}")
-        val eventId = (System.currentTimeMillis() and 0x7fffffff).toInt()
 
         val summaryNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
             .setSmallIcon(applicationInfo.icon)
-            .setContentTitle("PawTerm")
+            .setContentTitle("PawTerm 会话更新")
             .setContentText(summaryTitle)
             .setStyle(inboxStyle)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(summaryPendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)

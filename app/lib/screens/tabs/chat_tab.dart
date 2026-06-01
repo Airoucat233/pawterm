@@ -349,8 +349,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final appVisible = state == AppLifecycleState.resumed ||
-        state == AppLifecycleState.inactive;
+    final appVisible = state == AppLifecycleState.resumed;
     _appInForeground = appVisible;
     unawaited(StreamingForegroundService.instance
         .setAppInForeground(_appInForeground));
@@ -359,6 +358,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     if (state == AppLifecycleState.resumed) {
       unawaited(ChatCompletionNotifier.instance.refreshForegroundPermission());
+      unawaited(ChatCompletionNotifier.instance.clearSessionNotifications());
       _syncForegroundStreamService();
       if (_observeMode) return; // observe mode handles its own polling
       unawaited(_refreshActiveRunState());
@@ -1860,23 +1860,24 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       token: config.token,
       uuid: uuid,
       requestId: requestId,
-      title: _approvalNotificationTitle(approval.toolUse.name),
+      title: _approvalNotificationTitle(session, approval.toolUse.name),
       body: _approvalNotificationBody(approval.toolUse),
       appInForeground: _appInForeground,
     ));
   }
 
-  String _approvalNotificationTitle(String method) {
+  String _approvalNotificationTitle(CurrentSession session, String method) {
+    final sessionName = _notificationSessionName(session);
     if (method == 'item/commandExecution/requestApproval') {
-      return 'Codex 请求执行命令';
+      return '$sessionName 等待确认命令';
     }
     if (method == 'item/fileChange/requestApproval') {
-      return 'Codex 请求修改文件';
+      return '$sessionName 等待确认文件修改';
     }
     if (method == 'item/permissions/requestApproval') {
-      return 'Codex 请求额外权限';
+      return '$sessionName 等待确认权限';
     }
-    return 'Codex 请求审批';
+    return '$sessionName 等待确认';
   }
 
   String _approvalNotificationBody(ToolUseBlock toolUse) {
@@ -1892,6 +1893,27 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     if (reason != null && reason.isNotEmpty) return reason;
     return '需要你确认后继续';
+  }
+
+  String _notificationSessionName(CurrentSession session) {
+    final cwdName = _basename(session.cwd);
+    if (cwdName.isNotEmpty) return _shortenNotificationText(cwdName);
+    final label = session.label.trim();
+    if (label.isNotEmpty) return _shortenNotificationText(label);
+    return '当前会话';
+  }
+
+  String _basename(String path) {
+    final normalized = path.trim().replaceAll('\\', '/');
+    if (normalized.isEmpty) return '';
+    final parts = normalized.split('/').where((part) => part.isNotEmpty);
+    return parts.isEmpty ? normalized : parts.last;
+  }
+
+  String _shortenNotificationText(String value) {
+    const max = 28;
+    if (value.length <= max) return value;
+    return '${value.substring(0, max - 1)}…';
   }
 
   Future<void> _showCodexApprovalSheetIfNeeded(
