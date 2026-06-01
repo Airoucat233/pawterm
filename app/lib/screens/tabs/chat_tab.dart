@@ -910,12 +910,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final nextRuntime = {...session.runtime, ...patch};
     final next = session.copyWith(runtime: nextRuntime);
     ref.read(currentSessionProvider.notifier).state = next;
+    _runtime.session = next;
     unawaited(ref
         .read(projectAgentRuntimeProvider.notifier)
         .setRuntime(next.cwd, next.agent, next.runtime));
-    if (next.agent == AgentKind.claude &&
-        _sessionId != null &&
-        _chatApi != null) {
+    if (_sessionId != null && _chatApi != null) {
       unawaited(_chatApi!.runtime(_sessionId!, next.agent, next.runtime));
     }
   }
@@ -1659,13 +1658,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                   await _persistPendingQueue();
                 }));
               }
-              final current = ref.read(currentSessionProvider);
-              if (current != null &&
-                  current.agent == session.agent &&
-                  current.cwd == session.cwd &&
-                  current.resumeId == session.resumeId) {
+              final adoptedSession =
+                  session.copyWith(resumeId: actualSessionId);
+              runtime.session = adoptedSession;
+              if (_isActiveRuntime(runtime)) {
                 ref.read(currentSessionProvider.notifier).state =
-                    current.copyWith(resumeId: actualSessionId);
+                    adoptedSession;
               }
             }
           }
@@ -1852,6 +1850,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (_appInForeground || uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
     if (!_notifiedApprovalIds.add(requestId)) return;
+    unawaited(StreamingForegroundService.instance.upsert(
+      _completionPayloadFor(session),
+      activity: '等待审批',
+    ));
     unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
       payload: _completionPayloadFor(session),
       apiBase: config.apiBase,
@@ -1946,11 +1948,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   String _foregroundActivityLabel() {
     return switch (_mode) {
-      CcStreamMode.requesting => '正在建立请求',
-      CcStreamMode.thinking => '正在思考',
+      CcStreamMode.requesting => '连接中',
+      CcStreamMode.thinking => '思考中',
       CcStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
-      CcStreamMode.responding => '正在生成回复',
-      CcStreamMode.toolInput => '正在准备工具调用',
+      CcStreamMode.responding => '生成回复',
+      CcStreamMode.toolInput => '准备工具',
     };
   }
 
@@ -3147,7 +3149,7 @@ class _RuntimeSettingsButton extends StatelessWidget {
   }
 }
 
-class _RuntimeSettingsSheet extends StatelessWidget {
+class _RuntimeSettingsSheet extends StatefulWidget {
   final AgentKind agent;
   final Map<String, dynamic> runtime;
   final CcPermissionMode permissionMode;
@@ -3162,9 +3164,30 @@ class _RuntimeSettingsSheet extends StatelessWidget {
   });
 
   @override
+  State<_RuntimeSettingsSheet> createState() => _RuntimeSettingsSheetState();
+}
+
+class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
+  late Map<String, dynamic> _runtime =
+      Map<String, dynamic>.from(widget.runtime);
+
+  void _patchRuntime(Map<String, dynamic> patch) {
+    setState(() => _runtime = {..._runtime, ...patch});
+    widget.onPatchRuntime(patch);
+  }
+
+  @override
+  void didUpdateWidget(covariant _RuntimeSettingsSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.runtime != widget.runtime) {
+      _runtime = Map<String, dynamic>.from(widget.runtime);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final title = switch (agent) {
+    final title = switch (widget.agent) {
       AgentKind.claude => 'Claude 运行设置',
       AgentKind.codex => 'Codex 运行设置',
       AgentKind.gemini => 'Gemini 运行设置',
@@ -3212,22 +3235,22 @@ class _RuntimeSettingsSheet extends StatelessWidget {
               ),
             ),
             Divider(color: t.borderSubt, height: 0.5),
-            if (agent == AgentKind.claude)
+            if (widget.agent == AgentKind.claude)
               _RuntimeActionRow(
                 icon: Icons.shield_outlined,
                 title: '权限',
-                value: _permissionLabel(permissionMode),
+                value: _permissionLabel(widget.permissionMode),
                 onTap: () async {
                   final picked = await _pickPermission(context);
-                  if (picked != null) onSwitchPermissionMode(picked);
+                  if (picked != null) widget.onSwitchPermissionMode(picked);
                 },
               )
-            else if (agent == AgentKind.codex) ...[
+            else if (widget.agent == AgentKind.codex) ...[
               _RuntimeActionRow(
                 icon: Icons.rule_folder_outlined,
                 title: '权限',
                 value:
-                    '${_approvalLabel((runtime['approval_policy'] ?? 'on-request').toString())} · ${_sandboxLabel((runtime['sandbox'] ?? 'workspace-write').toString())}',
+                    '${_approvalLabel((_runtime['approval_policy'] ?? 'on-request').toString())} · ${_sandboxLabel((_runtime['sandbox'] ?? 'workspace-write').toString())}',
                 onTap: () => _pickCodexRuntime(context),
               ),
             ],
@@ -3245,7 +3268,7 @@ class _RuntimeSettingsSheet extends StatelessWidget {
       requestFocus: false,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.35),
-      builder: (_) => _PermissionModeSheet(current: permissionMode),
+      builder: (_) => _PermissionModeSheet(current: widget.permissionMode),
     );
   }
 
@@ -3258,9 +3281,10 @@ class _RuntimeSettingsSheet extends StatelessWidget {
       barrierColor: Colors.black.withValues(alpha: 0.35),
       isScrollControlled: true,
       builder: (_) => _CodexRuntimeSheet(
-        approvalPolicy: (runtime['approval_policy'] ?? 'on-request').toString(),
-        sandbox: (runtime['sandbox'] ?? 'workspace-write').toString(),
-        onPatchRuntime: onPatchRuntime,
+        approvalPolicy:
+            (_runtime['approval_policy'] ?? 'on-request').toString(),
+        sandbox: (_runtime['sandbox'] ?? 'workspace-write').toString(),
+        onPatchRuntime: _patchRuntime,
       ),
     );
   }

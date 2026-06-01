@@ -142,7 +142,7 @@ class ChatCompletionNotifier {
     if (appInForeground || _appIsVisibleNow()) return;
     final id = payload.key.hashCode & 0x7fffffff;
     final title = '${_agentLabel(payload.agent)} 已完成回复';
-    final body = payload.label.isEmpty ? payload.cwd : payload.label;
+    final body = _sessionDisplayName(payload);
     final line = '${_agentLabel(payload.agent)} · $body：已完成回复';
     if (_appIsVisibleNow()) return;
     try {
@@ -344,4 +344,26 @@ class ChatCompletionNotifier {
         AgentKind.codex => 'Codex',
         AgentKind.gemini => 'Gemini',
       };
+
+  String _sessionDisplayName(ChatCompletionPayload payload) {
+    final cwdName = _basename(payload.cwd.trim());
+    if (cwdName.isNotEmpty) return _shorten(cwdName);
+    final label = payload.label.trim();
+    if (label.isNotEmpty) return _shorten(label);
+    return '未命名会话';
+  }
+
+  String _basename(String path) {
+    if (path.isEmpty) return '';
+    final normalized = path.replaceAll('\\', '/');
+    final parts =
+        normalized.split('/').where((part) => part.isNotEmpty).toList();
+    return parts.isEmpty ? normalized : parts.last;
+  }
+
+  String _shorten(String value) {
+    const max = 24;
+    if (value.length <= max) return value;
+    return '${value.substring(0, max - 1)}…';
+  }
 }
