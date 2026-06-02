@@ -3765,27 +3765,28 @@ class _CodexRuntimeOptionList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.separated(
+    final t = AppTokens.of(context);
+    return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: options.length,
-      separatorBuilder: (context, index) {
-        final t = AppTokens.of(context);
-        return Divider(
-          color: t.borderSubt,
-          height: 0.5,
-          indent: 16,
-          endIndent: 16,
-        );
-      },
-      itemBuilder: (context, index) {
-        final option = options[index];
-        return _CodexRuntimeOptionRow(
-          option: option,
-          selected: option.value == value,
-          onTap: () => onPick(option.value),
-        );
-      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < options.length; i++) ...[
+            if (i > 0)
+              Divider(
+                color: t.borderSubt,
+                height: 0.5,
+                indent: 16,
+                endIndent: 16,
+              ),
+            _CodexRuntimeOptionRow(
+              option: options[i],
+              selected: options[i].value == value,
+              onTap: () => onPick(options[i].value),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
