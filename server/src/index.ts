@@ -27,6 +27,7 @@ import { startMdns } from './mdns.js';
 import { createNetworkAddressService, type AdvertisedAddress } from './network-address.js';
 import { pairingManager } from './pair.js';
 import { registerIdeasApi } from './ideas-api.js';
+import { listFsEntries } from './fs-api.js';
 import { registerSessionFilesApi } from './session-files-api.js';
 import { registerSessionsApi } from './sessions-api.js';
 import { registerUpload } from './upload.js';
@@ -621,30 +622,7 @@ async function main(): Promise<void> {
     const abs = resolve(p.replace(/^~/, homedir()));
     if (!isPathAllowed(abs)) { reply.code(403); return { error: 'path not allowed', path: abs }; }
     try {
-      const entries = await readdir(abs, { withFileTypes: true });
-      const items = await Promise.all(entries.map(async (e) => {
-        if (e.name.startsWith('.')) return null;
-        const fp = join(abs, e.name);
-        try {
-          const st = await stat(fp);
-          return {
-            name: e.name,
-            path: fp,
-            isDir: e.isDirectory(),
-            sizeBytes: st.size,
-            modifiedMs: Math.floor(st.mtimeMs),
-          };
-        } catch {
-          return null;
-        }
-      }));
-      type Entry = NonNullable<(typeof items)[number]>;
-      const visible: Entry[] = items.filter((x): x is Entry => x !== null);
-      visible.sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-      return { path: abs, entries: visible };
+      return { path: abs, entries: await listFsEntries(abs) };
     } catch (err) {
       reply.code(500);
       return { error: (err as Error).message };
