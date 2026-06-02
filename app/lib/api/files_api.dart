@@ -21,6 +21,12 @@ class FilesApi {
         'path': remotePath,
       });
 
+  Uri previewUri(String remotePath) =>
+      Uri.parse('$_apiBase/fs/preview').replace(queryParameters: {
+        'path': remotePath,
+        if (_token != null) 'token': _token,
+      });
+
   /// 列出 [path] 下的文件夹和文件。
   Future<FsListing> ls(String path) async {
     final uri =

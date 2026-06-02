@@ -35,6 +35,9 @@ class MessageView extends StatelessWidget {
   /// 长按消息可查看。
   final Map<String, dynamic>? rawJson;
 
+  final void Function(String path)? onOpenFilePath;
+  final void Function(String path)? onSaveFilePath;
+
   const MessageView({
     super.key,
     required this.message,
@@ -43,6 +46,8 @@ class MessageView extends StatelessWidget {
     this.onAnswerQuestion,
     this.onAnswerCodexApproval,
     this.rawJson,
+    this.onOpenFilePath,
+    this.onSaveFilePath,
   });
 
   @override
@@ -286,36 +291,59 @@ class MessageView extends StatelessWidget {
 
     if (block is TextBlock) {
       if (block.text.trim().isEmpty) return const SizedBox.shrink();
+      final paths = _extractAbsolutePaths(block.text);
       // 外层 _gutterRow 已经管 bottom 间距，这里不再叠加
-      return MarkdownBody(
-        data: block.text,
-        selectable: true,
-        styleSheet: MarkdownStyleSheet(
-          p: TextStyle(color: t.text, fontSize: 13, height: 1.6),
-          code: TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 12,
-            color: t.accent,
-            backgroundColor: t.surfaceHi,
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          MarkdownBody(
+            data: block.text,
+            selectable: true,
+            styleSheet: MarkdownStyleSheet(
+              p: TextStyle(color: t.text, fontSize: 13, height: 1.6),
+              code: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+                color: t.accent,
+                backgroundColor: t.surfaceHi,
+              ),
+              codeblockDecoration: BoxDecoration(
+                color: t.surfaceHi,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: t.border, width: 0.5),
+              ),
+              codeblockPadding: const EdgeInsets.all(10),
+              blockquoteDecoration: BoxDecoration(
+                color: t.surfaceHi,
+                border: Border(left: BorderSide(color: t.accent, width: 3)),
+              ),
+              h1: TextStyle(
+                  color: t.text, fontSize: 16, fontWeight: FontWeight.w600),
+              h2: TextStyle(
+                  color: t.text, fontSize: 14, fontWeight: FontWeight.w600),
+              h3: TextStyle(
+                  color: t.text, fontSize: 13, fontWeight: FontWeight.w600),
+              listBullet: TextStyle(color: t.textMuted, fontSize: 13),
+            ),
           ),
-          codeblockDecoration: BoxDecoration(
-            color: t.surfaceHi,
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: t.border, width: 0.5),
-          ),
-          codeblockPadding: const EdgeInsets.all(10),
-          blockquoteDecoration: BoxDecoration(
-            color: t.surfaceHi,
-            border: Border(left: BorderSide(color: t.accent, width: 3)),
-          ),
-          h1: TextStyle(
-              color: t.text, fontSize: 16, fontWeight: FontWeight.w600),
-          h2: TextStyle(
-              color: t.text, fontSize: 14, fontWeight: FontWeight.w600),
-          h3: TextStyle(
-              color: t.text, fontSize: 13, fontWeight: FontWeight.w600),
-          listBullet: TextStyle(color: t.textMuted, fontSize: 13),
-        ),
+          if (paths.isNotEmpty && onOpenFilePath != null) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final path in paths)
+                  _FilePathChip(
+                    path: path,
+                    onTap: () => onOpenFilePath!(path),
+                    onSave: onSaveFilePath == null
+                        ? null
+                        : () => onSaveFilePath!(path),
+                  ),
+              ],
+            ),
+          ],
+        ],
       );
     }
 
@@ -371,6 +399,84 @@ class MessageView extends StatelessWidget {
     }
 
     return const SizedBox.shrink();
+  }
+}
+
+List<String> _extractAbsolutePaths(String text) {
+  final matches =
+      RegExp(r'(?<![\w])/(?:[^\s`"<>:|?*]+/)*[^\s`"<>:|?*]+\.[A-Za-z0-9]{1,12}')
+          .allMatches(text);
+  final seen = <String>{};
+  final result = <String>[];
+  for (final m in matches) {
+    final raw = m.group(0);
+    if (raw == null) continue;
+    final cleaned = raw.replaceFirst(RegExp(r'[),.;]+$'), '');
+    if (seen.add(cleaned)) result.add(cleaned);
+  }
+  return result.take(6).toList();
+}
+
+class _FilePathChip extends StatelessWidget {
+  final String path;
+  final VoidCallback onTap;
+  final VoidCallback? onSave;
+
+  const _FilePathChip({
+    required this.path,
+    required this.onTap,
+    this.onSave,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final parts = path.split('/').where((p) => p.isNotEmpty).toList();
+    final name = parts.isEmpty ? path : parts.last;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 260),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+        decoration: BoxDecoration(
+          color: t.surfaceHi,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: t.border, width: 0.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.insert_drive_file_outlined, size: 14, color: t.accent),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: t.text,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (onSave != null) ...[
+              const SizedBox(width: 6),
+              GestureDetector(
+                onTap: onSave,
+                behavior: HitTestBehavior.opaque,
+                child: Icon(
+                  Icons.bookmark_add_outlined,
+                  size: 15,
+                  color: t.textMuted,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }
 

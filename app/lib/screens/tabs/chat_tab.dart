@@ -11,11 +11,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../api/agents_api.dart';
 import '../../api/chat_api.dart';
+import '../../api/files_api.dart';
 import '../../api/git_api.dart';
+import '../../api/ideas_api.dart';
 import '../../api/protocol.dart';
+import '../../api/session_files_api.dart';
 import '../../api/sse_client.dart';
 import '../../api/upload_api.dart';
 import '../../i18n/locale_provider.dart';
@@ -30,7 +34,9 @@ import '../../theme.dart';
 import '../../utils/time_format.dart';
 import '../../widgets/cc_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
+import '../../widgets/inspiration_drawer.dart';
 import '../../widgets/message_view.dart';
+import '../../widgets/session_files_drawer.dart';
 import '../../widgets/todo_chip.dart';
 import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -817,20 +823,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _ChatSessionRuntime? runtime,
   }) {
     final target = runtime ?? _runtime;
-    _runtime = target;
-    final sseUrl =
-        ChatApi(httpBase, token: _serverToken).eventsUrl(uuid, agent: agent);
-    final sse = SseClient(
-      url: sseUrl,
-      headers: _serverToken != null
-          ? {'Authorization': 'Bearer $_serverToken'}
-          : const {},
-    );
-    _sseClient = sse;
-    _sseSub = sse.events.listen((ev) {
-      _withRuntime(target, () => _onSseEvent(ev, runtime: target));
+    _withRuntime(target, () {
+      final sseUrl =
+          ChatApi(httpBase, token: _serverToken).eventsUrl(uuid, agent: agent);
+      final sse = SseClient(
+        url: sseUrl,
+        headers: _serverToken != null
+            ? {'Authorization': 'Bearer $_serverToken'}
+            : const {},
+      );
+      _sseClient = sse;
+      _sseSub = sse.events.listen((ev) {
+        _onSseEvent(ev, runtime: target);
+      });
+      unawaited(sse.connect());
     });
-    unawaited(sse.connect());
   }
 
   void _publishRuntimeStatus(_ChatSessionRuntime runtime) {
@@ -1163,63 +1170,72 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _onSseEvent(SseEvent ev, {_ChatSessionRuntime? runtime}) {
     final target = runtime ?? _runtime;
+    final previous = _runtime;
     _runtime = target;
-    // Internal transport signals come through with a `__` prefix; surface them
-    // as connection-level state changes rather than wire messages.
-    if (ev.type.startsWith('__')) {
-      if (ev.type == '__gap') {
-        if (!mounted) return;
-        setState(() {
-          _error = 'event gap, reloading…';
-          _connected = false;
-        });
-      } else if (ev.type == '__auth_error') {
-        if (!mounted) return;
-        _sseClient?.close();
-        setState(() => _authFailed = true);
-        return;
-      } else if (ev.type == '__not_found') {
-        if (!mounted) return;
-        _closeSse();
-        setState(() {
-          _error = null;
-          _connected = true;
-          _busy = false;
-          _busyStartedAt = null;
-          _mode = CcStreamMode.requesting;
-        });
-        _syncForegroundStreamService(busy: false);
-        unawaited(_refreshActiveRunState());
-        return;
-      } else if (ev.type == '__client_error') {
-        // Transient — the SSE client will retry. Surface the latest error.
-        if (!mounted) return;
-        setState(() {
-          _error = ev.data;
-          _connected = false;
-        });
-        if (_busy) {
-          unawaited(_refreshActiveRunState());
-        }
-      }
-      return;
-    }
-    // Heartbeats etc. emit blank data; skip safely.
-    if (ev.data.isEmpty) return;
-    Map<String, dynamic> json;
+    var restore = true;
     try {
-      json = jsonDecode(ev.data) as Map<String, dynamic>;
-    } catch (_) {
-      return;
+      // Internal transport signals come through with a `__` prefix; surface them
+      // as connection-level state changes rather than wire messages.
+      if (ev.type.startsWith('__')) {
+        if (ev.type == '__gap') {
+          if (!mounted) return;
+          setState(() {
+            _error = 'event gap, reloading…';
+            _connected = false;
+          });
+        } else if (ev.type == '__auth_error') {
+          if (!mounted) return;
+          _sseClient?.close();
+          setState(() => _authFailed = true);
+          return;
+        } else if (ev.type == '__not_found') {
+          if (!mounted) return;
+          _closeSse();
+          setState(() {
+            _error = null;
+            _connected = true;
+            _busy = false;
+            _busyStartedAt = null;
+            _mode = CcStreamMode.requesting;
+          });
+          _syncForegroundStreamService(busy: false);
+          unawaited(_refreshActiveRunState());
+          return;
+        } else if (ev.type == '__client_error') {
+          // Transient — the SSE client will retry. Surface the latest error.
+          if (!mounted) return;
+          setState(() {
+            _error = ev.data;
+            _connected = false;
+          });
+          if (_busy) {
+            unawaited(_refreshActiveRunState());
+          }
+        }
+        return;
+      }
+      // Heartbeats etc. emit blank data; skip safely.
+      if (ev.data.isEmpty) return;
+      Map<String, dynamic> json;
+      try {
+        json = jsonDecode(ev.data) as Map<String, dynamic>;
+      } catch (_) {
+        return;
+      }
+      // First wire message after reconnect (re)confirms the live stream.
+      if (!_connected && mounted) {
+        setState(() {
+          _connected = true;
+          _error = null;
+        });
+      }
+      _handleWireMessage(json);
+      restore = !_isActiveRuntime(target);
+    } finally {
+      if (restore) {
+        _runtime = _selectedRuntime ?? previous;
+      }
     }
-    // First wire message after reconnect (re)confirms the live stream.
-    if (!_connected && mounted) {
-      setState(() {
-        _connected = true;
-        _error = null;
-      });
-    }
-    _handleWireMessage(json);
   }
 
   void _debugTrack(IncomingMessage msg, Map<String, dynamic> json) {
@@ -1636,9 +1652,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             streamUuid = actualSessionId;
             if (mounted) {
               final previousForegroundPayload = _completionPayloadFor(session);
+              final previousWindowKey = _sessionKey(session);
               final adoptedKey =
                   _sessionKeyFor(session.agent, session.cwd, actualSessionId);
               final previousPendingKey = _pendingKey;
+              final mappedRuntime = _runtimes[previousWindowKey];
+              if (identical(mappedRuntime, runtime)) {
+                _runtimes.remove(previousWindowKey);
+                _runtimes[adoptedKey] = runtime;
+              }
               if (_isActiveRuntime(runtime)) {
                 setState(() {
                   _sessionId = actualSessionId;
@@ -1669,6 +1691,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               if (_isActiveRuntime(runtime)) {
                 ref.read(currentSessionProvider.notifier).state =
                     adoptedSession;
+                final windows = ref.read(openChatWindowsProvider.notifier);
+                windows.open(adoptedSession);
+                if (previousWindowKey != adoptedKey) {
+                  windows.close(previousWindowKey);
+                }
               }
             }
           }
@@ -2261,6 +2288,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                               subMsgsMap: _subMsgs,
                               onAnswerQuestion: _sendAnswerQuestion,
                               onAnswerCodexApproval: _sendCodexApproval,
+                              onOpenFilePath: _openRemoteFilePreview,
+                              onSaveFilePath: _saveRemoteFileRef,
                               rawJson: kDebugMode ? _debugRaw[m] : null,
                             );
                           },
@@ -2330,12 +2359,61 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onSwitchModel: _switchModel,
             onSwitchPermissionMode: _switchPermissionMode,
             onPatchRuntime: _patchRuntime,
+            onOpenSessionFiles: _showSessionFiles,
             chatApi: _chatApi,
             agent: session.agent,
             runtime: session.runtime,
+            sessionId: _sessionId ?? session.resumeId,
           ),
       ],
     );
+  }
+
+  Future<void> _openRemoteFilePreview(String path) async {
+    final conn = ref.read(activeConnectionProvider);
+    if (conn == null) return;
+    final uri = FilesApi(conn.httpBase, token: conn.token).previewUri(path);
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      showTopToast(context, '无法打开预览');
+    }
+  }
+
+  Future<void> _saveRemoteFileRef(String path) async {
+    final conn = ref.read(activeConnectionProvider);
+    final session = _runtime.session ?? ref.read(currentSessionProvider);
+    final sessionId = _sessionId ?? session?.resumeId;
+    if (conn == null || session == null || sessionId == null) return;
+    try {
+      await SessionFilesApi(conn.httpBase, token: conn.token).add(
+        sessionId: sessionId,
+        path: path,
+        cwd: session.cwd,
+      );
+      if (mounted) {
+        showTopToast(
+          context,
+          '已加入会话文件',
+          duration: const Duration(seconds: 1),
+          icon: Icons.bookmark_added_outlined,
+        );
+      }
+    } catch (err) {
+      if (mounted) showTopToast(context, '收藏失败: $err');
+    }
+  }
+
+  void _showSessionFiles() {
+    final conn = ref.read(activeConnectionProvider);
+    final session = _runtime.session ?? ref.read(currentSessionProvider);
+    final sessionId = _sessionId ?? session?.resumeId;
+    if (conn == null || sessionId == null) return;
+    unawaited(showSessionFilesDrawer(
+      context,
+      api: SessionFilesApi(conn.httpBase, token: conn.token),
+      filesApi: FilesApi(conn.httpBase, token: conn.token),
+      sessionId: sessionId,
+    ));
   }
 }
 
@@ -2644,7 +2722,7 @@ class _StatusGitBranchChipState extends State<_StatusGitBranchChip> {
   @override
   void didUpdateWidget(covariant _StatusGitBranchChip oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.cwd != widget.cwd || oldWidget.api != widget.api) {
+    if (oldWidget.cwd != widget.cwd) {
       _future = widget.api.status(widget.cwd);
     }
   }
@@ -2872,9 +2950,11 @@ class _Composer extends ConsumerWidget {
   final void Function(ModelOption) onSwitchModel;
   final void Function(CcPermissionMode) onSwitchPermissionMode;
   final void Function(Map<String, dynamic>) onPatchRuntime;
+  final VoidCallback onOpenSessionFiles;
   final ChatApi? chatApi;
   final AgentKind agent;
   final Map<String, dynamic> runtime;
+  final String? sessionId;
   const _Composer({
     required this.controller,
     required this.connected,
@@ -2890,14 +2970,17 @@ class _Composer extends ConsumerWidget {
     required this.onSwitchModel,
     required this.onSwitchPermissionMode,
     required this.onPatchRuntime,
+    required this.onOpenSessionFiles,
     this.chatApi,
     required this.agent,
     required this.runtime,
+    required this.sessionId,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
+    final conn = ref.watch(activeConnectionProvider);
     final model = ref.watch(currentModelProvider);
     // canSend：非 busy 且附件就绪才能直接发。
     // canQueue：busy 中且有文字，点击可排队。
@@ -2995,6 +3078,45 @@ class _Composer extends ConsumerWidget {
                         Icons.add_rounded,
                         size: 20,
                         color: connected ? t.textMuted : t.textDim,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: conn == null
+                        ? null
+                        : () => showInspirationDrawer(
+                              context,
+                              api: IdeasApi(conn.httpBase, token: conn.token),
+                            ),
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      child: Icon(
+                        Icons.lightbulb_outline,
+                        size: 18,
+                        color: conn == null ? t.textDim : t.textMuted,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: conn == null || sessionId == null
+                        ? null
+                        : onOpenSessionFiles,
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      child: Icon(
+                        Icons.folder_special_outlined,
+                        size: 18,
+                        color: conn == null || sessionId == null
+                            ? t.textDim
+                            : t.textMuted,
                       ),
                     ),
                   ),
