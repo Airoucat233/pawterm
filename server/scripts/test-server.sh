@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# 独立测试 server 控制脚本（端口 8766）。
+# 独立测试 server 控制脚本（端口 8765）。
 #
-# 跟 `pnpm dev` 的主 server（端口 8765）完全隔离 —— 各自一份 config.json，
-# 各自一份 SDK session map。改源码不会自动 reload（避免热重载链断流）。
+# 使用跟 `pnpm dev` 一样的 server/config.json，但不 watch。
+# 改源码不会自动 reload（避免热重载链断流）；需要手动 restart。
 #
+#   ./scripts/test-server.sh          # restart：停 → 起，换入最新代码
 #   ./scripts/test-server.sh start    # 后台起 → /tmp/pawterm-test-server.log
 #   ./scripts/test-server.sh stop     # 杀进程
 #   ./scripts/test-server.sh restart  # 停 → 起
@@ -18,10 +19,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_DIR="$(dirname "$SCRIPT_DIR")"
-CONFIG_FILE="$SERVER_DIR/config.test.json"
+CONFIG_FILE="$SERVER_DIR/config.json"
 LOG_FILE="/tmp/pawterm-test-server.log"
 PID_FILE="/tmp/pawterm-test-server.pid"
-PORT=8766
+PORT=8765
 
 # ── colors ────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -171,7 +172,8 @@ cmd_logs() {
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────
-cmd="${1:-}"
+if [[ "${1:-}" == "--" ]]; then shift; fi
+cmd="${1:-restart}"
 shift || true
 case "$cmd" in
   start)   cmd_start  "$@" ;;
@@ -179,14 +181,14 @@ case "$cmd" in
   restart) cmd_restart "$@" ;;
   status)  cmd_status "$@" ;;
   logs)    cmd_logs   "$@" ;;
-  ""|help|-h|--help)
+  help|-h|--help)
     cat <<EOF
 Usage: ./scripts/test-server.sh <command>
 
 Commands:
+  restart   stop + start (default)
   start     Launch detached test server on port $PORT
   stop      Kill it (TERM, then KILL after 1.5s)
-  restart   stop + start
   status    Show pid + port if running
   logs      tail -f $LOG_FILE
   logs -n   tail -n 100 $LOG_FILE (one-shot)

@@ -34,7 +34,8 @@
     "typecheck": "pnpm -r run typecheck",
     "typecheck:server": "pnpm --filter pawterm-server run typecheck",
     "typecheck:web": "pnpm --filter @pawterm/web run typecheck",
-    "test:server": "pnpm --filter pawterm-server run test",
+    "test:server": "pnpm --filter pawterm-server run test-server",
+    "test:server:unit": "pnpm --filter pawterm-server run test",
     "test:server:watch": "pnpm --filter pawterm-server run test:watch"
   },
   "devDependencies": {
