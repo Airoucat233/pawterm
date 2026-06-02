@@ -37,15 +37,62 @@ class SettingsScreen extends ConsumerWidget {
 
 // ── Shared body — used both in SettingsScreen and in ConnectionsScreen tab ─────
 
-class SettingsBody extends ConsumerWidget {
+class SettingsBody extends ConsumerStatefulWidget {
   const SettingsBody({super.key});
+
+  @override
+  ConsumerState<SettingsBody> createState() => _SettingsBodyState();
+}
+
+class _SettingsBodyState extends ConsumerState<SettingsBody> {
+  bool _showConversationSettings = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 240),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        final enteringConversation =
+            child.key == const ValueKey('conversation-settings');
+        final beginOffset =
+            enteringConversation ? const Offset(1, 0) : const Offset(-1, 0);
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: beginOffset,
+            end: Offset.zero,
+          ).animate(animation),
+          child: FadeTransition(opacity: animation, child: child),
+        );
+      },
+      child: _showConversationSettings
+          ? _ConversationSettingsPage(
+              key: const ValueKey('conversation-settings'),
+              onBack: () => setState(() => _showConversationSettings = false),
+            )
+          : _SettingsRootPage(
+              key: const ValueKey('settings-root'),
+              onOpenConversationSettings: () =>
+                  setState(() => _showConversationSettings = true),
+            ),
+    );
+  }
+}
+
+class _SettingsRootPage extends ConsumerWidget {
+  final VoidCallback onOpenConversationSettings;
+
+  const _SettingsRootPage({
+    super.key,
+    required this.onOpenConversationSettings,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(stringsProvider);
     final themeMode = ref.watch(prefsProvider);
     final langPref = ref.watch(langPrefProvider);
-    final fileToolExpanded = ref.watch(fileToolCardsExpandedProvider);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
@@ -89,13 +136,12 @@ class SettingsBody extends ConsumerWidget {
         // ── 对话 ──────────────────────────────────────
         const _SettingSection('对话'),
         _SettingCard(children: [
-          _SwitchRow(
-            label: '文件工具默认展开',
-            subtitle: '控制文件修改、补丁等工具卡片进入对话时是否自动展开',
-            icon: Icons.description_outlined,
-            value: fileToolExpanded,
-            onChanged: (v) =>
-                ref.read(fileToolCardsExpandedProvider.notifier).set(v),
+          _TappableRow(
+            icon: Icons.chat_bubble_outline,
+            label: '对话设置',
+            subtitle: '滚动行为、工具卡片展示',
+            trailing: const Icon(Icons.chevron_right, size: 18),
+            onTap: onOpenConversationSettings,
           ),
         ]),
 
@@ -142,6 +188,56 @@ class SettingsBody extends ConsumerWidget {
           const _PrereleaseChannelTile(),
           _Divider(),
           const _CheckUpdateTile(),
+        ]),
+      ],
+    );
+  }
+}
+
+class _ConversationSettingsPage extends ConsumerWidget {
+  final VoidCallback onBack;
+
+  const _ConversationSettingsPage({
+    super.key,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scrollToBottom = ref.watch(scrollToBottomOnSessionSwitchProvider);
+    final fileToolExpanded = ref.watch(fileToolCardsExpandedProvider);
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      children: [
+        _SettingCard(children: [
+          _TappableRow(
+            icon: Icons.arrow_back,
+            label: '对话设置',
+            onTap: onBack,
+          ),
+        ]),
+        const _SettingSection('滚动'),
+        _SettingCard(children: [
+          _SwitchRow(
+            label: '切换会话后滚到底部',
+            subtitle: '进入另一个会话时直接查看最新内容',
+            icon: Icons.vertical_align_bottom_outlined,
+            value: scrollToBottom,
+            onChanged: (v) =>
+                ref.read(scrollToBottomOnSessionSwitchProvider.notifier).set(v),
+          ),
+        ]),
+        const _SettingSection('工具卡片'),
+        _SettingCard(children: [
+          _SwitchRow(
+            label: '文件工具默认展开',
+            subtitle: '控制文件修改、补丁等工具卡片进入对话时是否自动展开',
+            icon: Icons.description_outlined,
+            value: fileToolExpanded,
+            onChanged: (v) =>
+                ref.read(fileToolCardsExpandedProvider.notifier).set(v),
+          ),
         ]),
       ],
     );
@@ -351,12 +447,14 @@ class _InfoRow extends StatelessWidget {
 class _TappableRow extends StatelessWidget {
   final IconData icon;
   final String label;
+  final String? subtitle;
   final Widget? trailing;
   final VoidCallback onTap;
   const _TappableRow(
       {required this.icon,
       required this.label,
       required this.onTap,
+      this.subtitle,
       this.trailing});
 
   @override
@@ -370,8 +468,21 @@ class _TappableRow extends StatelessWidget {
           children: [
             Icon(icon, size: 18, color: t.textMuted),
             const SizedBox(width: 10),
-            Text(label, style: TextStyle(fontSize: 14, color: t.text)),
-            const Spacer(),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: TextStyle(fontSize: 14, color: t.text)),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle!,
+                      style: TextStyle(fontSize: 11, color: t.textMuted),
+                    ),
+                  ],
+                ],
+              ),
+            ),
             if (trailing != null)
               IconTheme(
                   data: IconThemeData(color: t.textDim), child: trailing!),

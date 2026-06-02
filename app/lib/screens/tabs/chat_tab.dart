@@ -488,12 +488,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final nextRuntime = _runtimes.putIfAbsent(key, _ChatSessionRuntime.new);
     nextRuntime.session = session;
     if (!identical(_runtime, nextRuntime)) {
+      final shouldScrollToBottom =
+          ref.read(scrollToBottomOnSessionSwitchProvider);
       setState(() {
         _runtime = nextRuntime;
         _selectedRuntime = nextRuntime;
         _stickToBottom = true;
         _suppressAutoScrollUntil = null;
       });
+      if (shouldScrollToBottom) {
+        _scrollToEnd(force: true);
+      }
     } else {
       _selectedRuntime = nextRuntime;
     }

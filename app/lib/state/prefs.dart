@@ -126,3 +126,27 @@ final fileToolCardsExpandedProvider =
     StateNotifierProvider<FileToolCardsExpandedNotifier, bool>(
   (_) => FileToolCardsExpandedNotifier(),
 );
+
+class ScrollToBottomOnSessionSwitchNotifier extends StateNotifier<bool> {
+  ScrollToBottomOnSessionSwitchNotifier() : super(true) {
+    _load();
+  }
+
+  static const _key = 'scroll_to_bottom_on_session_switch_v1';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? true;
+  }
+
+  Future<void> set(bool value) async {
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, value);
+  }
+}
+
+final scrollToBottomOnSessionSwitchProvider =
+    StateNotifierProvider<ScrollToBottomOnSessionSwitchNotifier, bool>(
+  (_) => ScrollToBottomOnSessionSwitchNotifier(),
+);
