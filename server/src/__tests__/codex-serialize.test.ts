@@ -90,7 +90,7 @@ describe('codexThreadItemToWire', () => {
     });
   });
 
-  it('maps Codex webSearch items to WebSearch tool cards', () => {
+  it('does not echo Codex webSearch input as the tool result', () => {
     const item = {
       type: 'webSearch',
       id: 'ws_1',
@@ -123,17 +123,36 @@ describe('codexThreadItemToWire', () => {
         {
           type: 'tool_result',
           tool_use_id: 'ws_1',
-          content: JSON.stringify({
-            query: 'OpenAI Codex web search tool support',
-            queries: ['OpenAI Codex web search tool support'],
-            action: 'search',
-          }, null, 2),
+          content: 'Search completed.',
           is_error: false,
           native_type: 'webSearch',
           native_event: undefined,
           raw_payload: item,
         },
       ],
+    });
+  });
+
+  it('uses Codex webSearch results as the tool result when present', () => {
+    const item = {
+      type: 'webSearch',
+      id: 'ws_2',
+      query: 'PawTerm',
+      action: { type: 'search', query: 'PawTerm' },
+      results: [
+        { title: 'PawTerm docs', url: 'https://example.com/pawterm' },
+      ],
+    };
+
+    const wire = codexThreadItemToWire(item);
+
+    expect(wire?.type).toBe('assistant');
+    if (wire?.type !== 'assistant') throw new Error('expected assistant message');
+    expect(wire.content[1]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'ws_2',
+      content: JSON.stringify(item.results, null, 2),
+      is_error: false,
     });
   });
 
