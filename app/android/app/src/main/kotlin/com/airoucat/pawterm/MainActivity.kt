@@ -67,9 +67,9 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-        notificationsMethodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
-        notificationsMethodChannel
-            .setMethodCallHandler { call, result ->
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
+        notificationsMethodChannel = channel
+        channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getInitialNotificationPayload" -> {
                         val payload = pendingNotificationPayload ?: notificationPayloadFrom(intent)
@@ -246,7 +246,6 @@ class MainActivity : FlutterActivity() {
         sessionEvents.addFirst(cleanLine)
         while (sessionEvents.size > 8) sessionEvents.removeLast()
 
-        val eventId = (System.currentTimeMillis() and 0x7fffffff).toInt()
         val intent = Intent(this, MainActivity::class.java)
             .setAction("pawterm.SESSION_EVENTS")
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -255,42 +254,28 @@ class MainActivity : FlutterActivity() {
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
-        val pendingIntent = PendingIntent.getActivity(this, eventId, intent, flags)
         val summaryPendingIntent = PendingIntent.getActivity(this, sessionEventsSummaryId, intent, flags)
-        val summaryTitle = "${sessionEvents.size} 条会话更新"
+        val singleEvent = sessionEvents.size == 1
+        val summaryTitle = if (singleEvent) title else "${sessionEvents.size} 条会话更新"
+        val summaryText = if (singleEvent) cleanLine else summaryTitle
         val inboxStyle = NotificationCompat.InboxStyle()
         sessionEvents.take(5).forEach { inboxStyle.addLine(it) }
         if (sessionEvents.size > 5) inboxStyle.setSummaryText("+ ${sessionEvents.size - 5}")
 
         val summaryNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
             .setSmallIcon(applicationInfo.icon)
-            .setContentTitle("PawTerm 会话更新")
-            .setContentText(summaryTitle)
+            .setContentTitle(summaryTitle)
+            .setContentText(summaryText)
             .setStyle(inboxStyle)
             .setContentIntent(summaryPendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setGroup(sessionEventsGroup)
-            .setGroupSummary(true)
-            .build()
-
-        val eventNotification = NotificationCompat.Builder(this, sessionEventsChannelId)
-            .setSmallIcon(applicationInfo.icon)
-            .setContentTitle(title)
-            .setContentText(cleanLine)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(cleanLine))
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setGroup(sessionEventsGroup)
             .build()
 
         val manager = NotificationManagerCompat.from(this)
         Log.i("PawTermNotify", "addSessionEvent enabled=${manager.areNotificationsEnabled()} count=${sessionEvents.size} line=$cleanLine")
         manager.notify(sessionEventsSummaryId, summaryNotification)
-        manager.notify(eventId, eventNotification)
     }
 
     private fun updateActiveSessionProgress(

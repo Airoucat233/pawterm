@@ -13,24 +13,54 @@ const _apkInstallerChannel = MethodChannel('pawterm/apk_installer');
 
 // ── Public standalone screen (used from MainShell top-bar gear button) ────────
 
-class SettingsScreen extends ConsumerWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  bool _showConversationSettings = false;
+
+  void _setConversationSettings(bool value) {
+    setState(() => _showConversationSettings = value);
+  }
+
+  void _handleBack() {
+    if (_showConversationSettings) {
+      _setConversationSettings(false);
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final s = ref.watch(stringsProvider);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(s.settingsTitle),
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: t.text),
-          onPressed: () => Navigator.of(context).pop(),
-          tooltip: s.settingsBack,
+    return PopScope(
+      canPop: !_showConversationSettings,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _showConversationSettings) {
+          _setConversationSettings(false);
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_showConversationSettings ? '对话设置' : s.settingsTitle),
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: t.text),
+            onPressed: _handleBack,
+            tooltip: s.settingsBack,
+          ),
+        ),
+        body: SettingsBody(
+          showConversationSettings: _showConversationSettings,
+          onConversationSettingsChanged: _setConversationSettings,
         ),
       ),
-      body: const SettingsBody(),
     );
   }
 }
@@ -38,7 +68,14 @@ class SettingsScreen extends ConsumerWidget {
 // ── Shared body — used both in SettingsScreen and in ConnectionsScreen tab ─────
 
 class SettingsBody extends ConsumerStatefulWidget {
-  const SettingsBody({super.key});
+  final bool? showConversationSettings;
+  final ValueChanged<bool>? onConversationSettingsChanged;
+
+  const SettingsBody({
+    super.key,
+    this.showConversationSettings,
+    this.onConversationSettingsChanged,
+  });
 
   @override
   ConsumerState<SettingsBody> createState() => _SettingsBodyState();
@@ -47,8 +84,21 @@ class SettingsBody extends ConsumerStatefulWidget {
 class _SettingsBodyState extends ConsumerState<SettingsBody> {
   bool _showConversationSettings = false;
 
+  bool get _effectiveShowConversationSettings =>
+      widget.showConversationSettings ?? _showConversationSettings;
+
+  void _setConversationSettings(bool value) {
+    final external = widget.onConversationSettingsChanged;
+    if (external != null) {
+      external(value);
+    } else {
+      setState(() => _showConversationSettings = value);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final showConversationSettings = _effectiveShowConversationSettings;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 240),
       switchInCurve: Curves.easeOutCubic,
@@ -66,15 +116,15 @@ class _SettingsBodyState extends ConsumerState<SettingsBody> {
           child: FadeTransition(opacity: animation, child: child),
         );
       },
-      child: _showConversationSettings
+      child: showConversationSettings
           ? _ConversationSettingsPage(
               key: const ValueKey('conversation-settings'),
-              onBack: () => setState(() => _showConversationSettings = false),
+              showInlineBack: widget.showConversationSettings == null,
+              onBack: () => _setConversationSettings(false),
             )
           : _SettingsRootPage(
               key: const ValueKey('settings-root'),
-              onOpenConversationSettings: () =>
-                  setState(() => _showConversationSettings = true),
+              onOpenConversationSettings: () => _setConversationSettings(true),
             ),
     );
   }
@@ -195,10 +245,12 @@ class _SettingsRootPage extends ConsumerWidget {
 }
 
 class _ConversationSettingsPage extends ConsumerWidget {
+  final bool showInlineBack;
   final VoidCallback onBack;
 
   const _ConversationSettingsPage({
     super.key,
+    required this.showInlineBack,
     required this.onBack,
   });
 
@@ -210,14 +262,11 @@ class _ConversationSettingsPage extends ConsumerWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
       children: [
-        _SettingCard(children: [
-          _TappableRow(
-            icon: Icons.arrow_back,
-            label: '对话设置',
-            onTap: onBack,
-          ),
-        ]),
-        const _SettingSection('滚动'),
+        if (showInlineBack) ...[
+          _InlineBackHeader(label: '对话设置', onBack: onBack),
+          const SizedBox(height: 8),
+        ],
+        const _SettingSection('对话'),
         _SettingCard(children: [
           _SwitchRow(
             label: '切换会话后滚到底部',
@@ -227,9 +276,7 @@ class _ConversationSettingsPage extends ConsumerWidget {
             onChanged: (v) =>
                 ref.read(scrollToBottomOnSessionSwitchProvider.notifier).set(v),
           ),
-        ]),
-        const _SettingSection('工具卡片'),
-        _SettingCard(children: [
+          _Divider(),
           _SwitchRow(
             label: '文件工具默认展开',
             subtitle: '控制文件修改、补丁等工具卡片进入对话时是否自动展开',
@@ -245,6 +292,38 @@ class _ConversationSettingsPage extends ConsumerWidget {
 }
 
 // ── Shared UI building blocks ──────────────────────────────────────────────────
+
+class _InlineBackHeader extends StatelessWidget {
+  final String label;
+  final VoidCallback onBack;
+
+  const _InlineBackHeader({required this.label, required this.onBack});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return SizedBox(
+      height: 44,
+      child: Row(
+        children: [
+          IconButton(
+            icon: Icon(Icons.arrow_back, color: t.text),
+            onPressed: onBack,
+            tooltip: '返回',
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              color: t.text,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _SettingSection extends StatelessWidget {
   final String label;

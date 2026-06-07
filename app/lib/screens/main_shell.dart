@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,6 +32,22 @@ class _MainShellState extends ConsumerState<MainShell> {
   int _index = 0;
   // 保留弹出栏的展开状态，关闭再打开时保持上次展开的项目。
   final Set<String> _sheetExpanded = {};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(mainShellMountedProvider.notifier).state = true;
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    ref.read(mainShellMountedProvider.notifier).state = false;
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -219,30 +236,25 @@ class _InAppChatNotificationHost extends ConsumerWidget {
     if (items.isEmpty) return const SizedBox.shrink();
     final item = items.first;
     return Positioned(
-      top: MediaQuery.of(context).padding.top + 12,
+      top: MediaQuery.of(context).padding.top + 64,
       right: 12,
       child: _InAppChatNotificationCard(
         key: ValueKey(item.id),
         item: item,
         onTap: () {
           ref.read(currentSessionProvider.notifier).state = CurrentSession(
-                cwd: item.payload.cwd,
-                label: item.payload.label,
-                resumeId: item.payload.resumeId,
-                agent: item.payload.agent,
-                runtime: item.payload.runtime.isEmpty
-                    ? null
-                    : item.payload.runtime,
-              );
+            cwd: item.payload.cwd,
+            label: item.payload.label,
+            resumeId: item.payload.resumeId,
+            agent: item.payload.agent,
+            runtime: item.payload.runtime.isEmpty ? null : item.payload.runtime,
+          );
           if (!item.persistent) {
-            ref
-                .read(inAppChatNotificationsProvider.notifier)
-                .dismiss(item.id);
+            ref.read(inAppChatNotificationsProvider.notifier).dismiss(item.id);
           }
         },
-        onDismiss: () => ref
-            .read(inAppChatNotificationsProvider.notifier)
-            .dismiss(item.id),
+        onDismiss: () =>
+            ref.read(inAppChatNotificationsProvider.notifier).dismiss(item.id),
       ),
     );
   }
@@ -310,10 +322,10 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final isApproval =
-        widget.item.kind == InAppChatNotificationKind.approval;
+    final isApproval = widget.item.kind == InAppChatNotificationKind.approval;
     final accent = isApproval ? t.warning : t.success;
-    final width = min(MediaQuery.sizeOf(context).width - 24, 340.0);
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final width = max(158.0, min(screenWidth * 0.5, 190.0));
     return SlideTransition(
       position: _slide,
       child: FadeTransition(
@@ -322,75 +334,99 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
           color: Colors.transparent,
           child: InkWell(
             onTap: widget.onTap,
-            borderRadius: BorderRadius.circular(10),
-            child: Container(
-              width: width,
-              padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
-              decoration: BoxDecoration(
-                color: t.surface,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: accent.withValues(alpha: 0.55)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.18),
-                    blurRadius: 22,
-                    offset: const Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Icon(
-                      isApproval
-                          ? Icons.priority_high_rounded
-                          : Icons.done_rounded,
-                      size: 18,
-                      color: accent,
+            borderRadius: BorderRadius.circular(13),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(13),
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                child: Container(
+                  width: width,
+                  padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+                  foregroundDecoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(13),
+                    gradient: LinearGradient(
+                      colors: [
+                        accent.withValues(alpha: 0.11),
+                        Colors.white.withValues(alpha: 0.035),
+                        Colors.transparent,
+                      ],
+                      stops: const [0, 0.55, 1],
                     ),
                   ),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          widget.item.title,
+                  decoration: BoxDecoration(
+                    color: t.surface.withValues(alpha: 0.76),
+                    borderRadius: BorderRadius.circular(13),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.035),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.18),
+                        blurRadius: 18,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 21,
+                        height: 21,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: accent.withValues(alpha: 0.12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: accent.withValues(alpha: 0.14),
+                              blurRadius: 14,
+                            ),
+                          ],
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(
+                          isApproval
+                              ? Icons.priority_high_rounded
+                              : Icons.done_rounded,
+                          size: 13,
+                          color: accent,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          isApproval ? widget.item.title : widget.item.body,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: t.text,
-                            fontSize: 13,
+                            fontSize: 12.5,
                             fontWeight: FontWeight.w700,
+                            height: 1.22,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black.withValues(alpha: 0.32),
+                                blurRadius: 12,
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          widget.item.body,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: t.textMuted,
-                            fontSize: 12,
-                            height: 1.25,
+                      ),
+                      if (widget.item.persistent) ...[
+                        const SizedBox(width: 3),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _dismiss,
+                          child: SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: Icon(Icons.close_rounded,
+                                color: t.textDim, size: 15),
                           ),
                         ),
                       ],
-                    ),
+                    ],
                   ),
-                  if (widget.item.persistent)
-                    IconButton(
-                      icon: Icon(Icons.close_rounded,
-                          color: t.textDim, size: 16),
-                      padding: EdgeInsets.zero,
-                      constraints:
-                          const BoxConstraints(minWidth: 28, minHeight: 28),
-                      onPressed: _dismiss,
-                    ),
-                ],
+                ),
               ),
             ),
           ),

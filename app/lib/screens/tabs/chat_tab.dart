@@ -510,6 +510,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     if (_boundKey == key &&
         (_sseClient != null || _connected || _observeMode)) {
+      _scheduleDrainQueue(nextRuntime);
       return;
     }
     if (_attempting) return;
@@ -752,8 +753,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       final api = ChatApi(httpBase, token: _serverToken);
       _chatApi = api;
 
-      // 先加载历史（与状态查询并行）。
-      if (session.resumeId != null) {
+      // 先加载历史（与状态查询并行）。已缓存过消息的 runtime 切回来时不重复拉取，
+      // 避免 idle 会话切换时列表闪烁和卡顿。
+      if (session.resumeId != null && _messages.isEmpty) {
         _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
             runtime: runtime);
       }
@@ -800,9 +802,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _subscribeSse(httpBase, uuid, session.agent, runtime: runtime);
       } else if (turnStatus.state == TurnState.done) {
         _queuePausedOnUnknown = false;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _drainQueue();
-        });
+        _scheduleDrainQueue(runtime);
       } else if (turnStatus.state == TurnState.unknown && _pending.isNotEmpty) {
         setState(() {
           _queuePausedOnUnknown = true;
@@ -1730,6 +1730,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   /// busy 解除后调用：从队列头取一条发出。递归调用直至队列空或下一条 result。
+  void _scheduleDrainQueue(_ChatSessionRuntime runtime) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isActiveRuntime(runtime)) return;
+      _withRuntime(runtime, _drainQueue);
+    });
+  }
+
   void _drainQueue() {
     if (_busy || !_connected || _queuePausedOnUnknown || _pending.isEmpty) {
       return;

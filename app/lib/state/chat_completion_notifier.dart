@@ -44,6 +44,8 @@ final inAppChatNotificationsProvider = StateNotifierProvider<
   (ref) => InAppChatNotificationsNotifier(),
 );
 
+final mainShellMountedProvider = StateProvider<bool>((ref) => false);
+
 class InAppChatNotificationsNotifier
     extends StateNotifier<List<InAppChatNotification>> {
   InAppChatNotificationsNotifier() : super(const []);
@@ -53,7 +55,8 @@ class InAppChatNotificationsNotifier
     required String title,
     required String body,
   }) {
-    final id = 'completion|${payload.key}|${DateTime.now().microsecondsSinceEpoch}';
+    final id =
+        'completion|${payload.key}|${DateTime.now().microsecondsSinceEpoch}';
     state = [
       InAppChatNotification(
         id: id,
@@ -356,7 +359,8 @@ class ChatCompletionNotifier {
 
   bool _appIsVisibleNow() {
     final state = WidgetsBinding.instance.lifecycleState;
-    return state == AppLifecycleState.resumed;
+    return state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
   }
 
   Future<void> _requestAndroidPermissionIfForeground() async {
@@ -459,6 +463,7 @@ class ChatCompletionNotifier {
       agent: payload.agent,
       runtime: payload.runtime.isEmpty ? null : payload.runtime,
     );
+    if (ref.read(mainShellMountedProvider)) return;
     navigator.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const MainShell()),
       (route) => route.isFirst,
