@@ -15,7 +15,19 @@ import 'projects_store.dart';
 final chatCompletionPulseProvider =
     StateProvider<Map<String, int>>((ref) => const {});
 
+final chatNotificationNavigationProvider = StateProvider<int>((ref) => 0);
+
 const _nativeNotificationsChannel = MethodChannel('pawterm/notifications');
+
+@pragma('vm:entry-point')
+void chatApprovalNotificationTapBackground(
+    NotificationResponse response) async {
+  try {
+    await _answerCodexApprovalFromNotification(response);
+  } catch (err) {
+    if (kDebugMode) debugPrint('Bad background approval action payload: $err');
+  }
+}
 
 enum InAppChatNotificationKind { completion, approval }
 
@@ -145,6 +157,42 @@ class ChatCompletionPayload {
       };
 }
 
+class _HandledApprovalAction {
+  final String requestId;
+  final Object? session;
+
+  const _HandledApprovalAction({
+    required this.requestId,
+    required this.session,
+  });
+}
+
+Future<_HandledApprovalAction?> _answerCodexApprovalFromNotification(
+  NotificationResponse response,
+) async {
+  final decision = switch (response.actionId) {
+    ChatCompletionNotifier._actionDecline => 'decline',
+    ChatCompletionNotifier._actionAccept => 'accept',
+    ChatCompletionNotifier._actionAcceptForSession => 'acceptForSession',
+    _ => null,
+  };
+  final raw = response.payload;
+  if (decision == null || raw == null || raw.isEmpty) return null;
+
+  final decoded = jsonDecode(raw) as Map<String, dynamic>;
+  if (decoded['kind'] != 'codex_approval') return null;
+  final apiBase = decoded['api_base'] as String;
+  final token = decoded['token'] as String?;
+  final uuid = decoded['uuid'] as String;
+  final requestId = decoded['request_id'] as String;
+  await ChatApi(apiBase, token: token)
+      .answerCodexApproval(uuid, requestId, decision);
+  return _HandledApprovalAction(
+    requestId: requestId,
+    session: decoded['session'],
+  );
+}
+
 class ChatCompletionNotifier {
   ChatCompletionNotifier._();
   static final instance = ChatCompletionNotifier._();
@@ -200,6 +248,8 @@ class ChatCompletionNotifier {
         }
         _handlePayload(response.payload);
       },
+      onDidReceiveBackgroundNotificationResponse:
+          chatApprovalNotificationTapBackground,
     );
     await _plugin
         .resolvePlatformSpecificImplementation<
@@ -414,30 +464,20 @@ class ChatCompletionNotifier {
   }
 
   Future<void> handleApprovalAction(NotificationResponse response) async {
-    final decision = switch (response.actionId) {
-      _actionDecline => 'decline',
-      _actionAccept => 'accept',
-      _actionAcceptForSession => 'acceptForSession',
-      _ => null,
-    };
-    final raw = response.payload;
-    if (decision == null || raw == null || raw.isEmpty) {
-      _handlePayload(raw);
+    if (response.actionId?.isEmpty != false) {
+      _handlePayload(response.payload);
       return;
     }
     try {
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      if (decoded['kind'] != 'codex_approval') return;
-      final apiBase = decoded['api_base'] as String;
-      final token = decoded['token'] as String?;
-      final uuid = decoded['uuid'] as String;
-      final requestId = decoded['request_id'] as String;
-      await ChatApi(apiBase, token: token)
-          .answerCodexApproval(uuid, requestId, decision);
+      final handled = await _answerCodexApprovalFromNotification(response);
+      if (handled == null) {
+        _handlePayload(response.payload);
+        return;
+      }
       _ref
           ?.read(inAppChatNotificationsProvider.notifier)
-          .dismissApprovalsForRequest(requestId);
-      final session = decoded['session'];
+          .dismissApprovalsForRequest(handled.requestId);
+      final session = handled.session;
       if (session is Map) {
         _markPulse(ChatCompletionPayload.fromJson(
           Map<String, dynamic>.from(session),
@@ -445,7 +485,7 @@ class ChatCompletionNotifier {
       }
     } catch (err) {
       if (kDebugMode) debugPrint('Bad approval action payload: $err');
-      _handlePayload(raw);
+      _handlePayload(response.payload);
     }
   }
 
@@ -463,6 +503,7 @@ class ChatCompletionNotifier {
       agent: payload.agent,
       runtime: payload.runtime.isEmpty ? null : payload.runtime,
     );
+    ref.read(chatNotificationNavigationProvider.notifier).state++;
     if (ref.read(mainShellMountedProvider)) return;
     navigator.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const MainShell()),

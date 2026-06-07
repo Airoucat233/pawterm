@@ -1888,7 +1888,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     Connection config,
   ) {
     final uuid = _sessionId;
-    final session = ref.read(currentSessionProvider);
+    final session = _runtime.session ?? ref.read(currentSessionProvider);
     if (uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
     if (!_notifiedApprovalIds.add(requestId)) return;
@@ -4576,17 +4576,25 @@ class _ReEditAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return Tooltip(
       message: '撤回并重新编辑',
       child: InkWell(
         onTap: onReEdit,
         borderRadius: BorderRadius.circular(999),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
-            color: t.accent.withValues(alpha: 0.08),
+            color: (dark ? t.surfaceHi : t.surface).withValues(alpha: 0.72),
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: t.accent.withValues(alpha: 0.18)),
+            border: Border.all(color: t.accent.withValues(alpha: 0.16)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: dark ? 0.18 : 0.06),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -4619,9 +4627,7 @@ class _ReEditBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
     return Container(
-      color: t.surface,
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       child: Row(
         children: [
@@ -4743,7 +4749,7 @@ MarkdownStyleSheet streamingMarkdownStyle(AppTokens t) => MarkdownStyleSheet(
         fontFamily: 'monospace',
         fontSize: 12,
         color: t.accent,
-        backgroundColor: t.surfaceHi,
+        backgroundColor: Colors.transparent,
       ),
       codeblockDecoration: BoxDecoration(
         color: t.surfaceHi,

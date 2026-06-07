@@ -46,9 +46,11 @@ pnpm exec vitest run src/__tests__/event-buffer.test.ts   # 跑单个测试文�
 
 ```bash
 cd app
-flutter pub get
+PUB_HOSTED_URL=https://pub.dev flutter pub get
 flutter run               # 调试 Android，默认 flavor=prod；dev 用 --flavor dev
 ```
+
+本仓库提交的 `app/pubspec.lock` 必须保持 hosted registry 为 `https://pub.dev`。如果本机 shell 配了 `PUB_HOSTED_URL=https://pub.flutter-io.cn` 等镜像，裸跑 `flutter pub get` 会污染 lock；因此 App 端解析依赖时必须显式写 `PUB_HOSTED_URL=https://pub.dev flutter pub get`，或使用仓库脚本中已内置的同等环境覆盖。
 
 ---
 

@@ -274,9 +274,7 @@ class _ToolCallCardState extends ConsumerState<ToolCallCard> {
 
     return InkWell(
       onTap: () => setState(() => _expanded = !_expanded),
-      onDoubleTap: _expanded
-          ? () => setState(() => _expanded = false)
-          : null,
+      onDoubleTap: _expanded ? () => setState(() => _expanded = false) : null,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
@@ -1231,7 +1229,7 @@ class _SubMdRow extends StatelessWidget {
             fontFamily: 'monospace',
             fontSize: 11,
             color: t.accent,
-            backgroundColor: t.surfaceHi,
+            backgroundColor: Colors.transparent,
           ),
           codeblockDecoration: BoxDecoration(
             color: t.surfaceHi,

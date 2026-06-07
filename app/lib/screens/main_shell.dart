@@ -51,6 +51,12 @@ class _MainShellState extends ConsumerState<MainShell> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<int>(chatNotificationNavigationProvider, (previous, next) {
+      if (previous == null || previous == next) return;
+      if (_index != 0) {
+        setState(() => _index = 0);
+      }
+    });
     final conn = ref.watch(activeConnectionProvider);
     final session = ref.watch(currentSessionProvider);
     final openWindows = ref.watch(openChatWindowsProvider);
@@ -249,6 +255,7 @@ class _InAppChatNotificationHost extends ConsumerWidget {
             agent: item.payload.agent,
             runtime: item.payload.runtime.isEmpty ? null : item.payload.runtime,
           );
+          ref.read(chatNotificationNavigationProvider.notifier).state++;
           if (!item.persistent) {
             ref.read(inAppChatNotificationsProvider.notifier).dismiss(item.id);
           }
