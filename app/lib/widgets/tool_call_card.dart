@@ -1229,7 +1229,7 @@ class _SubMdRow extends StatelessWidget {
             fontFamily: 'monospace',
             fontSize: 11,
             color: t.accent,
-            backgroundColor: Colors.transparent,
+            backgroundColor: t.surfaceHi,
           ),
           codeblockDecoration: BoxDecoration(
             color: t.surfaceHi,

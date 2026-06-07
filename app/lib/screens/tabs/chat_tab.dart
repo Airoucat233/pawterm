@@ -4579,38 +4579,41 @@ class _ReEditAction extends StatelessWidget {
     final dark = Theme.of(context).brightness == Brightness.dark;
     return Tooltip(
       message: '撤回并重新编辑',
-      child: InkWell(
-        onTap: onReEdit,
+      child: Material(
+        color: Colors.transparent,
         borderRadius: BorderRadius.circular(999),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: (dark ? t.surfaceHi : t.surface).withValues(alpha: 0.72),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: t.accent.withValues(alpha: 0.16)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: dark ? 0.18 : 0.06),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.undo_rounded, size: 14, color: t.accent),
-              const SizedBox(width: 4),
-              Text(
-                '重新编辑',
-                style: TextStyle(
-                  fontSize: 11,
-                  height: 1.1,
-                  color: t.accent,
-                  fontWeight: FontWeight.w600,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onReEdit,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: t.accent.withValues(alpha: dark ? 0.12 : 0.09),
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: [
+                BoxShadow(
+                  color: t.accent.withValues(alpha: dark ? 0.08 : 0.06),
+                  blurRadius: 12,
+                  offset: const Offset(0, 3),
                 ),
-              ),
-            ],
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.undo_rounded, size: 14, color: t.accent),
+                const SizedBox(width: 4),
+                Text(
+                  '重新编辑',
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.1,
+                    color: t.accent,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -4749,7 +4752,7 @@ MarkdownStyleSheet streamingMarkdownStyle(AppTokens t) => MarkdownStyleSheet(
         fontFamily: 'monospace',
         fontSize: 12,
         color: t.accent,
-        backgroundColor: Colors.transparent,
+        backgroundColor: t.surfaceHi,
       ),
       codeblockDecoration: BoxDecoration(
         color: t.surfaceHi,

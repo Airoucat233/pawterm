@@ -295,7 +295,7 @@ class MessageView extends StatelessWidget {
       if (block.text.trim().isEmpty) return const SizedBox.shrink();
       // 外层 _gutterRow 已经管 bottom 间距，这里不再叠加
       return MarkdownBody(
-        data: block.text,
+        data: _promoteSinglePathCodeBlocks(block.text),
         selectable: true,
         inlineSyntaxes:
             onOpenFilePath == null ? null : [_FilePathInlineSyntax()],
@@ -306,6 +306,10 @@ class MessageView extends StatelessWidget {
                   onOpen: onOpenFilePath!,
                   onSave: onSaveFilePath,
                 ),
+                _FilePathBlockBuilder.tag: _FilePathBlockBuilder(
+                  onOpen: onOpenFilePath!,
+                  onSave: onSaveFilePath,
+                ),
               },
         styleSheet: MarkdownStyleSheet(
           p: TextStyle(color: t.text, fontSize: 13, height: 1.6),
@@ -313,7 +317,7 @@ class MessageView extends StatelessWidget {
             fontFamily: 'monospace',
             fontSize: 12,
             color: t.accent,
-            backgroundColor: Colors.transparent,
+            backgroundColor: t.surfaceHi,
           ),
           codeblockDecoration: BoxDecoration(
             color: t.surfaceHi,
@@ -391,6 +395,10 @@ class MessageView extends StatelessWidget {
   }
 }
 
+final _absoluteFilePathPattern = RegExp(
+  r'/(?:[^\s`"<>:|?*]+/)*[^\s`"<>:|?*]+\.[A-Za-z0-9]{1,12}',
+);
+
 class _FilePathInlineSyntax extends md.InlineSyntax {
   static const tag = 'file_path_ref';
 
@@ -451,6 +459,184 @@ class _FilePathInlineBuilder extends MarkdownElementBuilder {
   }
 
   void _showFilePathActions(BuildContext context, String path) {
+    final t = AppTokens.of(context);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                path,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: t.text,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.open_in_new_rounded, color: t.accent),
+                title: const Text('打开'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  onOpen(path);
+                },
+              ),
+              if (onSave != null)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.bookmark_add_outlined, color: t.accent),
+                  title: const Text('加入会话文件'),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    onSave!(path);
+                  },
+                ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.copy_rounded, color: t.textMuted),
+                title: const Text('复制路径'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  Clipboard.setData(ClipboardData(text: path));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('已复制路径')),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FilePathBlockBuilder extends MarkdownElementBuilder {
+  static const tag = 'file-path-block';
+
+  final void Function(String path) onOpen;
+  final void Function(String path)? onSave;
+
+  _FilePathBlockBuilder({
+    required this.onOpen,
+    required this.onSave,
+  });
+
+  @override
+  bool isBlockElement() => true;
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final path = element.attributes['path'];
+    if (path == null) return null;
+    return _FilePathActionBlock(
+      path: path,
+      onOpen: onOpen,
+      onSave: onSave,
+    );
+  }
+}
+
+String _promoteSinglePathCodeBlocks(String markdown) {
+  return markdown.replaceAllMapped(
+    RegExp(r'```[^\n]*\n([\s\S]*?)\n```', multiLine: true),
+    (match) {
+      final path = _singleAbsoluteFilePath(match.group(1) ?? '');
+      if (path == null) return match.group(0)!;
+      return '<${_FilePathBlockBuilder.tag} path="${_escapeHtmlAttr(path)}"></${_FilePathBlockBuilder.tag}>';
+    },
+  );
+}
+
+String? _singleAbsoluteFilePath(String raw) {
+  final text = raw.trim();
+  if (text.contains('\n')) return null;
+  final match = _absoluteFilePathPattern.firstMatch(text);
+  final path = match?.group(0);
+  return path == text ? path : null;
+}
+
+String _escapeHtmlAttr(String value) {
+  return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+}
+
+class _FilePathActionBlock extends StatelessWidget {
+  final String path;
+  final void Function(String path) onOpen;
+  final void Function(String path)? onSave;
+
+  const _FilePathActionBlock({
+    required this.path,
+    required this.onOpen,
+    required this.onSave,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final parts = path.split('/').where((p) => p.isNotEmpty).toList();
+    final fileName = parts.isEmpty ? path : parts.last;
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => onOpen(path),
+        onLongPress: () => _showFilePathActions(context),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          decoration: BoxDecoration(
+            color: t.surfaceHi,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.insert_drive_file_outlined, size: 15, color: t.accent),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: t.accent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Icon(Icons.more_horiz_rounded, size: 16, color: t.textMuted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showFilePathActions(BuildContext context) {
     final t = AppTokens.of(context);
     showModalBottomSheet<void>(
       context: context,

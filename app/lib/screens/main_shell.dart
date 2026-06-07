@@ -285,8 +285,11 @@ class _InAppChatNotificationCard extends StatefulWidget {
 }
 
 class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
+  static const _completionDuration = Duration(milliseconds: 5500);
+
   late final AnimationController _controller;
+  late final AnimationController _progressController;
   late final Animation<Offset> _slide;
   late final Animation<double> _fade;
   Timer? _timer;
@@ -299,6 +302,10 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
       duration: const Duration(milliseconds: 220),
       reverseDuration: const Duration(milliseconds: 150),
     );
+    _progressController = AnimationController(
+      vsync: this,
+      duration: _completionDuration,
+    );
     final curved =
         CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
     _slide = Tween<Offset>(
@@ -308,7 +315,8 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
     _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
     _controller.forward();
     if (!widget.item.persistent) {
-      _timer = Timer(const Duration(seconds: 4), _dismiss);
+      _progressController.forward();
+      _timer = Timer(_completionDuration, _dismiss);
     }
   }
 
@@ -322,6 +330,7 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
   @override
   void dispose() {
     _timer?.cancel();
+    _progressController.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -345,10 +354,10 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
             child: ClipRRect(
               borderRadius: BorderRadius.circular(13),
               child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                filter: ui.ImageFilter.blur(sigmaX: 11, sigmaY: 11),
                 child: Container(
                   width: width,
-                  padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+                  padding: const EdgeInsets.fromLTRB(8, 7, 8, 0),
                   foregroundDecoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(13),
                     gradient: LinearGradient(
@@ -361,10 +370,10 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
                     ),
                   ),
                   decoration: BoxDecoration(
-                    color: t.surface.withValues(alpha: 0.76),
+                    color: t.surface.withValues(alpha: 0.68),
                     borderRadius: BorderRadius.circular(13),
                     border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.035),
+                      color: Colors.white.withValues(alpha: 0.025),
                     ),
                     boxShadow: [
                       BoxShadow(
@@ -374,60 +383,85 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
                       ),
                     ],
                   ),
-                  child: Row(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Container(
-                        width: 21,
-                        height: 21,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: accent.withValues(alpha: 0.12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: accent.withValues(alpha: 0.14),
-                              blurRadius: 14,
+                      Row(
+                        children: [
+                          Container(
+                            width: 21,
+                            height: 21,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: accent.withValues(alpha: 0.12),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: accent.withValues(alpha: 0.14),
+                                  blurRadius: 14,
+                                ),
+                              ],
+                            ),
+                            alignment: Alignment.center,
+                            child: Icon(
+                              isApproval
+                                  ? Icons.priority_high_rounded
+                                  : Icons.done_rounded,
+                              size: 13,
+                              color: accent,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              isApproval ? widget.item.title : widget.item.body,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: t.text,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                height: 1.22,
+                                shadows: [
+                                  Shadow(
+                                    color: Colors.black.withValues(alpha: 0.28),
+                                    blurRadius: 10,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          if (widget.item.persistent) ...[
+                            const SizedBox(width: 3),
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: _dismiss,
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: Icon(Icons.close_rounded,
+                                    color: t.textDim, size: 15),
+                              ),
                             ),
                           ],
-                        ),
-                        alignment: Alignment.center,
-                        child: Icon(
-                          isApproval
-                              ? Icons.priority_high_rounded
-                              : Icons.done_rounded,
-                          size: 13,
-                          color: accent,
-                        ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          isApproval ? widget.item.title : widget.item.body,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: t.text,
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w700,
-                            height: 1.22,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black.withValues(alpha: 0.32),
-                                blurRadius: 12,
+                      if (!widget.item.persistent) ...[
+                        const SizedBox(height: 7),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: AnimatedBuilder(
+                            animation: _progressController,
+                            builder: (_, __) => FractionallySizedBox(
+                              widthFactor:
+                                  1 - _progressController.value.clamp(0, 1),
+                              child: Container(
+                                height: 2,
+                                decoration: BoxDecoration(
+                                  color: t.success.withValues(alpha: 0.72),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
                               ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      if (widget.item.persistent) ...[
-                        const SizedBox(width: 3),
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: _dismiss,
-                          child: SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: Icon(Icons.close_rounded,
-                                color: t.textDim, size: 15),
+                            ),
                           ),
                         ),
                       ],
