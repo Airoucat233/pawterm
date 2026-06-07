@@ -15,6 +15,7 @@ import '../state/chat_completion_notifier.dart';
 import '../state/open_chat_windows.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
+import '../state/streaming_foreground_service.dart';
 import '../theme.dart';
 import 'settings_screen.dart';
 import 'tabs/chat_tab.dart';
@@ -28,7 +29,8 @@ class MainShell extends ConsumerStatefulWidget {
   ConsumerState<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends ConsumerState<MainShell> {
+class _MainShellState extends ConsumerState<MainShell>
+    with WidgetsBindingObserver {
   int _index = 0;
   // 保留弹出栏的展开状态，关闭再打开时保持上次展开的项目。
   final Set<String> _sheetExpanded = {};
@@ -36,17 +38,35 @@ class _MainShellState extends ConsumerState<MainShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         ref.read(mainShellMountedProvider.notifier).state = true;
+        unawaited(_syncAppForegroundNotifications());
       }
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     ref.read(mainShellMountedProvider.notifier).state = false;
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_syncAppForegroundNotifications());
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(StreamingForegroundService.instance.setAppInForeground(false));
+    }
+  }
+
+  Future<void> _syncAppForegroundNotifications() async {
+    await StreamingForegroundService.instance.setAppInForeground(true);
+    await ChatCompletionNotifier.instance.clearSessionNotifications();
   }
 
   @override
