@@ -202,6 +202,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   static const double _stickToBottomThreshold = 80.0;
   DateTime? _suppressAutoScrollUntil;
   DateTime? _lastAutoScrollAt;
+  int _settleScrollRequestId = 0;
 
   // 键盘弹出跟随：记录上一帧键盘高度，用于判断键盘是否正在弹出。
   double _prevKeyboardHeight = 0;
@@ -985,20 +986,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _loadingHistory = false;
           });
         }
-        // ListView.builder 惰性布局：第一帧 maxScrollExtent 是基于可见条目的估算值，
-        // 直接 animateTo 会停在中间。双帧 jumpTo 解决：
-        //   第 1 帧：跳到估算底部，触发底部附近条目的布局；
-        //   第 2 帧：再跳一次，此时所有底部条目已构建，extent 精确。
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_scrollController.hasClients) return;
-          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-          if (mounted) setState(() => _stickToBottom = true);
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted || !_scrollController.hasClients) return;
-            _scrollController
-                .jumpTo(_scrollController.position.maxScrollExtent);
-          });
-        });
+        if (_isActiveRuntime(target)) {
+          _settleScrollToEnd(target);
+        }
       } else if (_isActiveRuntime(target)) {
         setState(() => _loadingHistory = false);
       } else {
@@ -1549,21 +1539,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
 
     if (force) {
-      // force=true 用双帧 jumpTo（同 _loadHistory 的策略）：
-      //   第 1 帧：jumpTo 估算底部，触发底部附近 item 构建；
-      //   第 2 帧：再 jumpTo，此时 item 已构建，maxScrollExtent 精确。
-      // 不用 animateTo 的原因：加载更早消息后用户离底部较远，
-      // ListView.builder 底部 item 尚未构建，maxScrollExtent 是估算值；
-      // animateTo 以估算值为目标，动画结束时实际位置偏上。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scrollController.hasClients) return;
-        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-        if (mounted) setState(() => _stickToBottom = true);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_scrollController.hasClients) return;
-          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-        });
-      });
+      _settleScrollToEnd(_runtime);
     } else {
       // force=false：流式 delta 自动跟随，用 animateTo 保持流畅。
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1575,6 +1551,52 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         );
       });
     }
+  }
+
+  void _settleScrollToEnd(
+    _ChatSessionRuntime target, {
+    int minFrames = 3,
+    int maxFrames = 8,
+  }) {
+    if (!_isActiveRuntime(target)) return;
+    final requestId = ++_settleScrollRequestId;
+    var frames = 0;
+    var stableFrames = 0;
+    double? lastMaxExtent;
+
+    void step() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || requestId != _settleScrollRequestId) return;
+        if (!_isActiveRuntime(target)) return;
+
+        if (!_scrollController.hasClients) {
+          frames++;
+          if (frames < maxFrames) step();
+          return;
+        }
+
+        final position = _scrollController.position;
+        final maxExtent = position.maxScrollExtent;
+        position.jumpTo(maxExtent);
+        if (!_stickToBottom && mounted) {
+          setState(() => _stickToBottom = true);
+        }
+
+        if (lastMaxExtent != null && (maxExtent - lastMaxExtent!).abs() < 0.5) {
+          stableFrames++;
+        } else {
+          stableFrames = 0;
+          lastMaxExtent = maxExtent;
+        }
+
+        frames++;
+        if (frames < minFrames || (frames < maxFrames && stableFrames < 2)) {
+          step();
+        }
+      });
+    }
+
+    step();
   }
 
   void _submit() {
