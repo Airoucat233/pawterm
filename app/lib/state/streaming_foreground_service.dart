@@ -1,11 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter/services.dart';
 
-import '../api/agents_api.dart';
 import 'chat_completion_notifier.dart';
 
 @pragma('vm:entry-point')
@@ -102,7 +100,6 @@ class StreamingForegroundService {
 
     final title = _title();
     final body = _body();
-    await _updateProgressNotification();
     if (await FlutterForegroundTask.isRunningService) {
       await FlutterForegroundTask.updateService(
         notificationTitle: title,
@@ -145,29 +142,6 @@ class StreamingForegroundService {
         .toList(growable: false);
   }
 
-  Future<void> _updateProgressNotification() async {
-    final items = _progressItems();
-    if (items.isEmpty) {
-      await _clearProgressNotification();
-      return;
-    }
-    try {
-      await _nativeNotificationsChannel.invokeMethod<void>(
-        'updateActiveSessionProgress',
-        {
-          'title': 'PawTerm 会话进度',
-          'summary': activeSessionSummary(items),
-          'lines': activeSessionInboxLines(items),
-          'payload': jsonForFirstPayload(items),
-        },
-      );
-    } on MissingPluginException {
-      // Non-Android platforms and early startup can miss the native channel.
-    } on PlatformException {
-      // Notification permission or OEM policy should not break stream keepalive.
-    }
-  }
-
   Future<void> _clearProgressNotification() async {
     try {
       await _nativeNotificationsChannel.invokeMethod<void>(
@@ -199,19 +173,6 @@ String activeSessionCompactBody(List<ActiveSessionProgress> items) {
   return activeSessionSummary(items);
 }
 
-List<String> activeSessionInboxLines(List<ActiveSessionProgress> items) {
-  return items
-      .take(6)
-      .map((item) =>
-          '${_sessionDisplayName(item.payload)} · ${_agentLabel(item.payload.agent)} · ${item.activity}')
-      .toList(growable: false);
-}
-
-String? jsonForFirstPayload(List<ActiveSessionProgress> items) {
-  if (items.isEmpty) return null;
-  return jsonEncode(items.first.payload.toJson());
-}
-
 String _sessionDisplayName(ChatCompletionPayload payload) {
   final cwd = payload.cwd.trim();
   final cwdName = _basename(cwd);
@@ -233,9 +194,3 @@ String _basename(String path) {
   final parts = normalized.split('/').where((part) => part.isNotEmpty).toList();
   return parts.isEmpty ? normalized : parts.last;
 }
-
-String _agentLabel(AgentKind agent) => switch (agent) {
-      AgentKind.claude => 'Claude',
-      AgentKind.codex => 'Codex',
-      AgentKind.gemini => 'Gemini',
-    };

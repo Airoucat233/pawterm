@@ -358,7 +358,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final appVisible = state == AppLifecycleState.resumed;
+    final appVisible = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
     _appInForeground = appVisible;
     unawaited(StreamingForegroundService.instance
         .setAppInForeground(_appInForeground));
@@ -570,23 +571,30 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     CurrentSession session,
     String uuid,
     String holderDeviceId,
+    _ChatSessionRuntime runtime,
   ) async {
     final choice = await _showConflictDialog(holderDeviceId);
     if (!mounted) return;
     switch (choice) {
       case _ConflictChoice.observe:
-        if (session.resumeId != null && _messages.isEmpty) {
-          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent);
+        if (session.resumeId != null && runtime.messages.isEmpty) {
+          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
+              runtime: runtime);
         }
-        _startObserveMode(httpBase, session, uuid, holderDeviceId);
+        _startObserveMode(httpBase, session, uuid, holderDeviceId, runtime);
       case _ConflictChoice.takeover:
-        if (session.resumeId != null && _messages.isEmpty) {
-          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent);
+        if (session.resumeId != null && runtime.messages.isEmpty) {
+          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
+              runtime: runtime);
         }
-        unawaited(_doTakeover(httpBase, session, uuid));
+        unawaited(_doTakeover(httpBase, session, uuid, runtime));
       case null:
       case _ConflictChoice.cancel:
-        setState(() => _attempting = false);
+        if (_isActiveRuntime(runtime)) {
+          setState(() => _withRuntime(runtime, () => _attempting = false));
+        } else {
+          _withRuntime(runtime, () => _attempting = false);
+        }
     }
   }
 
@@ -639,32 +647,47 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     CurrentSession session,
     String uuid,
     String holderDeviceId,
+    _ChatSessionRuntime runtime,
   ) {
-    setState(() {
+    void markObserving() {
       _observeMode = true;
       _observeHolderDeviceId = holderDeviceId;
-    });
-    _stopObserveTimer();
-    _observeTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    }
+
+    if (_isActiveRuntime(runtime)) {
+      setState(() => _withRuntime(runtime, markObserving));
+    } else {
+      _withRuntime(runtime, markObserving);
+    }
+    _withRuntime(runtime, _stopObserveTimer);
+    runtime.observeTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) async {
       if (!mounted) return;
       // Check if the holder is still running.
       try {
-        final status = await _chatApi?.status(uuid, agent: session.agent);
+        final api = runtime.chatApi;
+        final status = await api?.status(uuid, agent: session.agent);
         if (!mounted) return;
         if (status != null &&
             (status.state != TurnState.running ||
-                status.holderDeviceId == _deviceId)) {
-          _stopObserveTimer();
+                status.holderDeviceId == runtime.deviceId)) {
+          _withRuntime(runtime, _stopObserveTimer);
           if (!mounted) return;
-          setState(() {
+          void clearObserve() {
             _observeMode = false;
             _observeHolderDeviceId = null;
-          });
+          }
+
+          if (_isActiveRuntime(runtime)) {
+            setState(() => _withRuntime(runtime, clearObserve));
+          } else {
+            _withRuntime(runtime, clearObserve);
+          }
           // 等 400ms 让 claude 子进程完成 pid.json 清理，再重连避免
           // status 短暂窗口内仍返回 running 导致再次弹框。
           await Future.delayed(const Duration(milliseconds: 400));
           if (!mounted) return;
-          unawaited(_connectToSession(httpBase, session, runtime: _runtime));
+          unawaited(_connectToSession(httpBase, session, runtime: runtime));
           return;
         }
       } catch (_) {}
@@ -678,15 +701,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           limit: _historyPageSize,
         );
         if (!mounted || page == null) return;
-        if (page.messages.length != _messages.length) {
-          setState(() {
+        if (page.messages.length != runtime.messages.length) {
+          void applyPage() {
             _messages
               ..clear()
               ..addAll(page.messages);
             _oldestUuid = page.oldestUuid;
             _hasMoreHistory = page.hasMore;
-          });
-          _scrollToEnd();
+          }
+
+          if (_isActiveRuntime(runtime)) {
+            setState(() => _withRuntime(runtime, applyPage));
+            _scrollToEnd();
+          } else {
+            _withRuntime(runtime, applyPage);
+          }
         }
       } catch (_) {}
     });
@@ -698,21 +727,38 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   Future<void> _doTakeover(
-      String httpBase, CurrentSession session, String uuid) async {
+    String httpBase,
+    CurrentSession session,
+    String uuid, [
+    _ChatSessionRuntime? runtime,
+  ]) async {
+    final target = runtime ?? _runtime;
     try {
-      await _chatApi!.takeover(uuid, deviceId: _deviceId);
+      await target.chatApi!.takeover(uuid, deviceId: target.deviceId);
     } catch (e) {
-      if (mounted) setState(() => _error = '接管失败: $e');
+      if (mounted) {
+        if (_isActiveRuntime(target)) {
+          setState(() => _withRuntime(target, () => _error = '接管失败: $e'));
+        } else {
+          _withRuntime(target, () => _error = '接管失败: $e');
+        }
+      }
       return;
     }
     if (!mounted) return;
     // 接管成功：直接置 idle 连接态，不再走 _connectToSession 重新查 status。
     // 重查 status 存在竞态（holder 文件未及时清除），会导致弹框再次弹出。
-    setState(() {
+    void applyTakeover() {
       _attempting = false;
       _connected = true;
       _error = null;
-    });
+    }
+
+    if (_isActiveRuntime(target)) {
+      setState(() => _withRuntime(target, applyTakeover));
+    } else {
+      _withRuntime(target, applyTakeover);
+    }
   }
 
   void _takeoverFromObserve() {
@@ -778,7 +824,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         final holderDeviceId = turnStatus.holderDeviceId;
         setState(() => _attempting = false);
         if (holderDeviceId != null) {
-          unawaited(_handleConflict(httpBase, session, uuid, holderDeviceId));
+          unawaited(_handleConflict(
+              httpBase, session, uuid, holderDeviceId, runtime));
         } else {
           // Defensive fallback for malformed status responses.
           setState(() {
@@ -846,15 +893,31 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _publishRuntimeStatus(_ChatSessionRuntime runtime) {
     final session = runtime.session;
     if (session == null) return;
-    final status = runtime.error != null
+    ref.read(openChatWindowsProvider.notifier).setStatus(
+          sessionKey(session),
+          _statusForRuntime(runtime),
+        );
+  }
+
+  OpenChatWindowStatus _statusForRuntime(_ChatSessionRuntime runtime) {
+    return runtime.error != null
         ? OpenChatWindowStatus.error
         : runtime.busy
             ? OpenChatWindowStatus.running
             : OpenChatWindowStatus.idle;
-    ref.read(openChatWindowsProvider.notifier).setStatus(
-          sessionKey(session),
-          status,
-        );
+  }
+
+  OpenChatWindowStatus _statusForSession(CurrentSession session) {
+    final key = _sessionKey(session);
+    final target = _runtimes[key];
+    if (target != null) return _statusForRuntime(target);
+
+    final currentSession = _runtime.session;
+    if (currentSession != null && _sessionKey(currentSession) == key) {
+      return _statusForRuntime(_runtime);
+    }
+
+    return OpenChatWindowStatus.idle;
   }
 
   void _disposeClosedRuntimes(Set<String> openKeys) {
@@ -1321,13 +1384,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _localUserEchoes.removeWhere((echo) => echo.serverAcked);
         if (completionPayload != null) {
           if (shouldNotify) {
-            unawaited(ChatCompletionNotifier.instance
-                .notifyTurnComplete(
-                  payload: completionPayload,
-                  appInForeground: _appInForeground,
-                )
-                .whenComplete(() => StreamingForegroundService.instance
-                    .remove(completionPayload)));
+            unawaited(StreamingForegroundService.instance
+                .remove(completionPayload)
+                .whenComplete(
+                    () => ChatCompletionNotifier.instance.notifyTurnComplete(
+                          payload: completionPayload,
+                          appInForeground: _appInForeground,
+                        )));
           } else {
             unawaited(
                 StreamingForegroundService.instance.remove(completionPayload));
@@ -1963,10 +2026,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       );
       return;
     }
-    unawaited(StreamingForegroundService.instance.upsert(
-      payload,
-      activity: '等待审批',
-    ));
+    unawaited(StreamingForegroundService.instance.remove(payload));
     unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
       payload: payload,
       apiBase: config.apiBase,
@@ -2203,14 +2263,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final status = _error != null
-          ? OpenChatWindowStatus.error
-          : _busy
-              ? OpenChatWindowStatus.running
-              : OpenChatWindowStatus.idle;
       ref
           .read(openChatWindowsProvider.notifier)
-          .setStatus(sessionKey(session), status);
+          .setStatus(sessionKey(session), _statusForSession(session));
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {

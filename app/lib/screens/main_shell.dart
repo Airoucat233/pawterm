@@ -306,7 +306,7 @@ class _InAppChatNotificationCard extends StatefulWidget {
 
 class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
     with TickerProviderStateMixin {
-  static const _completionDuration = Duration(milliseconds: 5500);
+  static const _completionDuration = Duration(seconds: 10);
 
   late final AnimationController _controller;
   late final AnimationController _progressController;
