@@ -11,11 +11,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../api/agents_api.dart';
 import '../../api/chat_api.dart';
+import '../../api/files_api.dart';
 import '../../api/git_api.dart';
+import '../../api/ideas_api.dart';
 import '../../api/protocol.dart';
+import '../../api/session_files_api.dart';
 import '../../api/sse_client.dart';
 import '../../api/upload_api.dart';
 import '../../i18n/locale_provider.dart';
@@ -30,7 +34,9 @@ import '../../theme.dart';
 import '../../utils/time_format.dart';
 import '../../widgets/cc_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
+import '../../widgets/inspiration_drawer.dart';
 import '../../widgets/message_view.dart';
+import '../../widgets/session_files_drawer.dart';
 import '../../widgets/todo_chip.dart';
 import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -143,6 +149,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   _ChatSessionRuntime _runtime = _ChatSessionRuntime();
   _ChatSessionRuntime? _selectedRuntime;
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _textFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   bool _appInForeground = true;
 
@@ -196,6 +203,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   static const double _stickToBottomThreshold = 80.0;
   DateTime? _suppressAutoScrollUntil;
   DateTime? _lastAutoScrollAt;
+  int _settleScrollRequestId = 0;
 
   // 键盘弹出跟随：记录上一帧键盘高度，用于判断键盘是否正在弹出。
   double _prevKeyboardHeight = 0;
@@ -342,6 +350,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     _textController.removeListener(_onTextChanged);
     _textController.dispose();
+    _textFocusNode.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
@@ -349,7 +358,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final appVisible = state == AppLifecycleState.resumed;
+    final appVisible = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
     _appInForeground = appVisible;
     unawaited(StreamingForegroundService.instance
         .setAppInForeground(_appInForeground));
@@ -488,17 +498,23 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final nextRuntime = _runtimes.putIfAbsent(key, _ChatSessionRuntime.new);
     nextRuntime.session = session;
     if (!identical(_runtime, nextRuntime)) {
+      final shouldScrollToBottom =
+          ref.read(scrollToBottomOnSessionSwitchProvider);
       setState(() {
         _runtime = nextRuntime;
         _selectedRuntime = nextRuntime;
         _stickToBottom = true;
         _suppressAutoScrollUntil = null;
       });
+      if (shouldScrollToBottom) {
+        _scrollToEnd(force: true);
+      }
     } else {
       _selectedRuntime = nextRuntime;
     }
     if (_boundKey == key &&
         (_sseClient != null || _connected || _observeMode)) {
+      _scheduleDrainQueue(nextRuntime);
       return;
     }
     if (_attempting) return;
@@ -555,23 +571,30 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     CurrentSession session,
     String uuid,
     String holderDeviceId,
+    _ChatSessionRuntime runtime,
   ) async {
     final choice = await _showConflictDialog(holderDeviceId);
     if (!mounted) return;
     switch (choice) {
       case _ConflictChoice.observe:
-        if (session.resumeId != null && _messages.isEmpty) {
-          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent);
+        if (session.resumeId != null && runtime.messages.isEmpty) {
+          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
+              runtime: runtime);
         }
-        _startObserveMode(httpBase, session, uuid, holderDeviceId);
+        _startObserveMode(httpBase, session, uuid, holderDeviceId, runtime);
       case _ConflictChoice.takeover:
-        if (session.resumeId != null && _messages.isEmpty) {
-          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent);
+        if (session.resumeId != null && runtime.messages.isEmpty) {
+          _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
+              runtime: runtime);
         }
-        unawaited(_doTakeover(httpBase, session, uuid));
+        unawaited(_doTakeover(httpBase, session, uuid, runtime));
       case null:
       case _ConflictChoice.cancel:
-        setState(() => _attempting = false);
+        if (_isActiveRuntime(runtime)) {
+          setState(() => _withRuntime(runtime, () => _attempting = false));
+        } else {
+          _withRuntime(runtime, () => _attempting = false);
+        }
     }
   }
 
@@ -624,32 +647,47 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     CurrentSession session,
     String uuid,
     String holderDeviceId,
+    _ChatSessionRuntime runtime,
   ) {
-    setState(() {
+    void markObserving() {
       _observeMode = true;
       _observeHolderDeviceId = holderDeviceId;
-    });
-    _stopObserveTimer();
-    _observeTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    }
+
+    if (_isActiveRuntime(runtime)) {
+      setState(() => _withRuntime(runtime, markObserving));
+    } else {
+      _withRuntime(runtime, markObserving);
+    }
+    _withRuntime(runtime, _stopObserveTimer);
+    runtime.observeTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) async {
       if (!mounted) return;
       // Check if the holder is still running.
       try {
-        final status = await _chatApi?.status(uuid, agent: session.agent);
+        final api = runtime.chatApi;
+        final status = await api?.status(uuid, agent: session.agent);
         if (!mounted) return;
         if (status != null &&
             (status.state != TurnState.running ||
-                status.holderDeviceId == _deviceId)) {
-          _stopObserveTimer();
+                status.holderDeviceId == runtime.deviceId)) {
+          _withRuntime(runtime, _stopObserveTimer);
           if (!mounted) return;
-          setState(() {
+          void clearObserve() {
             _observeMode = false;
             _observeHolderDeviceId = null;
-          });
+          }
+
+          if (_isActiveRuntime(runtime)) {
+            setState(() => _withRuntime(runtime, clearObserve));
+          } else {
+            _withRuntime(runtime, clearObserve);
+          }
           // 等 400ms 让 claude 子进程完成 pid.json 清理，再重连避免
           // status 短暂窗口内仍返回 running 导致再次弹框。
           await Future.delayed(const Duration(milliseconds: 400));
           if (!mounted) return;
-          unawaited(_connectToSession(httpBase, session, runtime: _runtime));
+          unawaited(_connectToSession(httpBase, session, runtime: runtime));
           return;
         }
       } catch (_) {}
@@ -663,15 +701,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           limit: _historyPageSize,
         );
         if (!mounted || page == null) return;
-        if (page.messages.length != _messages.length) {
-          setState(() {
+        if (page.messages.length != runtime.messages.length) {
+          void applyPage() {
             _messages
               ..clear()
               ..addAll(page.messages);
             _oldestUuid = page.oldestUuid;
             _hasMoreHistory = page.hasMore;
-          });
-          _scrollToEnd();
+          }
+
+          if (_isActiveRuntime(runtime)) {
+            setState(() => _withRuntime(runtime, applyPage));
+            _scrollToEnd();
+          } else {
+            _withRuntime(runtime, applyPage);
+          }
         }
       } catch (_) {}
     });
@@ -683,21 +727,38 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   Future<void> _doTakeover(
-      String httpBase, CurrentSession session, String uuid) async {
+    String httpBase,
+    CurrentSession session,
+    String uuid, [
+    _ChatSessionRuntime? runtime,
+  ]) async {
+    final target = runtime ?? _runtime;
     try {
-      await _chatApi!.takeover(uuid, deviceId: _deviceId);
+      await target.chatApi!.takeover(uuid, deviceId: target.deviceId);
     } catch (e) {
-      if (mounted) setState(() => _error = '接管失败: $e');
+      if (mounted) {
+        if (_isActiveRuntime(target)) {
+          setState(() => _withRuntime(target, () => _error = '接管失败: $e'));
+        } else {
+          _withRuntime(target, () => _error = '接管失败: $e');
+        }
+      }
       return;
     }
     if (!mounted) return;
     // 接管成功：直接置 idle 连接态，不再走 _connectToSession 重新查 status。
     // 重查 status 存在竞态（holder 文件未及时清除），会导致弹框再次弹出。
-    setState(() {
+    void applyTakeover() {
       _attempting = false;
       _connected = true;
       _error = null;
-    });
+    }
+
+    if (_isActiveRuntime(target)) {
+      setState(() => _withRuntime(target, applyTakeover));
+    } else {
+      _withRuntime(target, applyTakeover);
+    }
   }
 
   void _takeoverFromObserve() {
@@ -741,8 +802,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       final api = ChatApi(httpBase, token: _serverToken);
       _chatApi = api;
 
-      // 先加载历史（与状态查询并行）。
-      if (session.resumeId != null) {
+      // 先加载历史（与状态查询并行）。已缓存过消息的 runtime 切回来时不重复拉取，
+      // 避免 idle 会话切换时列表闪烁和卡顿。
+      if (session.resumeId != null && _messages.isEmpty) {
         _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
             runtime: runtime);
       }
@@ -762,7 +824,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         final holderDeviceId = turnStatus.holderDeviceId;
         setState(() => _attempting = false);
         if (holderDeviceId != null) {
-          unawaited(_handleConflict(httpBase, session, uuid, holderDeviceId));
+          unawaited(_handleConflict(
+              httpBase, session, uuid, holderDeviceId, runtime));
         } else {
           // Defensive fallback for malformed status responses.
           setState(() {
@@ -789,9 +852,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _subscribeSse(httpBase, uuid, session.agent, runtime: runtime);
       } else if (turnStatus.state == TurnState.done) {
         _queuePausedOnUnknown = false;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _drainQueue();
-        });
+        _scheduleDrainQueue(runtime);
       } else if (turnStatus.state == TurnState.unknown && _pending.isNotEmpty) {
         setState(() {
           _queuePausedOnUnknown = true;
@@ -812,34 +873,51 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _ChatSessionRuntime? runtime,
   }) {
     final target = runtime ?? _runtime;
-    _runtime = target;
-    final sseUrl =
-        ChatApi(httpBase, token: _serverToken).eventsUrl(uuid, agent: agent);
-    final sse = SseClient(
-      url: sseUrl,
-      headers: _serverToken != null
-          ? {'Authorization': 'Bearer $_serverToken'}
-          : const {},
-    );
-    _sseClient = sse;
-    _sseSub = sse.events.listen((ev) {
-      _withRuntime(target, () => _onSseEvent(ev, runtime: target));
+    _withRuntime(target, () {
+      final sseUrl =
+          ChatApi(httpBase, token: _serverToken).eventsUrl(uuid, agent: agent);
+      final sse = SseClient(
+        url: sseUrl,
+        headers: _serverToken != null
+            ? {'Authorization': 'Bearer $_serverToken'}
+            : const {},
+      );
+      _sseClient = sse;
+      _sseSub = sse.events.listen((ev) {
+        _onSseEvent(ev, runtime: target);
+      });
+      unawaited(sse.connect());
     });
-    unawaited(sse.connect());
   }
 
   void _publishRuntimeStatus(_ChatSessionRuntime runtime) {
     final session = runtime.session;
     if (session == null) return;
-    final status = runtime.error != null
+    ref.read(openChatWindowsProvider.notifier).setStatus(
+          sessionKey(session),
+          _statusForRuntime(runtime),
+        );
+  }
+
+  OpenChatWindowStatus _statusForRuntime(_ChatSessionRuntime runtime) {
+    return runtime.error != null
         ? OpenChatWindowStatus.error
         : runtime.busy
             ? OpenChatWindowStatus.running
             : OpenChatWindowStatus.idle;
-    ref.read(openChatWindowsProvider.notifier).setStatus(
-          sessionKey(session),
-          status,
-        );
+  }
+
+  OpenChatWindowStatus _statusForSession(CurrentSession session) {
+    final key = _sessionKey(session);
+    final target = _runtimes[key];
+    if (target != null) return _statusForRuntime(target);
+
+    final currentSession = _runtime.session;
+    if (currentSession != null && _sessionKey(currentSession) == key) {
+      return _statusForRuntime(_runtime);
+    }
+
+    return OpenChatWindowStatus.idle;
   }
 
   void _disposeClosedRuntimes(Set<String> openKeys) {
@@ -973,20 +1051,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _loadingHistory = false;
           });
         }
-        // ListView.builder 惰性布局：第一帧 maxScrollExtent 是基于可见条目的估算值，
-        // 直接 animateTo 会停在中间。双帧 jumpTo 解决：
-        //   第 1 帧：跳到估算底部，触发底部附近条目的布局；
-        //   第 2 帧：再跳一次，此时所有底部条目已构建，extent 精确。
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_scrollController.hasClients) return;
-          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-          if (mounted) setState(() => _stickToBottom = true);
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted || !_scrollController.hasClients) return;
-            _scrollController
-                .jumpTo(_scrollController.position.maxScrollExtent);
-          });
-        });
+        if (_isActiveRuntime(target)) {
+          _settleScrollToEnd(target);
+        }
       } else if (_isActiveRuntime(target)) {
         setState(() => _loadingHistory = false);
       } else {
@@ -1158,63 +1225,72 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _onSseEvent(SseEvent ev, {_ChatSessionRuntime? runtime}) {
     final target = runtime ?? _runtime;
+    final previous = _runtime;
     _runtime = target;
-    // Internal transport signals come through with a `__` prefix; surface them
-    // as connection-level state changes rather than wire messages.
-    if (ev.type.startsWith('__')) {
-      if (ev.type == '__gap') {
-        if (!mounted) return;
-        setState(() {
-          _error = 'event gap, reloading…';
-          _connected = false;
-        });
-      } else if (ev.type == '__auth_error') {
-        if (!mounted) return;
-        _sseClient?.close();
-        setState(() => _authFailed = true);
-        return;
-      } else if (ev.type == '__not_found') {
-        if (!mounted) return;
-        _closeSse();
-        setState(() {
-          _error = null;
-          _connected = true;
-          _busy = false;
-          _busyStartedAt = null;
-          _mode = CcStreamMode.requesting;
-        });
-        _syncForegroundStreamService(busy: false);
-        unawaited(_refreshActiveRunState());
-        return;
-      } else if (ev.type == '__client_error') {
-        // Transient — the SSE client will retry. Surface the latest error.
-        if (!mounted) return;
-        setState(() {
-          _error = ev.data;
-          _connected = false;
-        });
-        if (_busy) {
-          unawaited(_refreshActiveRunState());
-        }
-      }
-      return;
-    }
-    // Heartbeats etc. emit blank data; skip safely.
-    if (ev.data.isEmpty) return;
-    Map<String, dynamic> json;
+    var restore = true;
     try {
-      json = jsonDecode(ev.data) as Map<String, dynamic>;
-    } catch (_) {
-      return;
+      // Internal transport signals come through with a `__` prefix; surface them
+      // as connection-level state changes rather than wire messages.
+      if (ev.type.startsWith('__')) {
+        if (ev.type == '__gap') {
+          if (!mounted) return;
+          setState(() {
+            _error = 'event gap, reloading…';
+            _connected = false;
+          });
+        } else if (ev.type == '__auth_error') {
+          if (!mounted) return;
+          _sseClient?.close();
+          setState(() => _authFailed = true);
+          return;
+        } else if (ev.type == '__not_found') {
+          if (!mounted) return;
+          _closeSse();
+          setState(() {
+            _error = null;
+            _connected = true;
+            _busy = false;
+            _busyStartedAt = null;
+            _mode = CcStreamMode.requesting;
+          });
+          _syncForegroundStreamService(busy: false);
+          unawaited(_refreshActiveRunState());
+          return;
+        } else if (ev.type == '__client_error') {
+          // Transient — the SSE client will retry. Surface the latest error.
+          if (!mounted) return;
+          setState(() {
+            _error = ev.data;
+            _connected = false;
+          });
+          if (_busy) {
+            unawaited(_refreshActiveRunState());
+          }
+        }
+        return;
+      }
+      // Heartbeats etc. emit blank data; skip safely.
+      if (ev.data.isEmpty) return;
+      Map<String, dynamic> json;
+      try {
+        json = jsonDecode(ev.data) as Map<String, dynamic>;
+      } catch (_) {
+        return;
+      }
+      // First wire message after reconnect (re)confirms the live stream.
+      if (!_connected && mounted) {
+        setState(() {
+          _connected = true;
+          _error = null;
+        });
+      }
+      _handleWireMessage(json);
+      restore = !_isActiveRuntime(target);
+    } finally {
+      if (restore) {
+        _runtime = _selectedRuntime ?? previous;
+      }
     }
-    // First wire message after reconnect (re)confirms the live stream.
-    if (!_connected && mounted) {
-      setState(() {
-        _connected = true;
-        _error = null;
-      });
-    }
-    _handleWireMessage(json);
   }
 
   void _debugTrack(IncomingMessage msg, Map<String, dynamic> json) {
@@ -1308,13 +1384,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _localUserEchoes.removeWhere((echo) => echo.serverAcked);
         if (completionPayload != null) {
           if (shouldNotify) {
-            unawaited(ChatCompletionNotifier.instance
-                .notifyTurnComplete(
-                  payload: completionPayload,
-                  appInForeground: _appInForeground,
-                )
-                .whenComplete(() => StreamingForegroundService.instance
-                    .remove(completionPayload)));
+            unawaited(StreamingForegroundService.instance
+                .remove(completionPayload)
+                .whenComplete(
+                    () => ChatCompletionNotifier.instance.notifyTurnComplete(
+                          payload: completionPayload,
+                          appInForeground: _appInForeground,
+                        )));
           } else {
             unawaited(
                 StreamingForegroundService.instance.remove(completionPayload));
@@ -1528,21 +1604,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
 
     if (force) {
-      // force=true 用双帧 jumpTo（同 _loadHistory 的策略）：
-      //   第 1 帧：jumpTo 估算底部，触发底部附近 item 构建；
-      //   第 2 帧：再 jumpTo，此时 item 已构建，maxScrollExtent 精确。
-      // 不用 animateTo 的原因：加载更早消息后用户离底部较远，
-      // ListView.builder 底部 item 尚未构建，maxScrollExtent 是估算值；
-      // animateTo 以估算值为目标，动画结束时实际位置偏上。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scrollController.hasClients) return;
-        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-        if (mounted) setState(() => _stickToBottom = true);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_scrollController.hasClients) return;
-          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-        });
-      });
+      _settleScrollToEnd(_runtime);
     } else {
       // force=false：流式 delta 自动跟随，用 animateTo 保持流畅。
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1554,6 +1616,52 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         );
       });
     }
+  }
+
+  void _settleScrollToEnd(
+    _ChatSessionRuntime target, {
+    int minFrames = 3,
+    int maxFrames = 8,
+  }) {
+    if (!_isActiveRuntime(target)) return;
+    final requestId = ++_settleScrollRequestId;
+    var frames = 0;
+    var stableFrames = 0;
+    double? lastMaxExtent;
+
+    void step() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || requestId != _settleScrollRequestId) return;
+        if (!_isActiveRuntime(target)) return;
+
+        if (!_scrollController.hasClients) {
+          frames++;
+          if (frames < maxFrames) step();
+          return;
+        }
+
+        final position = _scrollController.position;
+        final maxExtent = position.maxScrollExtent;
+        position.jumpTo(maxExtent);
+        if (!_stickToBottom && mounted) {
+          setState(() => _stickToBottom = true);
+        }
+
+        if (lastMaxExtent != null && (maxExtent - lastMaxExtent!).abs() < 0.5) {
+          stableFrames++;
+        } else {
+          stableFrames = 0;
+          lastMaxExtent = maxExtent;
+        }
+
+        frames++;
+        if (frames < minFrames || (frames < maxFrames && stableFrames < 2)) {
+          step();
+        }
+      });
+    }
+
+    step();
   }
 
   void _submit() {
@@ -1631,9 +1739,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             streamUuid = actualSessionId;
             if (mounted) {
               final previousForegroundPayload = _completionPayloadFor(session);
+              final previousWindowKey = _sessionKey(session);
               final adoptedKey =
                   _sessionKeyFor(session.agent, session.cwd, actualSessionId);
               final previousPendingKey = _pendingKey;
+              final mappedRuntime = _runtimes[previousWindowKey];
+              if (identical(mappedRuntime, runtime)) {
+                _runtimes.remove(previousWindowKey);
+                _runtimes[adoptedKey] = runtime;
+              }
               if (_isActiveRuntime(runtime)) {
                 setState(() {
                   _sessionId = actualSessionId;
@@ -1664,6 +1778,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               if (_isActiveRuntime(runtime)) {
                 ref.read(currentSessionProvider.notifier).state =
                     adoptedSession;
+                final windows = ref.read(openChatWindowsProvider.notifier);
+                windows.open(adoptedSession);
+                if (previousWindowKey != adoptedKey) {
+                  windows.close(previousWindowKey);
+                }
               }
             }
           }
@@ -1698,6 +1817,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   /// busy 解除后调用：从队列头取一条发出。递归调用直至队列空或下一条 result。
+  void _scheduleDrainQueue(_ChatSessionRuntime runtime) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isActiveRuntime(runtime)) return;
+      _withRuntime(runtime, _drainQueue);
+    });
+  }
+
   void _drainQueue() {
     if (_busy || !_connected || _queuePausedOnUnknown || _pending.isEmpty) {
       return;
@@ -1761,6 +1887,41 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _onTextChanged() {
     final h = _textController.text.isNotEmpty;
     if (h != _hasText) setState(() => _hasText = h);
+  }
+
+  void _useIdeaAsDraft(String text) {
+    final idea = text.trim();
+    if (idea.isEmpty) return;
+    final current = _textController.text;
+    final next = current.trim().isEmpty
+        ? idea
+        : current.endsWith('\n')
+            ? '$current\n$idea'
+            : '$current\n\n$idea';
+    _textController.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: next.length),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _textFocusNode.requestFocus();
+    });
+  }
+
+  void _sendIdea(String text) {
+    final idea = text.trim();
+    if (idea.isEmpty) return;
+    if (!_connected) {
+      _useIdeaAsDraft(idea);
+      return;
+    }
+    if (_busy || _pending.isNotEmpty) {
+      setState(() => _pending.add(idea));
+      unawaited(_persistPendingQueue());
+      if (!_queuePausedOnUnknown) _drainQueue();
+      _scrollToEnd(force: true);
+      return;
+    }
+    _sendNow(idea);
   }
 
   /// 重新编辑上一条未被 AI 响应的消息：
@@ -1838,6 +1999,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final api = runtime.chatApi;
     if (uuid == null || api == null) return;
     runtime.notifiedApprovalIds.remove(requestId);
+    ref
+        .read(inAppChatNotificationsProvider.notifier)
+        .dismissApprovalsForRequest(requestId);
     unawaited(api.answerCodexApproval(uuid, requestId, decision));
   }
 
@@ -1846,22 +2010,31 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     Connection config,
   ) {
     final uuid = _sessionId;
-    final session = ref.read(currentSessionProvider);
-    if (_appInForeground || uuid == null || session == null) return;
+    final session = _runtime.session ?? ref.read(currentSessionProvider);
+    if (uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
     if (!_notifiedApprovalIds.add(requestId)) return;
-    unawaited(StreamingForegroundService.instance.upsert(
-      _completionPayloadFor(session),
-      activity: '等待审批',
-    ));
+    final payload = _completionPayloadFor(session);
+    final title = _approvalNotificationTitle(session, approval.toolUse.name);
+    final body = _approvalNotificationBody(approval.toolUse);
+    if (_appInForeground) {
+      ChatCompletionNotifier.instance.showInAppApproval(
+        payload: payload,
+        requestId: requestId,
+        title: title,
+        body: body,
+      );
+      return;
+    }
+    unawaited(StreamingForegroundService.instance.remove(payload));
     unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
-      payload: _completionPayloadFor(session),
+      payload: payload,
       apiBase: config.apiBase,
       token: config.token,
       uuid: uuid,
       requestId: requestId,
-      title: _approvalNotificationTitle(session, approval.toolUse.name),
-      body: _approvalNotificationBody(approval.toolUse),
+      title: title,
+      body: body,
       appInForeground: _appInForeground,
     ));
   }
@@ -2090,14 +2263,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final status = _error != null
-          ? OpenChatWindowStatus.error
-          : _busy
-              ? OpenChatWindowStatus.running
-              : OpenChatWindowStatus.idle;
       ref
           .read(openChatWindowsProvider.notifier)
-          .setStatus(sessionKey(session), status);
+          .setStatus(sessionKey(session), _statusForSession(session));
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2241,6 +2409,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                               subMsgsMap: _subMsgs,
                               onAnswerQuestion: _sendAnswerQuestion,
                               onAnswerCodexApproval: _sendCodexApproval,
+                              onOpenFilePath: _openRemoteFilePreview,
+                              onSaveFilePath: _saveRemoteFileRef,
                               rawJson: kDebugMode ? _debugRaw[m] : null,
                             );
                           },
@@ -2297,6 +2467,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (!_observeMode)
           _Composer(
             controller: _textController,
+            focusNode: _textFocusNode,
             connected: _connected,
             busy: _busy,
             hasText: _hasText,
@@ -2310,12 +2481,63 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onSwitchModel: _switchModel,
             onSwitchPermissionMode: _switchPermissionMode,
             onPatchRuntime: _patchRuntime,
+            onOpenSessionFiles: _showSessionFiles,
+            onUseIdea: _useIdeaAsDraft,
+            onSendIdea: _sendIdea,
             chatApi: _chatApi,
             agent: session.agent,
             runtime: session.runtime,
+            sessionId: _sessionId ?? session.resumeId,
           ),
       ],
     );
+  }
+
+  Future<void> _openRemoteFilePreview(String path) async {
+    final conn = ref.read(activeConnectionProvider);
+    if (conn == null) return;
+    final uri = FilesApi(conn.httpBase, token: conn.token).previewUri(path);
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      showTopToast(context, '无法打开预览');
+    }
+  }
+
+  Future<void> _saveRemoteFileRef(String path) async {
+    final conn = ref.read(activeConnectionProvider);
+    final session = _runtime.session ?? ref.read(currentSessionProvider);
+    final sessionId = _sessionId ?? session?.resumeId;
+    if (conn == null || session == null || sessionId == null) return;
+    try {
+      await SessionFilesApi(conn.httpBase, token: conn.token).add(
+        sessionId: sessionId,
+        path: path,
+        cwd: session.cwd,
+      );
+      if (mounted) {
+        showTopToast(
+          context,
+          '已加入会话文件',
+          duration: const Duration(seconds: 1),
+          icon: Icons.bookmark_added_outlined,
+        );
+      }
+    } catch (err) {
+      if (mounted) showTopToast(context, '收藏失败: $err');
+    }
+  }
+
+  void _showSessionFiles() {
+    final conn = ref.read(activeConnectionProvider);
+    final session = _runtime.session ?? ref.read(currentSessionProvider);
+    final sessionId = _sessionId ?? session?.resumeId;
+    if (conn == null || sessionId == null) return;
+    unawaited(showSessionFilesDrawer(
+      context,
+      api: SessionFilesApi(conn.httpBase, token: conn.token),
+      filesApi: FilesApi(conn.httpBase, token: conn.token),
+      sessionId: sessionId,
+    ));
   }
 }
 
@@ -2624,7 +2846,7 @@ class _StatusGitBranchChipState extends State<_StatusGitBranchChip> {
   @override
   void didUpdateWidget(covariant _StatusGitBranchChip oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.cwd != widget.cwd || oldWidget.api != widget.api) {
+    if (oldWidget.cwd != widget.cwd) {
       _future = widget.api.status(widget.cwd);
     }
   }
@@ -2839,6 +3061,7 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
 
 class _Composer extends ConsumerWidget {
   final TextEditingController controller;
+  final FocusNode focusNode;
   final bool connected;
   final bool busy;
   final bool hasText;
@@ -2852,11 +3075,16 @@ class _Composer extends ConsumerWidget {
   final void Function(ModelOption) onSwitchModel;
   final void Function(CcPermissionMode) onSwitchPermissionMode;
   final void Function(Map<String, dynamic>) onPatchRuntime;
+  final VoidCallback onOpenSessionFiles;
+  final ValueChanged<String> onUseIdea;
+  final ValueChanged<String> onSendIdea;
   final ChatApi? chatApi;
   final AgentKind agent;
   final Map<String, dynamic> runtime;
+  final String? sessionId;
   const _Composer({
     required this.controller,
+    required this.focusNode,
     required this.connected,
     required this.busy,
     required this.hasText,
@@ -2870,14 +3098,19 @@ class _Composer extends ConsumerWidget {
     required this.onSwitchModel,
     required this.onSwitchPermissionMode,
     required this.onPatchRuntime,
+    required this.onOpenSessionFiles,
+    required this.onUseIdea,
+    required this.onSendIdea,
     this.chatApi,
     required this.agent,
     required this.runtime,
+    required this.sessionId,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
+    final conn = ref.watch(activeConnectionProvider);
     final model = ref.watch(currentModelProvider);
     // canSend：非 busy 且附件就绪才能直接发。
     // canQueue：busy 中且有文字，点击可排队。
@@ -2929,6 +3162,7 @@ class _Composer extends ConsumerWidget {
                   Expanded(
                     child: TextField(
                       controller: controller,
+                      focusNode: focusNode,
                       minLines: 2,
                       maxLines: 6,
                       enabled: editable,
@@ -2975,6 +3209,47 @@ class _Composer extends ConsumerWidget {
                         Icons.add_rounded,
                         size: 20,
                         color: connected ? t.textMuted : t.textDim,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: conn == null
+                        ? null
+                        : () => showInspirationDrawer(
+                              context,
+                              api: IdeasApi(conn.httpBase, token: conn.token),
+                              onUseIdea: onUseIdea,
+                              onSendIdea: connected ? onSendIdea : null,
+                            ),
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      child: Icon(
+                        Icons.lightbulb_outline,
+                        size: 18,
+                        color: conn == null ? t.textDim : t.textMuted,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: conn == null || sessionId == null
+                        ? null
+                        : onOpenSessionFiles,
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      child: Icon(
+                        Icons.folder_special_outlined,
+                        size: 18,
+                        color: conn == null || sessionId == null
+                            ? t.textDim
+                            : t.textMuted,
                       ),
                     ),
                   ),
@@ -3623,27 +3898,28 @@ class _CodexRuntimeOptionList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.separated(
+    final t = AppTokens.of(context);
+    return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: options.length,
-      separatorBuilder: (context, index) {
-        final t = AppTokens.of(context);
-        return Divider(
-          color: t.borderSubt,
-          height: 0.5,
-          indent: 16,
-          endIndent: 16,
-        );
-      },
-      itemBuilder: (context, index) {
-        final option = options[index];
-        return _CodexRuntimeOptionRow(
-          option: option,
-          selected: option.value == value,
-          onTap: () => onPick(option.value),
-        );
-      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < options.length; i++) ...[
+            if (i > 0)
+              Divider(
+                color: t.borderSubt,
+                height: 0.5,
+                indent: 16,
+                endIndent: 16,
+              ),
+            _CodexRuntimeOptionRow(
+              option: options[i],
+              selected: options[i].value == value,
+              onTap: () => onPick(options[i].value),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -4426,33 +4702,44 @@ class _ReEditAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return Tooltip(
       message: '撤回并重新编辑',
-      child: InkWell(
-        onTap: onReEdit,
+      child: Material(
+        color: Colors.transparent,
         borderRadius: BorderRadius.circular(999),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: t.accent.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: t.accent.withValues(alpha: 0.18)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.undo_rounded, size: 14, color: t.accent),
-              const SizedBox(width: 4),
-              Text(
-                '重新编辑',
-                style: TextStyle(
-                  fontSize: 11,
-                  height: 1.1,
-                  color: t.accent,
-                  fontWeight: FontWeight.w600,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onReEdit,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: t.accent.withValues(alpha: dark ? 0.12 : 0.09),
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: [
+                BoxShadow(
+                  color: t.accent.withValues(alpha: dark ? 0.08 : 0.06),
+                  blurRadius: 12,
+                  offset: const Offset(0, 3),
                 ),
-              ),
-            ],
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.undo_rounded, size: 14, color: t.accent),
+                const SizedBox(width: 4),
+                Text(
+                  '重新编辑',
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.1,
+                    color: t.accent,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -4469,9 +4756,7 @@ class _ReEditBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
     return Container(
-      color: t.surface,
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       child: Row(
         children: [

@@ -13,39 +13,136 @@ const _apkInstallerChannel = MethodChannel('pawterm/apk_installer');
 
 // ── Public standalone screen (used from MainShell top-bar gear button) ────────
 
-class SettingsScreen extends ConsumerWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  bool _showConversationSettings = false;
+
+  void _setConversationSettings(bool value) {
+    setState(() => _showConversationSettings = value);
+  }
+
+  void _handleBack() {
+    if (_showConversationSettings) {
+      _setConversationSettings(false);
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final s = ref.watch(stringsProvider);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(s.settingsTitle),
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: t.text),
-          onPressed: () => Navigator.of(context).pop(),
-          tooltip: s.settingsBack,
+    return PopScope(
+      canPop: !_showConversationSettings,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _showConversationSettings) {
+          _setConversationSettings(false);
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_showConversationSettings ? '对话设置' : s.settingsTitle),
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: t.text),
+            onPressed: _handleBack,
+            tooltip: s.settingsBack,
+          ),
+        ),
+        body: SettingsBody(
+          showConversationSettings: _showConversationSettings,
+          onConversationSettingsChanged: _setConversationSettings,
         ),
       ),
-      body: const SettingsBody(),
     );
   }
 }
 
 // ── Shared body — used both in SettingsScreen and in ConnectionsScreen tab ─────
 
-class SettingsBody extends ConsumerWidget {
-  const SettingsBody({super.key});
+class SettingsBody extends ConsumerStatefulWidget {
+  final bool? showConversationSettings;
+  final ValueChanged<bool>? onConversationSettingsChanged;
+
+  const SettingsBody({
+    super.key,
+    this.showConversationSettings,
+    this.onConversationSettingsChanged,
+  });
+
+  @override
+  ConsumerState<SettingsBody> createState() => _SettingsBodyState();
+}
+
+class _SettingsBodyState extends ConsumerState<SettingsBody> {
+  bool _showConversationSettings = false;
+
+  bool get _effectiveShowConversationSettings =>
+      widget.showConversationSettings ?? _showConversationSettings;
+
+  void _setConversationSettings(bool value) {
+    final external = widget.onConversationSettingsChanged;
+    if (external != null) {
+      external(value);
+    } else {
+      setState(() => _showConversationSettings = value);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showConversationSettings = _effectiveShowConversationSettings;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 240),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        final enteringConversation =
+            child.key == const ValueKey('conversation-settings');
+        final beginOffset =
+            enteringConversation ? const Offset(1, 0) : const Offset(-1, 0);
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: beginOffset,
+            end: Offset.zero,
+          ).animate(animation),
+          child: FadeTransition(opacity: animation, child: child),
+        );
+      },
+      child: showConversationSettings
+          ? _ConversationSettingsPage(
+              key: const ValueKey('conversation-settings'),
+              showInlineBack: widget.showConversationSettings == null,
+              onBack: () => _setConversationSettings(false),
+            )
+          : _SettingsRootPage(
+              key: const ValueKey('settings-root'),
+              onOpenConversationSettings: () => _setConversationSettings(true),
+            ),
+    );
+  }
+}
+
+class _SettingsRootPage extends ConsumerWidget {
+  final VoidCallback onOpenConversationSettings;
+
+  const _SettingsRootPage({
+    super.key,
+    required this.onOpenConversationSettings,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = ref.watch(stringsProvider);
     final themeMode = ref.watch(prefsProvider);
     final langPref = ref.watch(langPrefProvider);
-    final fileToolExpanded = ref.watch(fileToolCardsExpandedProvider);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
@@ -86,16 +183,21 @@ class SettingsBody extends ConsumerWidget {
           ),
         ]),
 
+        // ── 导航 ──────────────────────────────────────
+        const _SettingSection('导航'),
+        const _SettingCard(children: [
+          _BottomTabOrderTile(),
+        ]),
+
         // ── 对话 ──────────────────────────────────────
         const _SettingSection('对话'),
         _SettingCard(children: [
-          _SwitchRow(
-            label: '文件工具默认展开',
-            subtitle: '控制文件修改、补丁等工具卡片进入对话时是否自动展开',
-            icon: Icons.description_outlined,
-            value: fileToolExpanded,
-            onChanged: (v) =>
-                ref.read(fileToolCardsExpandedProvider.notifier).set(v),
+          _TappableRow(
+            icon: Icons.chat_bubble_outline,
+            label: '对话设置',
+            subtitle: '滚动行为、工具卡片展示',
+            trailing: const Icon(Icons.chevron_right, size: 18),
+            onTap: onOpenConversationSettings,
           ),
         ]),
 
@@ -148,7 +250,86 @@ class SettingsBody extends ConsumerWidget {
   }
 }
 
+class _ConversationSettingsPage extends ConsumerWidget {
+  final bool showInlineBack;
+  final VoidCallback onBack;
+
+  const _ConversationSettingsPage({
+    super.key,
+    required this.showInlineBack,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scrollToBottom = ref.watch(scrollToBottomOnSessionSwitchProvider);
+    final fileToolExpanded = ref.watch(fileToolCardsExpandedProvider);
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      children: [
+        if (showInlineBack) ...[
+          _InlineBackHeader(label: '对话设置', onBack: onBack),
+          const SizedBox(height: 8),
+        ],
+        const _SettingSection('对话'),
+        _SettingCard(children: [
+          _SwitchRow(
+            label: '切换会话后滚到底部',
+            subtitle: '进入另一个会话时直接查看最新内容',
+            icon: Icons.vertical_align_bottom_outlined,
+            value: scrollToBottom,
+            onChanged: (v) =>
+                ref.read(scrollToBottomOnSessionSwitchProvider.notifier).set(v),
+          ),
+          _Divider(),
+          _SwitchRow(
+            label: '文件工具默认展开',
+            subtitle: '控制文件修改、补丁等工具卡片进入对话时是否自动展开',
+            icon: Icons.description_outlined,
+            value: fileToolExpanded,
+            onChanged: (v) =>
+                ref.read(fileToolCardsExpandedProvider.notifier).set(v),
+          ),
+        ]),
+      ],
+    );
+  }
+}
+
 // ── Shared UI building blocks ──────────────────────────────────────────────────
+
+class _InlineBackHeader extends StatelessWidget {
+  final String label;
+  final VoidCallback onBack;
+
+  const _InlineBackHeader({required this.label, required this.onBack});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return SizedBox(
+      height: 44,
+      child: Row(
+        children: [
+          IconButton(
+            icon: Icon(Icons.arrow_back, color: t.text),
+            onPressed: onBack,
+            tooltip: '返回',
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              color: t.text,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _SettingSection extends StatelessWidget {
   final String label;
@@ -198,6 +379,160 @@ class _Divider extends StatelessWidget {
     return Divider(color: t.borderSubt, height: 1, indent: 44);
   }
 }
+
+class _BottomTabOrderTile extends ConsumerWidget {
+  const _BottomTabOrderTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final order = ref.watch(bottomTabOrderProvider);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.dock_outlined,
+                  size: 18, color: AppTokens.of(context).textMuted),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '底部栏顺序',
+                      style: TextStyle(
+                          fontSize: 14, color: AppTokens.of(context).text),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '拖动右侧把手调整对话、终端、文件的显示位置',
+                      style: TextStyle(
+                          fontSize: 11, color: AppTokens.of(context).textMuted),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ReorderableListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            proxyDecorator: (child, _, animation) => AnimatedBuilder(
+              animation: animation,
+              builder: (context, child) {
+                final t = AppTokens.of(context);
+                return Material(
+                  color: Colors.transparent,
+                  child: Transform.scale(
+                    scale: 1 + animation.value * 0.02,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: t.surface,
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.16),
+                            blurRadius: 18,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: child,
+                    ),
+                  ),
+                );
+              },
+              child: child,
+            ),
+            itemCount: order.length,
+            onReorder: (oldIndex, newIndex) {
+              final next = List<BottomTabId>.from(order);
+              if (newIndex > oldIndex) newIndex -= 1;
+              final item = next.removeAt(oldIndex);
+              next.insert(newIndex, item);
+              ref.read(bottomTabOrderProvider.notifier).set(next);
+            },
+            itemBuilder: (context, index) {
+              final tab = order[index];
+              return _BottomTabOrderRow(
+                key: ValueKey(tab),
+                tab: tab,
+                index: index,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BottomTabOrderRow extends StatelessWidget {
+  final BottomTabId tab;
+  final int index;
+
+  const _BottomTabOrderRow({
+    super.key,
+    required this.tab,
+    required this.index,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      height: 46,
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: t.border, width: 0.5),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 12),
+          Icon(_bottomTabIcon(tab), size: 18, color: t.textMuted),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _bottomTabLabel(tab),
+              style: TextStyle(
+                color: t.text,
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ReorderableDragStartListener(
+            index: index,
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child:
+                  Icon(Icons.drag_handle_rounded, size: 20, color: t.textDim),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _bottomTabLabel(BottomTabId tab) => switch (tab) {
+      BottomTabId.chat => '对话',
+      BottomTabId.shell => '终端',
+      BottomTabId.files => '文件',
+    };
+
+IconData _bottomTabIcon(BottomTabId tab) => switch (tab) {
+      BottomTabId.chat => Icons.chat_bubble_outline,
+      BottomTabId.shell => Icons.terminal,
+      BottomTabId.files => Icons.folder_outlined,
+    };
 
 class _SegmentRow extends StatelessWidget {
   final String label;
@@ -351,12 +686,14 @@ class _InfoRow extends StatelessWidget {
 class _TappableRow extends StatelessWidget {
   final IconData icon;
   final String label;
+  final String? subtitle;
   final Widget? trailing;
   final VoidCallback onTap;
   const _TappableRow(
       {required this.icon,
       required this.label,
       required this.onTap,
+      this.subtitle,
       this.trailing});
 
   @override
@@ -370,8 +707,21 @@ class _TappableRow extends StatelessWidget {
           children: [
             Icon(icon, size: 18, color: t.textMuted),
             const SizedBox(width: 10),
-            Text(label, style: TextStyle(fontSize: 14, color: t.text)),
-            const Spacer(),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: TextStyle(fontSize: 14, color: t.text)),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle!,
+                      style: TextStyle(fontSize: 11, color: t.textMuted),
+                    ),
+                  ],
+                ],
+              ),
+            ),
             if (trailing != null)
               IconTheme(
                   data: IconThemeData(color: t.textDim), child: trailing!),

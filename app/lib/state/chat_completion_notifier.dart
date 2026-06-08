@@ -15,7 +15,103 @@ import 'projects_store.dart';
 final chatCompletionPulseProvider =
     StateProvider<Map<String, int>>((ref) => const {});
 
+final chatNotificationNavigationProvider = StateProvider<int>((ref) => 0);
+
 const _nativeNotificationsChannel = MethodChannel('pawterm/notifications');
+
+@pragma('vm:entry-point')
+void chatApprovalNotificationTapBackground(
+    NotificationResponse response) async {
+  try {
+    await _answerCodexApprovalFromNotification(response);
+  } catch (err) {
+    if (kDebugMode) debugPrint('Bad background approval action payload: $err');
+  }
+}
+
+enum InAppChatNotificationKind { completion, approval }
+
+class InAppChatNotification {
+  final String id;
+  final InAppChatNotificationKind kind;
+  final ChatCompletionPayload payload;
+  final String title;
+  final String body;
+  final DateTime createdAt;
+
+  const InAppChatNotification({
+    required this.id,
+    required this.kind,
+    required this.payload,
+    required this.title,
+    required this.body,
+    required this.createdAt,
+  });
+
+  bool get persistent => kind == InAppChatNotificationKind.approval;
+}
+
+final inAppChatNotificationsProvider = StateNotifierProvider<
+    InAppChatNotificationsNotifier, List<InAppChatNotification>>(
+  (ref) => InAppChatNotificationsNotifier(),
+);
+
+final mainShellMountedProvider = StateProvider<bool>((ref) => false);
+
+class InAppChatNotificationsNotifier
+    extends StateNotifier<List<InAppChatNotification>> {
+  InAppChatNotificationsNotifier() : super(const []);
+
+  void showCompletion({
+    required ChatCompletionPayload payload,
+    required String title,
+    required String body,
+  }) {
+    final id =
+        'completion|${payload.key}|${DateTime.now().microsecondsSinceEpoch}';
+    state = [
+      InAppChatNotification(
+        id: id,
+        kind: InAppChatNotificationKind.completion,
+        payload: payload,
+        title: title,
+        body: body,
+        createdAt: DateTime.now(),
+      ),
+      ...state.where((item) => item.persistent).take(4),
+    ];
+  }
+
+  void showApproval({
+    required ChatCompletionPayload payload,
+    required String requestId,
+    required String title,
+    required String body,
+  }) {
+    final id = 'approval|${payload.key}|$requestId';
+    state = [
+      InAppChatNotification(
+        id: id,
+        kind: InAppChatNotificationKind.approval,
+        payload: payload,
+        title: title,
+        body: body,
+        createdAt: DateTime.now(),
+      ),
+      ...state.where((item) => item.id != id),
+    ];
+  }
+
+  void dismiss(String id) {
+    state = state.where((item) => item.id != id).toList(growable: false);
+  }
+
+  void dismissApprovalsForRequest(String requestId) {
+    state = state
+        .where((item) => !item.id.endsWith('|$requestId'))
+        .toList(growable: false);
+  }
+}
 
 class ChatCompletionPayload {
   final String cwd;
@@ -59,6 +155,42 @@ class ChatCompletionPayload {
         'agent': agent.wire,
         'runtime': runtime,
       };
+}
+
+class _HandledApprovalAction {
+  final String requestId;
+  final Object? session;
+
+  const _HandledApprovalAction({
+    required this.requestId,
+    required this.session,
+  });
+}
+
+Future<_HandledApprovalAction?> _answerCodexApprovalFromNotification(
+  NotificationResponse response,
+) async {
+  final decision = switch (response.actionId) {
+    ChatCompletionNotifier._actionDecline => 'decline',
+    ChatCompletionNotifier._actionAccept => 'accept',
+    ChatCompletionNotifier._actionAcceptForSession => 'acceptForSession',
+    _ => null,
+  };
+  final raw = response.payload;
+  if (decision == null || raw == null || raw.isEmpty) return null;
+
+  final decoded = jsonDecode(raw) as Map<String, dynamic>;
+  if (decoded['kind'] != 'codex_approval') return null;
+  final apiBase = decoded['api_base'] as String;
+  final token = decoded['token'] as String?;
+  final uuid = decoded['uuid'] as String;
+  final requestId = decoded['request_id'] as String;
+  await ChatApi(apiBase, token: token)
+      .answerCodexApproval(uuid, requestId, decision);
+  return _HandledApprovalAction(
+    requestId: requestId,
+    session: decoded['session'],
+  );
 }
 
 class ChatCompletionNotifier {
@@ -116,6 +248,8 @@ class ChatCompletionNotifier {
         }
         _handlePayload(response.payload);
       },
+      onDidReceiveBackgroundNotificationResponse:
+          chatApprovalNotificationTapBackground,
     );
     await _plugin
         .resolvePlatformSpecificImplementation<
@@ -158,14 +292,16 @@ class ChatCompletionNotifier {
     required bool appInForeground,
   }) async {
     _markPulse(payload);
-    if (appInForeground || _appIsVisibleNow()) return;
     final id = payload.key.hashCode & 0x7fffffff;
     final sessionName = _sessionDisplayName(payload);
     final agentName = _agentLabel(payload.agent);
     final title = '$sessionName 有新回复';
     final body = '$agentName 已完成回复';
     final line = '$sessionName · $agentName 已完成回复';
-    if (_appIsVisibleNow()) return;
+    if (appInForeground || _appIsVisibleNow()) {
+      _showInAppCompletion(payload: payload, title: title, body: body);
+      return;
+    }
     try {
       await _nativeNotificationsChannel.invokeMethod<void>(
         'addSessionEvent',
@@ -194,6 +330,24 @@ class ChatCompletionNotifier {
         payload: jsonEncode(payload.toJson()),
       );
     }
+  }
+
+  void showInAppApproval({
+    required ChatCompletionPayload payload,
+    required String requestId,
+    required String title,
+    required String body,
+  }) {
+    _markPulse(payload);
+    final ref = _ref;
+    if (ref == null) return;
+    if (_isCurrentPayload(ref, payload)) return;
+    ref.read(inAppChatNotificationsProvider.notifier).showApproval(
+          payload: payload,
+          requestId: requestId,
+          title: title,
+          body: body,
+        );
   }
 
   Future<void> notifyCodexApproval({
@@ -255,7 +409,8 @@ class ChatCompletionNotifier {
 
   bool _appIsVisibleNow() {
     final state = WidgetsBinding.instance.lifecycleState;
-    return state == AppLifecycleState.resumed;
+    return state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
   }
 
   Future<void> _requestAndroidPermissionIfForeground() async {
@@ -309,27 +464,20 @@ class ChatCompletionNotifier {
   }
 
   Future<void> handleApprovalAction(NotificationResponse response) async {
-    final decision = switch (response.actionId) {
-      _actionDecline => 'decline',
-      _actionAccept => 'accept',
-      _actionAcceptForSession => 'acceptForSession',
-      _ => null,
-    };
-    final raw = response.payload;
-    if (decision == null || raw == null || raw.isEmpty) {
-      _handlePayload(raw);
+    if (response.actionId?.isEmpty != false) {
+      _handlePayload(response.payload);
       return;
     }
     try {
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      if (decoded['kind'] != 'codex_approval') return;
-      final apiBase = decoded['api_base'] as String;
-      final token = decoded['token'] as String?;
-      final uuid = decoded['uuid'] as String;
-      final requestId = decoded['request_id'] as String;
-      await ChatApi(apiBase, token: token)
-          .answerCodexApproval(uuid, requestId, decision);
-      final session = decoded['session'];
+      final handled = await _answerCodexApprovalFromNotification(response);
+      if (handled == null) {
+        _handlePayload(response.payload);
+        return;
+      }
+      _ref
+          ?.read(inAppChatNotificationsProvider.notifier)
+          .dismissApprovalsForRequest(handled.requestId);
+      final session = handled.session;
       if (session is Map) {
         _markPulse(ChatCompletionPayload.fromJson(
           Map<String, dynamic>.from(session),
@@ -337,7 +485,7 @@ class ChatCompletionNotifier {
       }
     } catch (err) {
       if (kDebugMode) debugPrint('Bad approval action payload: $err');
-      _handlePayload(raw);
+      _handlePayload(response.payload);
     }
   }
 
@@ -355,6 +503,8 @@ class ChatCompletionNotifier {
       agent: payload.agent,
       runtime: payload.runtime.isEmpty ? null : payload.runtime,
     );
+    ref.read(chatNotificationNavigationProvider.notifier).state++;
+    if (ref.read(mainShellMountedProvider)) return;
     navigator.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const MainShell()),
       (route) => route.isFirst,
@@ -369,6 +519,27 @@ class ChatCompletionNotifier {
       ...current,
       payload.key: DateTime.now().millisecondsSinceEpoch,
     };
+  }
+
+  void _showInAppCompletion({
+    required ChatCompletionPayload payload,
+    required String title,
+    required String body,
+  }) {
+    final ref = _ref;
+    if (ref == null) return;
+    if (_isCurrentPayload(ref, payload)) return;
+    ref.read(inAppChatNotificationsProvider.notifier).showCompletion(
+          payload: payload,
+          title: title,
+          body: body,
+        );
+  }
+
+  bool _isCurrentPayload(WidgetRef ref, ChatCompletionPayload payload) {
+    final current = ref.read(currentSessionProvider);
+    if (current == null) return false;
+    return ChatCompletionPayload.fromSession(current).key == payload.key;
   }
 
   String _agentLabel(AgentKind agent) => switch (agent) {

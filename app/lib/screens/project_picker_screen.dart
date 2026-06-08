@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +12,7 @@ import '../api/projects_api.dart';
 import '../api/sessions_api.dart';
 import '../main.dart' show routeObserver;
 import '../state/agents_store.dart';
+import '../state/chat_completion_notifier.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
@@ -28,12 +31,54 @@ class ProjectPickerScreen extends ConsumerStatefulWidget {
 
 enum _PhaseStatus { connecting, ready, failed }
 
+class _ConnectionAttempt {
+  final Connection connection;
+  final String url;
+  final int index;
+
+  const _ConnectionAttempt({
+    required this.connection,
+    required this.url,
+    required this.index,
+  });
+
+  String get displayUrl => url.replaceFirst(RegExp(r'^https?://'), '');
+}
+
+class _ConnectionAttemptResult {
+  final _ConnectionAttempt attempt;
+  final String message;
+  final int? statusCode;
+
+  const _ConnectionAttemptResult({
+    required this.attempt,
+    required this.message,
+    this.statusCode,
+  });
+}
+
+class _ProbeResult {
+  final bool ok;
+  final String message;
+  final int? statusCode;
+
+  const _ProbeResult.ok()
+      : ok = true,
+        message = '',
+        statusCode = null;
+
+  const _ProbeResult.fail(this.message, {this.statusCode}) : ok = false;
+}
+
 class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     with RouteAware {
   final Set<String> _expanded = {};
   _PhaseStatus _phase = _PhaseStatus.connecting;
   String? _connectError;
   bool _needsRepair = false;
+  List<_ConnectionAttempt> _attempts = const [];
+  _ConnectionAttempt? _currentAttempt;
+  final List<_ConnectionAttemptResult> _failedAttempts = [];
 
   @override
   void initState() {
@@ -70,50 +115,162 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   }
 
   Future<void> _checkConnection() async {
-    final conn = ref.read(activeConnectionProvider);
-    if (conn == null) return;
+    final active = ref.read(activeConnectionProvider);
+    if (active == null) return;
+    final attempts = _buildConnectionAttempts(
+      active: active,
+      connections: ref.read(connectionsProvider),
+    );
     setState(() {
       _phase = _PhaseStatus.connecting;
       _connectError = null;
+      _needsRepair = false;
+      _attempts = attempts;
+      _currentAttempt = attempts.isNotEmpty ? attempts.first : null;
+      _failedAttempts.clear();
     });
+
     final start = DateTime.now();
-    try {
-      final resp = await http
-          .get(Uri.parse('${conn.httpBase}/health'))
-          .timeout(const Duration(seconds: 8));
-      // 保证最少 500ms 的连接动画，避免一闪而过
-      final elapsed = DateTime.now().difference(start);
-      if (elapsed < const Duration(milliseconds: 500)) {
-        await Future.delayed(const Duration(milliseconds: 500) - elapsed);
-      }
+    for (final attempt in attempts) {
       if (!mounted) return;
-      if (resp.statusCode == 200) {
+      setState(() => _currentAttempt = attempt);
+
+      final result = await _probeAttempt(attempt);
+      if (!mounted) return;
+      if (result.ok) {
+        final elapsed = DateTime.now().difference(start);
+        if (elapsed < const Duration(milliseconds: 500)) {
+          await Future.delayed(const Duration(milliseconds: 500) - elapsed);
+        }
+        if (!mounted) return;
+
+        final notifier = ref.read(connectionsProvider.notifier);
+        var connected = attempt.connection;
+        if (_normalizeUrl(connected.url) != _normalizeUrl(attempt.url)) {
+          connected =
+              await notifier.updateUrl(connected.id, attempt.url) ?? connected;
+        }
+        await notifier.touch(connected.id);
+        connected = ref
+                .read(connectionsProvider)
+                .where((c) => c.id == connected.id)
+                .firstOrNull ??
+            connected.copyWith(lastConnected: DateTime.now());
+        ref.read(activeConnectionProvider.notifier).state = connected;
         setState(() {
           _phase = _PhaseStatus.ready;
           _needsRepair = false;
+          _connectError = null;
         });
-      } else if (resp.statusCode == 401) {
-        if (!mounted) return;
-        setState(() {
-          _connectError = '服务端已拒绝令牌，配对信息已失效';
-          _phase = _PhaseStatus.failed;
-          _needsRepair = true;
-        });
-      } else {
-        setState(() {
-          _connectError = '服务端返回 ${resp.statusCode}';
-          _phase = _PhaseStatus.failed;
-          _needsRepair = false;
-        });
+        return;
       }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _connectError = '无法连接，请检查地址和网络';
-        _phase = _PhaseStatus.failed;
-      });
+
+      _failedAttempts.add(_ConnectionAttemptResult(
+        attempt: attempt,
+        message: result.message,
+        statusCode: result.statusCode,
+      ));
+    }
+
+    if (!mounted) return;
+    final hasAuthFailure = _failedAttempts.any((e) => e.statusCode == 401);
+    setState(() {
+      _connectError =
+          hasAuthFailure ? '服务端已拒绝令牌，配对信息已失效' : '保存的地址都无法连接，请检查网络或重新配对';
+      _phase = _PhaseStatus.failed;
+      _needsRepair = hasAuthFailure;
+      _currentAttempt = null;
+    });
+  }
+
+  Future<_ProbeResult> _probeAttempt(_ConnectionAttempt attempt) async {
+    try {
+      final resp = await http
+          .get(Uri.parse('${attempt.url}/health'),
+              headers: attempt.connection.authHeaders)
+          .timeout(const Duration(seconds: 3));
+      if (resp.statusCode == 200) {
+        if (attempt.connection.serverId == null) {
+          return const _ProbeResult.ok();
+        }
+        try {
+          final body = jsonDecode(resp.body) as Map<String, dynamic>;
+          final serverId = body['serverId'] as String?;
+          if (serverId == null ||
+              serverId.isEmpty ||
+              serverId == attempt.connection.serverId) {
+            return const _ProbeResult.ok();
+          }
+          return const _ProbeResult.fail('不是同一台服务端');
+        } catch (_) {
+          return const _ProbeResult.ok();
+        }
+      }
+      if (resp.statusCode == 401) {
+        return const _ProbeResult.fail('令牌失效', statusCode: 401);
+      }
+      return _ProbeResult.fail('HTTP ${resp.statusCode}',
+          statusCode: resp.statusCode);
+    } catch (_) {
+      return const _ProbeResult.fail('连接超时');
     }
   }
+
+  List<_ConnectionAttempt> _buildConnectionAttempts({
+    required Connection active,
+    required List<Connection> connections,
+  }) {
+    final byId = {for (final c in connections) c.id: c};
+    final activeFresh = byId[active.id] ?? active;
+    final ordered = <Connection>[
+      activeFresh,
+      ...connections.where((c) => c.id != activeFresh.id),
+    ];
+    ordered.sort((a, b) {
+      if (a.id == activeFresh.id) return -1;
+      if (b.id == activeFresh.id) return 1;
+      final at = a.lastConnected;
+      final bt = b.lastConnected;
+      if (at != null && bt != null) return bt.compareTo(at);
+      if (at != null) return -1;
+      if (bt != null) return 1;
+      return a.name.compareTo(b.name);
+    });
+
+    final seen = <String>{};
+    final attempts = <_ConnectionAttempt>[];
+    for (final conn in ordered) {
+      final urls = <String>[
+        _normalizeUrl(conn.url),
+        for (final host in conn.recentHosts)
+          _urlWithHost(conn.url, host, fallbackPort: conn.port),
+      ];
+      for (final url in urls) {
+        final normalized = _normalizeUrl(url);
+        final key = '${conn.id}|$normalized';
+        if (!seen.add(key)) continue;
+        attempts.add(_ConnectionAttempt(
+          connection: conn,
+          url: normalized,
+          index: attempts.length,
+        ));
+      }
+    }
+    return attempts;
+  }
+
+  static String _urlWithHost(String baseUrl, String host,
+      {required int fallbackPort}) {
+    final uri = Uri.tryParse(baseUrl);
+    if (uri == null) return 'http://$host:$fallbackPort';
+    return uri
+        .replace(host: host, port: uri.hasPort ? uri.port : fallbackPort)
+        .toString()
+        .replaceFirst(RegExp(r'/$'), '');
+  }
+
+  static String _normalizeUrl(String url) =>
+      url.trim().replaceFirst(RegExp(r'/$'), '');
 
   @override
   Widget build(BuildContext context) {
@@ -139,6 +296,9 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     return _ConnectingView(
       key: const ValueKey('connecting'),
       conn: conn,
+      currentAttempt: _currentAttempt,
+      totalAttempts: _attempts.length,
+      failedAttempts: List.unmodifiable(_failedAttempts),
       error: _phase == _PhaseStatus.failed ? _connectError : null,
       needsRepair: _needsRepair,
       onBack: () => Navigator.of(context).pop(),
@@ -412,6 +572,9 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
 
 class _ConnectingView extends StatefulWidget {
   final Connection conn;
+  final _ConnectionAttempt? currentAttempt;
+  final int totalAttempts;
+  final List<_ConnectionAttemptResult> failedAttempts;
   final String? error;
   final bool needsRepair;
   final VoidCallback onBack;
@@ -420,6 +583,9 @@ class _ConnectingView extends StatefulWidget {
   const _ConnectingView({
     super.key,
     required this.conn,
+    required this.currentAttempt,
+    required this.totalAttempts,
+    required this.failedAttempts,
     required this.error,
     this.needsRepair = false,
     required this.onBack,
@@ -454,7 +620,13 @@ class _ConnectingViewState extends State<_ConnectingView>
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final isError = widget.error != null;
-    final cleanUrl = widget.conn.url.replaceFirst(RegExp(r'^https?://'), '');
+    final current = widget.currentAttempt;
+    final cleanUrl = current?.displayUrl ??
+        widget.conn.url.replaceFirst(RegExp(r'^https?://'), '');
+    final currentName = current?.connection.name ?? widget.conn.name;
+    final progressText = current != null && widget.totalAttempts > 1
+        ? '第 ${current.index + 1}/${widget.totalAttempts} 个地址'
+        : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -538,7 +710,7 @@ class _ConnectingViewState extends State<_ConnectingView>
                   ),
                   const SizedBox(height: 28),
                   Text(
-                    isError ? '连接失败' : '正在连接到',
+                    isError ? '连接失败' : '正在连接',
                     style: TextStyle(
                       fontSize: 13,
                       color: t.textMuted,
@@ -555,7 +727,7 @@ class _ConnectingViewState extends State<_ConnectingView>
                             BoxConstraints(minWidth: constraints.maxWidth),
                         child: Center(
                           child: Text(
-                            widget.conn.name,
+                            currentName,
                             maxLines: 1,
                             softWrap: false,
                             style: TextStyle(
@@ -578,6 +750,22 @@ class _ConnectingViewState extends State<_ConnectingView>
                       color: t.textDim,
                     ),
                   ),
+                  if (!isError && progressText != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      progressText,
+                      style: TextStyle(fontSize: 11, color: t.textDim),
+                    ),
+                  ],
+                  if (widget.failedAttempts.isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    _FailedAttemptsList(
+                      attempts: widget.failedAttempts.take(4).toList(),
+                      remaining: widget.failedAttempts.length > 4
+                          ? widget.failedAttempts.length - 4
+                          : 0,
+                    ),
+                  ],
                   if (isError) ...[
                     const SizedBox(height: 14),
                     Container(
@@ -647,6 +835,70 @@ class _ConnectingViewState extends State<_ConnectingView>
           ),
         ),
       ],
+    );
+  }
+}
+
+class _FailedAttemptsList extends StatelessWidget {
+  final List<_ConnectionAttemptResult> attempts;
+  final int remaining;
+
+  const _FailedAttemptsList({
+    required this.attempts,
+    required this.remaining,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      width: double.infinity,
+      constraints: const BoxConstraints(maxWidth: 340),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: t.surfaceHi.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final item in attempts)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                children: [
+                  Icon(Icons.close_rounded, size: 14, color: t.textDim),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      item.attempt.displayUrl,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        color: t.textMuted,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    item.message,
+                    style: TextStyle(fontSize: 10.5, color: t.textDim),
+                  ),
+                ],
+              ),
+            ),
+          if (remaining > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                '还有 $remaining 个地址已跳过',
+                style: TextStyle(fontSize: 10.5, color: t.textDim),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -1114,14 +1366,20 @@ class _ProjectCardState extends ConsumerState<_ProjectCard> {
       path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
 }
 
-class _SessionRow extends StatelessWidget {
+class _SessionRow extends ConsumerWidget {
   final SessionSummary session;
   final VoidCallback onTap;
   const _SessionRow({required this.session, required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
+    final hasPendingApproval = ref.watch(inAppChatNotificationsProvider).any(
+        (item) =>
+            item.kind == InAppChatNotificationKind.approval &&
+            item.payload.resumeId == session.sessionId &&
+            item.payload.agent == session.agent &&
+            (session.cwd == null || item.payload.cwd == session.cwd));
     final ts = session.lastModified;
     final timeText = ts == null
         ? ''
@@ -1162,7 +1420,17 @@ class _SessionRow extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (session.holderDeviceId != null) ...[
+                      if (hasPendingApproval) ...[
+                        const SizedBox(width: 6),
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: _PulsingStatusDot(color: t.warning),
+                        ),
+                        const SizedBox(width: 3),
+                        Text('待审批',
+                            style: TextStyle(fontSize: 10, color: t.warning)),
+                      ] else if (session.holderDeviceId != null) ...[
                         const SizedBox(width: 6),
                         Container(
                           width: 6,
@@ -1247,6 +1515,69 @@ class _SessionListViewport extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _PulsingStatusDot extends StatefulWidget {
+  final Color color;
+  const _PulsingStatusDot({required this.color});
+
+  @override
+  State<_PulsingStatusDot> createState() => _PulsingStatusDotState();
+}
+
+class _PulsingStatusDotState extends State<_PulsingStatusDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, __) {
+        final value = _controller.value;
+        final pulseSize = 7.0 + value * 10.0;
+        final opacity = (1.0 - value).clamp(0.0, 1.0) * 0.30;
+        return Center(
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: pulseSize,
+                height: pulseSize,
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: opacity),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
