@@ -13,6 +13,7 @@ import '../i18n/locale_provider.dart';
 import '../state/agents_store.dart';
 import '../state/chat_completion_notifier.dart';
 import '../state/open_chat_windows.dart';
+import '../state/prefs.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../state/streaming_foreground_service.dart';
@@ -31,7 +32,7 @@ class MainShell extends ConsumerStatefulWidget {
 
 class _MainShellState extends ConsumerState<MainShell>
     with WidgetsBindingObserver {
-  int _index = 0;
+  BottomTabId _tab = BottomTabId.chat;
   // 保留弹出栏的展开状态，关闭再打开时保持上次展开的项目。
   final Set<String> _sheetExpanded = {};
 
@@ -73,13 +74,14 @@ class _MainShellState extends ConsumerState<MainShell>
   Widget build(BuildContext context) {
     ref.listen<int>(chatNotificationNavigationProvider, (previous, next) {
       if (previous == null || previous == next) return;
-      if (_index != 0) {
-        setState(() => _index = 0);
+      if (_tab != BottomTabId.chat) {
+        setState(() => _tab = BottomTabId.chat);
       }
     });
     final conn = ref.watch(activeConnectionProvider);
     final session = ref.watch(currentSessionProvider);
     final openWindows = ref.watch(openChatWindowsProvider);
+    final bottomTabOrder = ref.watch(bottomTabOrderProvider);
     final s = ref.watch(stringsProvider);
     final t = AppTokens.of(context);
     if (session != null) {
@@ -90,10 +92,11 @@ class _MainShellState extends ConsumerState<MainShell>
     }
 
     final tabs = <_TabSpec>[
-      _TabSpec(s.tabChat, Icons.chat_bubble_outline),
-      _TabSpec(s.tabShell, Icons.terminal),
-      _TabSpec(s.tabFiles, Icons.folder_outlined),
+      _TabSpec(BottomTabId.chat, s.tabChat, Icons.chat_bubble_outline),
+      _TabSpec(BottomTabId.shell, s.tabShell, Icons.terminal),
+      _TabSpec(BottomTabId.files, s.tabFiles, Icons.folder_outlined),
     ];
+    final tabsById = {for (final tab in tabs) tab.id: tab};
 
     return Scaffold(
       body: Stack(
@@ -105,13 +108,13 @@ class _MainShellState extends ConsumerState<MainShell>
                 _TopBar(
                   conn: conn,
                   session: session,
-                  tabIndex: _index,
+                  tabIndex: _tab.index,
                   onSessionTap: () => _showSessionSwitcher(context),
                 ),
                 Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
                 Expanded(
                   child: _LazyTabSwitcher(
-                    index: _index,
+                    index: _tab.index,
                     builders: [
                       _LazyBuilder(
                           builder: () => ChatTab(
@@ -134,18 +137,21 @@ class _MainShellState extends ConsumerState<MainShell>
                   ),
                 ),
                 _BottomNav(
-                  tabs: tabs,
-                  index: _index,
+                  tabs: [
+                    for (final id in bottomTabOrder) tabsById[id]!,
+                  ],
+                  selectedId: _tab,
                   hasRunningChat: openWindows.windows.any(
                     (window) => window.status == OpenChatWindowStatus.running,
                   ),
-                  onChanged: (i) {
-                    if (i == 0 && _index == 0) {
+                  onChanged: (id) {
+                    if (id == BottomTabId.chat && _tab == BottomTabId.chat) {
                       _showOpenChatWindows(context);
                       return;
                     }
-                    setState(() => _index = i);
+                    setState(() => _tab = id);
                   },
+                  onChatSwipeUp: () => _showOpenChatWindows(context),
                 ),
               ],
             ),
@@ -171,7 +177,7 @@ class _MainShellState extends ConsumerState<MainShell>
           ref
               .read(openChatWindowsProvider.notifier)
               .select(sessionKey(session));
-          setState(() => _index = 0);
+          setState(() => _tab = BottomTabId.chat);
           Navigator.of(ctx).pop();
         },
         onClose: (key) {
@@ -500,9 +506,10 @@ class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
 // ── Tab helpers ───────────────────────────────────────────────
 
 class _TabSpec {
+  final BottomTabId id;
   final String label;
   final IconData icon;
-  const _TabSpec(this.label, this.icon);
+  const _TabSpec(this.id, this.label, this.icon);
 }
 
 Widget _buildShell() => const ShellTab();
@@ -1561,14 +1568,16 @@ class _SheetChip extends StatelessWidget {
 
 class _BottomNav extends StatelessWidget {
   final List<_TabSpec> tabs;
-  final int index;
+  final BottomTabId selectedId;
   final bool hasRunningChat;
-  final ValueChanged<int> onChanged;
+  final ValueChanged<BottomTabId> onChanged;
+  final VoidCallback onChatSwipeUp;
   const _BottomNav({
     required this.tabs,
-    required this.index,
+    required this.selectedId,
     this.hasRunningChat = false,
     required this.onChanged,
+    required this.onChatSwipeUp,
   });
 
   @override
@@ -1585,14 +1594,16 @@ class _BottomNav extends StatelessWidget {
           height: 58,
           child: Row(
             children: List.generate(tabs.length, (i) {
-              final selected = i == index;
+              final tab = tabs[i];
+              final selected = tab.id == selectedId;
               return Expanded(
                 child: _NavItem(
-                  label: tabs[i].label,
-                  icon: tabs[i].icon,
+                  label: tab.label,
+                  icon: tab.icon,
                   selected: selected,
-                  showRunningDot: i == 0 && hasRunningChat,
-                  onTap: () => onChanged(i),
+                  showRunningDot: tab.id == BottomTabId.chat && hasRunningChat,
+                  onTap: () => onChanged(tab.id),
+                  onSwipeUp: tab.id == BottomTabId.chat ? onChatSwipeUp : null,
                 ),
               );
             }),
@@ -1609,20 +1620,29 @@ class _NavItem extends StatelessWidget {
   final bool selected;
   final bool showRunningDot;
   final VoidCallback onTap;
+  final VoidCallback? onSwipeUp;
   const _NavItem({
     required this.label,
     required this.icon,
     required this.selected,
     this.showRunningDot = false,
     required this.onTap,
+    this.onSwipeUp,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final color = selected ? t.accent : t.textMuted;
-    return InkWell(
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
+      onVerticalDragEnd: onSwipeUp == null
+          ? null
+          : (details) {
+              final velocity = details.primaryVelocity ?? 0;
+              if (velocity < -220) onSwipeUp!();
+            },
       child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,

@@ -183,6 +183,12 @@ class _SettingsRootPage extends ConsumerWidget {
           ),
         ]),
 
+        // ── 导航 ──────────────────────────────────────
+        const _SettingSection('导航'),
+        const _SettingCard(children: [
+          _BottomTabOrderTile(),
+        ]),
+
         // ── 对话 ──────────────────────────────────────
         const _SettingSection('对话'),
         _SettingCard(children: [
@@ -373,6 +379,160 @@ class _Divider extends StatelessWidget {
     return Divider(color: t.borderSubt, height: 1, indent: 44);
   }
 }
+
+class _BottomTabOrderTile extends ConsumerWidget {
+  const _BottomTabOrderTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final order = ref.watch(bottomTabOrderProvider);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.dock_outlined,
+                  size: 18, color: AppTokens.of(context).textMuted),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '底部栏顺序',
+                      style: TextStyle(
+                          fontSize: 14, color: AppTokens.of(context).text),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '拖动右侧把手调整对话、终端、文件的显示位置',
+                      style: TextStyle(
+                          fontSize: 11, color: AppTokens.of(context).textMuted),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ReorderableListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            proxyDecorator: (child, _, animation) => AnimatedBuilder(
+              animation: animation,
+              builder: (context, child) {
+                final t = AppTokens.of(context);
+                return Material(
+                  color: Colors.transparent,
+                  child: Transform.scale(
+                    scale: 1 + animation.value * 0.02,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: t.surface,
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.16),
+                            blurRadius: 18,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: child,
+                    ),
+                  ),
+                );
+              },
+              child: child,
+            ),
+            itemCount: order.length,
+            onReorder: (oldIndex, newIndex) {
+              final next = List<BottomTabId>.from(order);
+              if (newIndex > oldIndex) newIndex -= 1;
+              final item = next.removeAt(oldIndex);
+              next.insert(newIndex, item);
+              ref.read(bottomTabOrderProvider.notifier).set(next);
+            },
+            itemBuilder: (context, index) {
+              final tab = order[index];
+              return _BottomTabOrderRow(
+                key: ValueKey(tab),
+                tab: tab,
+                index: index,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BottomTabOrderRow extends StatelessWidget {
+  final BottomTabId tab;
+  final int index;
+
+  const _BottomTabOrderRow({
+    super.key,
+    required this.tab,
+    required this.index,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      height: 46,
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: t.border, width: 0.5),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 12),
+          Icon(_bottomTabIcon(tab), size: 18, color: t.textMuted),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _bottomTabLabel(tab),
+              style: TextStyle(
+                color: t.text,
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ReorderableDragStartListener(
+            index: index,
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child:
+                  Icon(Icons.drag_handle_rounded, size: 20, color: t.textDim),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _bottomTabLabel(BottomTabId tab) => switch (tab) {
+      BottomTabId.chat => '对话',
+      BottomTabId.shell => '终端',
+      BottomTabId.files => '文件',
+    };
+
+IconData _bottomTabIcon(BottomTabId tab) => switch (tab) {
+      BottomTabId.chat => Icons.chat_bubble_outline,
+      BottomTabId.shell => Icons.terminal,
+      BottomTabId.files => Icons.folder_outlined,
+    };
 
 class _SegmentRow extends StatelessWidget {
   final String label;
