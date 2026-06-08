@@ -149,6 +149,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   _ChatSessionRuntime _runtime = _ChatSessionRuntime();
   _ChatSessionRuntime? _selectedRuntime;
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _textFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   bool _appInForeground = true;
 
@@ -349,6 +350,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     _textController.removeListener(_onTextChanged);
     _textController.dispose();
+    _textFocusNode.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
@@ -1824,6 +1826,41 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (h != _hasText) setState(() => _hasText = h);
   }
 
+  void _useIdeaAsDraft(String text) {
+    final idea = text.trim();
+    if (idea.isEmpty) return;
+    final current = _textController.text;
+    final next = current.trim().isEmpty
+        ? idea
+        : current.endsWith('\n')
+            ? '$current\n$idea'
+            : '$current\n\n$idea';
+    _textController.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: next.length),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _textFocusNode.requestFocus();
+    });
+  }
+
+  void _sendIdea(String text) {
+    final idea = text.trim();
+    if (idea.isEmpty) return;
+    if (!_connected) {
+      _useIdeaAsDraft(idea);
+      return;
+    }
+    if (_busy || _pending.isNotEmpty) {
+      setState(() => _pending.add(idea));
+      unawaited(_persistPendingQueue());
+      if (!_queuePausedOnUnknown) _drainQueue();
+      _scrollToEnd(force: true);
+      return;
+    }
+    _sendNow(idea);
+  }
+
   /// 重新编辑上一条未被 AI 响应的消息：
   /// 把文本放回输入框，并从消息列表里撤销那次发送的记录。
   void _reEditLastMessage() {
@@ -2375,6 +2412,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (!_observeMode)
           _Composer(
             controller: _textController,
+            focusNode: _textFocusNode,
             connected: _connected,
             busy: _busy,
             hasText: _hasText,
@@ -2389,6 +2427,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onSwitchPermissionMode: _switchPermissionMode,
             onPatchRuntime: _patchRuntime,
             onOpenSessionFiles: _showSessionFiles,
+            onUseIdea: _useIdeaAsDraft,
+            onSendIdea: _sendIdea,
             chatApi: _chatApi,
             agent: session.agent,
             runtime: session.runtime,
@@ -2966,6 +3006,7 @@ class _UserMessageState extends ConsumerState<_UserMessage> {
 
 class _Composer extends ConsumerWidget {
   final TextEditingController controller;
+  final FocusNode focusNode;
   final bool connected;
   final bool busy;
   final bool hasText;
@@ -2980,12 +3021,15 @@ class _Composer extends ConsumerWidget {
   final void Function(CcPermissionMode) onSwitchPermissionMode;
   final void Function(Map<String, dynamic>) onPatchRuntime;
   final VoidCallback onOpenSessionFiles;
+  final ValueChanged<String> onUseIdea;
+  final ValueChanged<String> onSendIdea;
   final ChatApi? chatApi;
   final AgentKind agent;
   final Map<String, dynamic> runtime;
   final String? sessionId;
   const _Composer({
     required this.controller,
+    required this.focusNode,
     required this.connected,
     required this.busy,
     required this.hasText,
@@ -3000,6 +3044,8 @@ class _Composer extends ConsumerWidget {
     required this.onSwitchPermissionMode,
     required this.onPatchRuntime,
     required this.onOpenSessionFiles,
+    required this.onUseIdea,
+    required this.onSendIdea,
     this.chatApi,
     required this.agent,
     required this.runtime,
@@ -3061,6 +3107,7 @@ class _Composer extends ConsumerWidget {
                   Expanded(
                     child: TextField(
                       controller: controller,
+                      focusNode: focusNode,
                       minLines: 2,
                       maxLines: 6,
                       enabled: editable,
@@ -3117,6 +3164,8 @@ class _Composer extends ConsumerWidget {
                         : () => showInspirationDrawer(
                               context,
                               api: IdeasApi(conn.httpBase, token: conn.token),
+                              onUseIdea: onUseIdea,
+                              onSendIdea: connected ? onSendIdea : null,
                             ),
                     behavior: HitTestBehavior.opaque,
                     child: Container(

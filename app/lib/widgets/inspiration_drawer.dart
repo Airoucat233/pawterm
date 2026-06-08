@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../api/ideas_api.dart';
@@ -6,20 +8,32 @@ import '../theme.dart';
 Future<void> showInspirationDrawer(
   BuildContext context, {
   required IdeasApi api,
+  ValueChanged<String>? onUseIdea,
+  ValueChanged<String>? onSendIdea,
 }) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     backgroundColor: Colors.transparent,
-    builder: (_) => _InspirationDrawer(api: api),
+    builder: (_) => _InspirationDrawer(
+      api: api,
+      onUseIdea: onUseIdea,
+      onSendIdea: onSendIdea,
+    ),
   );
 }
 
 class _InspirationDrawer extends StatefulWidget {
   final IdeasApi api;
+  final ValueChanged<String>? onUseIdea;
+  final ValueChanged<String>? onSendIdea;
 
-  const _InspirationDrawer({required this.api});
+  const _InspirationDrawer({
+    required this.api,
+    this.onUseIdea,
+    this.onSendIdea,
+  });
 
   @override
   State<_InspirationDrawer> createState() => _InspirationDrawerState();
@@ -28,19 +42,27 @@ class _InspirationDrawer extends StatefulWidget {
 class _InspirationDrawerState extends State<_InspirationDrawer> {
   final _controller = TextEditingController();
   late Future<List<Idea>> _future;
+  bool _draftHasText = false;
   bool _saving = false;
   bool _showArchived = false;
 
   @override
   void initState() {
     super.initState();
+    _controller.addListener(_onDraftChanged);
     _future = _load();
   }
 
   @override
   void dispose() {
+    _controller.removeListener(_onDraftChanged);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _onDraftChanged() {
+    final next = _controller.text.trim().isNotEmpty;
+    if (next != _draftHasText) setState(() => _draftHasText = next);
   }
 
   Future<List<Idea>> _load() {
@@ -73,121 +95,63 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
     _reload();
   }
 
+  Future<void> _delete(Idea idea) async {
+    await widget.api.delete(idea.id);
+    _reload();
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(8, 0, 8, bottom + 8),
-      child: Container(
-        constraints: const BoxConstraints(maxHeight: 620),
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: t.border, width: 0.5),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.18),
-              blurRadius: 24,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: 0.72,
-          minChildSize: 0.42,
-          maxChildSize: 0.94,
-          builder: (_, scrollController) => Column(
+    final media = MediaQuery.of(context);
+    final height = media.size.height - media.padding.top;
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+      child: Align(
+        alignment: Alignment.bottomCenter,
+        child: Container(
+          height: height,
+          decoration: BoxDecoration(
+            color: t.bg,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            border: Border(top: BorderSide(color: t.border, width: 0.5)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.2),
+                blurRadius: 28,
+                offset: const Offset(0, -8),
+              ),
+            ],
+          ),
+          child: Column(
             children: [
               const SizedBox(height: 10),
               Container(
-                width: 36,
+                width: 40,
                 height: 4,
                 decoration: BoxDecoration(
                   color: t.border,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 14, 10, 10),
-                child: Row(
-                  children: [
-                    Icon(Icons.lightbulb_outline, size: 18, color: t.accent),
-                    const SizedBox(width: 8),
-                    Text(
-                      '灵感抽屉',
-                      style: TextStyle(
-                        color: t.text,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const Spacer(),
-                    _SegmentButton(
-                      label: _showArchived ? '已归档' : '活跃',
-                      selected: true,
-                      onTap: () {
-                        setState(() {
-                          _showArchived = !_showArchived;
-                          _future = _load();
-                        });
-                      },
-                    ),
-                    IconButton(
-                      tooltip: '关闭',
-                      icon: Icon(Icons.close, size: 18, color: t.textDim),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                  ],
-                ),
+              _Header(
+                archived: _showArchived,
+                onToggleArchived: () {
+                  setState(() {
+                    _showArchived = !_showArchived;
+                    _future = _load();
+                  });
+                },
+                onClose: () => Navigator.of(context).pop(),
               ),
               if (!_showArchived)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: t.bg,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: t.border, width: 0.5),
-                    ),
-                    padding: const EdgeInsets.fromLTRB(12, 4, 6, 4),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _controller,
-                            autofocus: true,
-                            minLines: 1,
-                            maxLines: 4,
-                            textInputAction: TextInputAction.newline,
-                            style: TextStyle(color: t.text, fontSize: 14),
-                            decoration: InputDecoration(
-                              border: InputBorder.none,
-                              hintText: '先记下来，稍后再处理…',
-                              hintStyle:
-                                  TextStyle(color: t.textDim, fontSize: 13),
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: '保存灵感',
-                          onPressed: _saving ? null : _create,
-                          icon: _saving
-                              ? SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 1.8,
-                                    color: t.accent,
-                                  ),
-                                )
-                              : Icon(Icons.arrow_upward_rounded,
-                                  size: 18, color: t.accent),
-                        ),
-                      ],
-                    ),
-                  ),
+                _IdeaComposerCard(
+                  controller: _controller,
+                  saving: _saving,
+                  canSave: _draftHasText,
+                  onSave: _create,
                 ),
               Expanded(
                 child: FutureBuilder<List<Idea>>(
@@ -196,8 +160,8 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
                     if (snapshot.connectionState != ConnectionState.done) {
                       return Center(
                         child: SizedBox(
-                          width: 18,
-                          height: 18,
+                          width: 20,
+                          height: 20,
                           child: CircularProgressIndicator(
                             strokeWidth: 1.8,
                             color: t.accent,
@@ -207,36 +171,51 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
                     }
                     final ideas = snapshot.data ?? const [];
                     if (ideas.isEmpty) {
-                      return Center(
-                        child: Text(
-                          _showArchived ? '没有归档灵感' : '抽屉还是空的',
-                          style: TextStyle(color: t.textDim, fontSize: 13),
-                        ),
-                      );
+                      return _EmptyIdeas(archived: _showArchived);
                     }
-                    return ListView.separated(
-                      controller: scrollController,
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
+                    return ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
                       itemCount: ideas.length,
-                      separatorBuilder: (_, __) =>
-                          Divider(color: t.borderSubt, height: 0.5),
-                      itemBuilder: (_, i) => _IdeaRow(
-                        idea: ideas[i],
-                        archived: _showArchived,
-                        onEdit: () => _edit(ideas[i]),
-                        onArchive: () async {
-                          await widget.api.archive(ideas[i].id);
-                          _reload();
-                        },
-                        onUnarchive: () async {
-                          await widget.api.unarchive(ideas[i].id);
-                          _reload();
-                        },
-                        onDelete: () async {
-                          await widget.api.delete(ideas[i].id);
-                          _reload();
-                        },
-                      ),
+                      itemBuilder: (_, i) {
+                        final idea = ideas[i];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Dismissible(
+                            key: ValueKey('idea-${idea.id}'),
+                            direction: DismissDirection.endToStart,
+                            confirmDismiss: (_) async {
+                              await _delete(idea);
+                              return true;
+                            },
+                            background: const _DeleteBackground(),
+                            child: _IdeaCard(
+                              idea: idea,
+                              archived: _showArchived,
+                              onSend: widget.onSendIdea == null
+                                  ? null
+                                  : () {
+                                      widget.onSendIdea!(idea.text);
+                                      Navigator.of(context).pop();
+                                    },
+                              onUse: widget.onUseIdea == null
+                                  ? null
+                                  : () {
+                                      widget.onUseIdea!(idea.text);
+                                      Navigator.of(context).pop();
+                                    },
+                              onEdit: () => _edit(idea),
+                              onArchive: () async {
+                                await widget.api.archive(idea.id);
+                                _reload();
+                              },
+                              onUnarchive: () async {
+                                await widget.api.unarchive(idea.id);
+                                _reload();
+                              },
+                            ),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
@@ -249,76 +228,462 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
   }
 }
 
-class _IdeaRow extends StatelessWidget {
-  final Idea idea;
+class _Header extends StatelessWidget {
   final bool archived;
-  final VoidCallback onEdit;
-  final VoidCallback onArchive;
-  final VoidCallback onUnarchive;
-  final VoidCallback onDelete;
+  final VoidCallback onToggleArchived;
+  final VoidCallback onClose;
 
-  const _IdeaRow({
-    required this.idea,
+  const _Header({
     required this.archived,
-    required this.onEdit,
-    required this.onArchive,
-    required this.onUnarchive,
-    required this.onDelete,
+    required this.onToggleArchived,
+    required this.onClose,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return InkWell(
-      onTap: onEdit,
-      borderRadius: BorderRadius.circular(10),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Icon(
-                archived ? Icons.inventory_2_outlined : Icons.circle_outlined,
-                size: 16,
-                color: archived ? t.textDim : t.accent,
-              ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 18, 12, 14),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: t.accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: t.accent.withValues(alpha: 0.18)),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                idea.text,
-                style: TextStyle(color: t.text, fontSize: 13.5, height: 1.45),
-              ),
-            ),
-            PopupMenuButton<String>(
-              tooltip: '更多',
-              icon: Icon(Icons.more_horiz, size: 18, color: t.textDim),
-              onSelected: (value) {
-                switch (value) {
-                  case 'edit':
-                    onEdit();
-                    break;
-                  case 'archive':
-                    onArchive();
-                    break;
-                  case 'unarchive':
-                    onUnarchive();
-                    break;
-                  case 'delete':
-                    onDelete();
-                    break;
-                }
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                PopupMenuItem(
-                  value: archived ? 'unarchive' : 'archive',
-                  child: Text(archived ? '移回活跃' : '归档'),
+            child: Icon(Icons.lightbulb_outline, size: 20, color: t.accent),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '灵感抽屉',
+                  style: TextStyle(
+                    color: t.text,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
-                const PopupMenuItem(value: 'delete', child: Text('删除')),
+                const SizedBox(height: 2),
+                Text(
+                  archived ? '归档的想法' : '随手捕捉，随时发送',
+                  style: TextStyle(color: t.textDim, fontSize: 12),
+                ),
               ],
+            ),
+          ),
+          _SegmentButton(
+            label: archived ? '归档' : '活跃',
+            selected: true,
+            onTap: onToggleArchived,
+          ),
+          const SizedBox(width: 2),
+          IconButton(
+            tooltip: '关闭',
+            icon: Icon(Icons.close_rounded, size: 20, color: t.textMuted),
+            onPressed: onClose,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _IdeaComposerCard extends StatelessWidget {
+  final TextEditingController controller;
+  final bool saving;
+  final bool canSave;
+  final VoidCallback onSave;
+
+  const _IdeaComposerCard({
+    required this.controller,
+    required this.saving,
+    required this.canSave,
+    required this.onSave,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      child: Container(
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: t.border, width: 0.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.06),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(14, 12, 10, 10),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(Icons.add_comment_outlined, size: 16, color: t.accent),
+                const SizedBox(width: 8),
+                Text(
+                  '捕捉新灵感',
+                  style: TextStyle(
+                    color: t.textMuted,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                AnimatedOpacity(
+                  opacity: canSave ? 1 : 0.45,
+                  duration: const Duration(milliseconds: 160),
+                  child: IconButton.filledTonal(
+                    tooltip: '保存',
+                    onPressed: saving || !canSave ? null : onSave,
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size(40, 40),
+                      backgroundColor: t.accent.withValues(alpha: 0.12),
+                      foregroundColor: t.accent,
+                    ),
+                    icon: saving
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.8,
+                              color: t.accent,
+                            ),
+                          )
+                        : const Icon(Icons.check_rounded, size: 19),
+                  ),
+                ),
+              ],
+            ),
+            TextField(
+              controller: controller,
+              autofocus: false,
+              minLines: 2,
+              maxLines: 5,
+              textInputAction: TextInputAction.newline,
+              cursorColor: t.accent,
+              style: TextStyle(color: t.text, fontSize: 14, height: 1.45),
+              decoration: InputDecoration(
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: const EdgeInsets.fromLTRB(0, 4, 6, 4),
+                hintText: '写下一个待会儿要问的问题、命令或线索…',
+                hintStyle: TextStyle(color: t.textDim, fontSize: 13.5),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _IdeaCard extends StatefulWidget {
+  final Idea idea;
+  final bool archived;
+  final VoidCallback? onSend;
+  final VoidCallback? onUse;
+  final VoidCallback onEdit;
+  final VoidCallback onArchive;
+  final VoidCallback onUnarchive;
+
+  const _IdeaCard({
+    required this.idea,
+    required this.archived,
+    required this.onSend,
+    required this.onUse,
+    required this.onEdit,
+    required this.onArchive,
+    required this.onUnarchive,
+  });
+
+  @override
+  State<_IdeaCard> createState() => _IdeaCardState();
+}
+
+class _IdeaCardState extends State<_IdeaCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _shakeController;
+  double _scale = 1;
+  bool _longPressing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _shakeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    );
+  }
+
+  @override
+  void dispose() {
+    _shakeController.dispose();
+    super.dispose();
+  }
+
+  void _pressDown() {
+    if (_longPressing) return;
+    setState(() => _scale = 0.975);
+  }
+
+  void _pressCancel() {
+    if (!mounted) return;
+    setState(() {
+      _longPressing = false;
+      _scale = 1;
+    });
+  }
+
+  Future<void> _sendWithBounce() async {
+    if (_longPressing) return;
+    setState(() => _scale = 1.018);
+    await Future<void>.delayed(const Duration(milliseconds: 85));
+    if (!mounted) return;
+    setState(() => _scale = 1);
+    await Future<void>.delayed(const Duration(milliseconds: 55));
+    if (!mounted) return;
+    widget.onSend?.call();
+  }
+
+  Future<void> _useWithShake() async {
+    if (widget.onUse == null) return;
+    _longPressing = true;
+    setState(() => _scale = 0.965);
+    await _shakeController.forward(from: 0);
+    if (!mounted) return;
+    setState(() => _scale = 1);
+    widget.onUse!.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final canSend = widget.onSend != null;
+    return AnimatedBuilder(
+      animation: _shakeController,
+      builder: (context, child) {
+        final shake = math.sin(_shakeController.value * math.pi * 7) * 2.6;
+        return Transform.translate(
+          offset: Offset(shake, 0),
+          child: AnimatedScale(
+            scale: _scale,
+            duration: const Duration(milliseconds: 130),
+            curve: _scale > 1 ? Curves.easeOutBack : Curves.easeOutCubic,
+            child: child,
+          ),
+        );
+      },
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          decoration: BoxDecoration(
+            color: t.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: t.border, width: 0.5),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.07),
+                blurRadius: 16,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: canSend ? (_) => _pressDown() : null,
+                  onTapCancel: canSend ? _pressCancel : null,
+                  onTapUp: canSend ? (_) => _sendWithBounce() : null,
+                  onLongPressStart: (_) => _useWithShake(),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 10, 14),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          margin: const EdgeInsets.only(top: 7),
+                          decoration: BoxDecoration(
+                            color: widget.archived ? t.textDim : t.accent,
+                            shape: BoxShape.circle,
+                            boxShadow: widget.archived
+                                ? null
+                                : [
+                                    BoxShadow(
+                                      color: t.accent.withValues(alpha: 0.28),
+                                      blurRadius: 8,
+                                    ),
+                                  ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            widget.idea.text,
+                            style: TextStyle(
+                              color: t.text,
+                              fontSize: 14,
+                              height: 1.46,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 8, 8, 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (canSend)
+                      IconButton(
+                        tooltip: '发送',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: widget.onSend,
+                        style: IconButton.styleFrom(
+                          minimumSize: const Size(40, 40),
+                          backgroundColor: t.accent.withValues(alpha: 0.1),
+                          foregroundColor: t.accent,
+                        ),
+                        icon: const Icon(Icons.north_east_rounded, size: 18),
+                      ),
+                    PopupMenuButton<String>(
+                      tooltip: '更多',
+                      icon: Icon(
+                        Icons.more_horiz_rounded,
+                        size: 20,
+                        color: t.textDim,
+                      ),
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'edit':
+                            widget.onEdit();
+                            break;
+                          case 'archive':
+                            widget.onArchive();
+                            break;
+                          case 'unarchive':
+                            widget.onUnarchive();
+                            break;
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        const PopupMenuItem(value: 'edit', child: Text('编辑')),
+                        PopupMenuItem(
+                          value: widget.archived ? 'unarchive' : 'archive',
+                          child: Text(widget.archived ? '移回活跃' : '归档'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DeleteBackground extends StatelessWidget {
+  const _DeleteBackground();
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      alignment: Alignment.centerRight,
+      padding: const EdgeInsets.only(right: 22),
+      decoration: BoxDecoration(
+        color: t.error.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutBack,
+        builder: (_, value, child) => Opacity(
+          opacity: value.clamp(0, 1),
+          child: Transform.scale(scale: value, child: child),
+        ),
+        child: Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: t.error,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: t.error.withValues(alpha: 0.28),
+                blurRadius: 14,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: const Icon(Icons.delete_outline_rounded,
+              color: Colors.white, size: 22),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyIdeas extends StatelessWidget {
+  final bool archived;
+  const _EmptyIdeas({required this.archived});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: t.surfaceHi,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: t.border, width: 0.5),
+              ),
+              child: Icon(
+                archived ? Icons.inventory_2_outlined : Icons.lightbulb_outline,
+                color: t.textDim,
+                size: 23,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              archived ? '没有归档灵感' : '抽屉还是空的',
+              style: TextStyle(
+                color: t.textMuted,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
@@ -344,7 +709,7 @@ class _SegmentButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: selected ? t.accent.withValues(alpha: 0.11) : t.surfaceHi,
           borderRadius: BorderRadius.circular(999),
@@ -357,8 +722,8 @@ class _SegmentButton extends StatelessWidget {
           label,
           style: TextStyle(
             color: selected ? t.accent : t.textMuted,
-            fontSize: 11.5,
-            fontWeight: FontWeight.w600,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
           ),
         ),
       ),
