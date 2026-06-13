@@ -1,13 +1,12 @@
 import 'dart:convert';
-import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../config/build_defaults.dart';
 import '../i18n/locale_provider.dart';
+import '../state/connection_url.dart';
 import '../state/server_config.dart';
 import '../theme.dart';
 import 'lan_scan_sheet.dart'; // also re-exports LanScanResult
@@ -31,6 +30,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   late final TextEditingController _portCtrl;
   late final TextEditingController _nameCtrl;
   late String _emoji;
+  String _scheme = defaultConnectionScheme;
 
   _SheetState _phase = _SheetState.input;
   String? _detectedName;
@@ -44,15 +44,11 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
     super.initState();
     final e = widget.editing;
     if (e != null) {
-      // Reconstruct IP and port from the stored URL
-      final uri = Uri.tryParse(e.url);
-      _ipCtrl = TextEditingController(
-          text: uri?.host ??
-              e.url.replaceFirst(RegExp(r'^https?://'), '').split(':').first);
+      final parts = parseConnectionUrlInput(input: e.url);
+      _scheme = parts?.scheme ?? defaultConnectionScheme;
+      _ipCtrl = TextEditingController(text: parts?.host ?? e.url);
       _portCtrl = TextEditingController(
-          text: uri?.port != null && uri!.port != 0
-              ? '${uri.port}'
-              : '${BuildDefaults.defaultServerPort}');
+          text: '${parts?.port ?? BuildDefaults.defaultServerPort}');
       _phase = _SheetState.detected;
     } else {
       _ipCtrl = TextEditingController();
@@ -72,14 +68,31 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   }
 
   String get _normalizedUrl {
-    var ip = _ipCtrl.text.trim();
-    final port =
-        int.tryParse(_portCtrl.text.trim()) ?? BuildDefaults.defaultServerPort;
-    if (ip.isEmpty) return '';
-    if (!kIsWeb && Platform.isAndroid) {
-      ip = ip.replaceFirst(RegExp(r'^localhost$'), '10.0.2.2');
-    }
-    return 'http://$ip:$port';
+    return _currentUrlParts?.baseUrl ?? '';
+  }
+
+  ConnectionUrlParts? get _currentUrlParts {
+    return parseConnectionFields(
+      scheme: _scheme,
+      hostInput: _ipCtrl.text,
+      portInput: _portCtrl.text,
+    );
+  }
+
+  void _maybeApplyPastedUrl(String value) {
+    final raw = value.trim();
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return;
+    final parts = parseConnectionUrlInput(input: raw);
+    if (parts == null) return;
+    _ipCtrl.value = TextEditingValue(
+      text: parts.host,
+      selection: TextSelection.collapsed(offset: parts.host.length),
+    );
+    _portCtrl.text = '${parts.port}';
+    setState(() {
+      _scheme = parts.scheme;
+      if (_phase == _SheetState.error) _phase = _SheetState.input;
+    });
   }
 
   Future<void> _detect() async {
@@ -146,14 +159,14 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
   }
 
   Future<void> _openPairSheet() async {
-    final host = _ipCtrl.text.trim();
-    final port =
-        int.tryParse(_portCtrl.text.trim()) ?? BuildDefaults.defaultServerPort;
+    final parts = _currentUrlParts;
+    if (parts == null) return;
     final scanResult = LanScanResult(
       serverId: '',
-      name: _detectedName ?? host,
-      host: host,
-      port: port,
+      name: _detectedName ?? parts.host,
+      host: parts.host,
+      port: parts.port,
+      scheme: parts.scheme,
       version: _detectedVersion ?? '',
       pairingOpen: true,
     );
@@ -222,7 +235,7 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
         final deviceToken = body['deviceToken'] as String;
         final serverId = body['serverId'] as String? ?? '';
 
-        String name =
+        String name = Uri.tryParse(result.url)?.host ??
             result.url.replaceFirst(RegExp(r'^https?://'), '').split(':').first;
         try {
           final healthResp = await http
@@ -359,11 +372,44 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                 const SizedBox(height: 16),
               ],
 
-              // IP + Port side-by-side
+              // Scheme + host + port.
               _Label(s.addConnectionUrl),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  SizedBox(
+                    width: 96,
+                    child: DropdownButtonFormField<String>(
+                      value: _scheme,
+                      items: const [
+                        DropdownMenuItem(value: 'http', child: Text('http://')),
+                        DropdownMenuItem(
+                            value: 'https', child: Text('https://')),
+                      ],
+                      onChanged: (_phase == _SheetState.input ||
+                              _phase == _SheetState.error ||
+                              isEditing)
+                          ? (value) {
+                              if (value == null) return;
+                              setState(() {
+                                _scheme = value;
+                                _portCtrl.text =
+                                    '${defaultPortForScheme(value)}';
+                                if (_phase == _SheetState.error) {
+                                  _phase = _SheetState.input;
+                                }
+                              });
+                            }
+                          : null,
+                      style: TextStyle(
+                          fontFamily: 'monospace', fontSize: 13, color: t.text),
+                      decoration: const InputDecoration(
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 10, vertical: 13),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: TextField(
                       controller: _ipCtrl,
@@ -376,7 +422,8 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                       decoration: InputDecoration(
                         hintText: s.addConnectionUrlHintLan,
                       ),
-                      onChanged: (_) {
+                      onChanged: (value) {
+                        _maybeApplyPastedUrl(value);
                         if (_phase == _SheetState.error) {
                           setState(() => _phase = _SheetState.input);
                         }

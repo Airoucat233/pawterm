@@ -26,6 +26,7 @@ import '../../i18n/locale_provider.dart';
 import '../../state/chat_completion_notifier.dart';
 import '../../state/open_chat_windows.dart';
 import '../../state/prefs.dart';
+import '../../state/connection_resolver.dart';
 import '../../state/projects_store.dart';
 import '../../state/server_config.dart';
 import '../../state/streaming_foreground_service.dart';
@@ -1198,6 +1199,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _manualReconnect() {
+    unawaited(_manualReconnectAsync());
+  }
+
+  Future<void> _manualReconnectAsync() async {
+    final resolved = await _resolveActiveConnection();
     final session = ref.read(currentSessionProvider);
     final canRefresh =
         _chatApi != null && (_sessionId != null || session?.resumeId != null);
@@ -1206,6 +1212,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _error = null;
         _attempting = false;
       });
+      if (resolved != null) {
+        _serverToken = resolved.token;
+        _chatApi = ChatApi(resolved.apiBase, token: resolved.token);
+      }
       unawaited(_refreshActiveRunState(forceResubscribe: true));
       return;
     }
@@ -1221,6 +1231,20 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _observeMode = false;
       _observeHolderDeviceId = null;
     });
+  }
+
+  Future<Connection?> _resolveActiveConnection() async {
+    final conn = ref.read(activeConnectionProvider);
+    if (conn == null) return null;
+    final resolved = await const ConnectionResolver().resolve(conn);
+    if (resolved == null || resolved.url == conn.url) return conn;
+    final updated = await ref
+            .read(connectionsProvider.notifier)
+            .updateUrl(conn.id, resolved.url) ??
+        conn.copyWith(url: resolved.url);
+    ref.read(activeConnectionProvider.notifier).state = updated;
+    _serverToken = updated.token;
+    return updated;
   }
 
   void _onSseEvent(SseEvent ev, {_ChatSessionRuntime? runtime}) {

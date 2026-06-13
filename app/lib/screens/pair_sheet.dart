@@ -32,6 +32,8 @@ enum _PairPhase {
   autoDenied, // denied — show "Use PIN instead" button
   pinInput, // 6-box OTP input
   pinLoading, // spinner while submitting PIN
+  passwordInput, // server password input
+  passwordLoading, // spinner while submitting password
   success, // green check + name edit + Done button
 }
 
@@ -46,6 +48,9 @@ class _PairSheetState extends ConsumerState<PairSheet> {
   final _pinFocusNode = FocusNode();
   final _pinCtrl = TextEditingController();
   String? _pinError;
+  final _passwordFocusNode = FocusNode();
+  final _passwordCtrl = TextEditingController();
+  String? _passwordError;
 
   // Success state
   Connection? _savedConn;
@@ -66,6 +71,8 @@ class _PairSheetState extends ConsumerState<PairSheet> {
     _pollClient?.close();
     _pinCtrl.dispose();
     _pinFocusNode.dispose();
+    _passwordCtrl.dispose();
+    _passwordFocusNode.dispose();
     _nameCtrl.dispose();
     super.dispose();
   }
@@ -85,8 +92,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
 
       final resp = await http
           .post(
-            Uri.parse(
-                'http://${widget.server.host}:${widget.server.port}/api/pair/request'),
+            Uri.parse('${widget.server.httpBase}/api/pair/request'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'deviceId': deviceId,
@@ -106,7 +112,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       final body = jsonDecode(resp.body) as Map<String, dynamic>;
       final pollUrl = body['pollUrl'] as String;
 
-      await _pollLoop(pollUrl);
+      await _pollLoop(_absolutePairUrl(pollUrl));
     } catch (e) {
       if (!mounted || _cancelled) return;
       // Network error — fall to PIN input silently
@@ -167,6 +173,11 @@ class _PairSheetState extends ConsumerState<PairSheet> {
     }
   }
 
+  String _absolutePairUrl(String url) {
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    return '${widget.server.httpBase}${url.startsWith('/') ? '' : '/'}$url';
+  }
+
   void _cancelAutoPair() {
     _cancelled = true;
     _pollClient?.close();
@@ -177,7 +188,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
   // ─── Save on approval ──────────────────────────────────────────────────────
 
   Future<void> _saveImmediately(String serverId, String deviceToken) async {
-    final url = 'http://${widget.server.host}:${widget.server.port}';
+    final url = widget.server.httpBase;
 
     // Check for existing Connection with same serverId (re-pair case)
     final existing = ref
@@ -238,8 +249,7 @@ class _PairSheetState extends ConsumerState<PairSheet> {
       final deviceName = await ConnectionsNotifier.getDeviceName();
       final resp = await http
           .post(
-            Uri.parse(
-                'http://${widget.server.host}:${widget.server.port}/api/pair/start'),
+            Uri.parse('${widget.server.httpBase}/api/pair/start'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'deviceId': deviceId,
@@ -280,6 +290,69 @@ class _PairSheetState extends ConsumerState<PairSheet> {
         return s.pairSheetBadPin;
       case 'pairing_closed':
         return s.pairSheetPairingClosed;
+      case 'rate_limited':
+        return s.pairSheetRateLimited;
+      default:
+        return s.pairSheetFailed.replaceAll('{error}', error);
+    }
+  }
+
+  Future<void> _pairWithPassword() async {
+    final password = _passwordCtrl.text;
+    if (password.isEmpty) {
+      setState(() =>
+          _passwordError = ref.read(stringsProvider).pairSheetBadPassword);
+      return;
+    }
+    setState(() {
+      _phase = _PairPhase.passwordLoading;
+      _passwordError = null;
+    });
+    try {
+      final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
+      final deviceName = await ConnectionsNotifier.getDeviceName();
+      final resp = await http
+          .post(
+            Uri.parse('${widget.server.httpBase}/api/pair/password'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'deviceId': deviceId,
+              'deviceName': deviceName,
+              'password': password,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (!mounted) return;
+
+      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (resp.statusCode == 200 && body['ok'] == true) {
+        final deviceToken = body['deviceToken'] as String;
+        final serverId = body['serverId'] as String? ?? widget.server.serverId;
+        await _saveImmediately(serverId, deviceToken);
+      } else {
+        final error = body['error'] as String? ?? 'unknown';
+        setState(() {
+          _phase = _PairPhase.passwordInput;
+          _passwordError = _passwordErrorMessage(error);
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _PairPhase.passwordInput;
+        _passwordError = ref.read(stringsProvider).pairSheetConnFailed;
+      });
+    }
+  }
+
+  String _passwordErrorMessage(String error) {
+    final s = ref.read(stringsProvider);
+    switch (error) {
+      case 'bad_password':
+        return s.pairSheetBadPassword;
+      case 'password_not_set':
+        return s.pairSheetPasswordNotSet;
       case 'rate_limited':
         return s.pairSheetRateLimited;
       default:
@@ -363,6 +436,10 @@ class _PairSheetState extends ConsumerState<PairSheet> {
         return _buildPinInput(t, s);
       case _PairPhase.pinLoading:
         return _buildSpinner(t, s.pairSheetPairBtn);
+      case _PairPhase.passwordInput:
+        return _buildPasswordInput(t, s);
+      case _PairPhase.passwordLoading:
+        return _buildSpinner(t, s.pairSheetUsePasswordInstead);
       case _PairPhase.success:
         return _buildSuccess(t, s);
     }
@@ -395,10 +472,23 @@ class _PairSheetState extends ConsumerState<PairSheet> {
         ),
         const SizedBox(height: 32),
         TextButton(
+          onPressed: () {
+            _passwordCtrl.clear();
+            setState(() {
+              _passwordError = null;
+              _phase = _PairPhase.passwordInput;
+            });
+          },
+          child: Text(
+            s.pairSheetUsePasswordInstead,
+            style: TextStyle(fontSize: 15, color: t.accent),
+          ),
+        ),
+        TextButton(
           onPressed: _cancelAutoPair,
           child: Text(
             s.pairSheetAutoCancel,
-            style: TextStyle(fontSize: 15, color: t.textMuted),
+            style: TextStyle(fontSize: 14, color: t.textMuted),
           ),
         ),
       ],
@@ -443,6 +533,19 @@ class _PairSheetState extends ConsumerState<PairSheet> {
           ),
         ),
         const SizedBox(height: 12),
+        TextButton(
+          onPressed: () {
+            _passwordCtrl.clear();
+            setState(() {
+              _passwordError = null;
+              _phase = _PairPhase.passwordInput;
+            });
+          },
+          child: Text(
+            s.pairSheetUsePasswordInstead,
+            style: TextStyle(fontSize: 14, color: t.accent),
+          ),
+        ),
         TextButton(
           onPressed: _cancelAutoPair,
           child: Text(
@@ -490,6 +593,82 @@ class _PairSheetState extends ConsumerState<PairSheet> {
             child: Text(
               s.pairSheetPairBtn,
               style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Center(
+          child: TextButton(
+            onPressed: () {
+              _passwordCtrl.clear();
+              setState(() {
+                _passwordError = null;
+                _phase = _PairPhase.passwordInput;
+              });
+            },
+            child: Text(
+              s.pairSheetUsePasswordInstead,
+              style: TextStyle(fontSize: 14, color: t.accent),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPasswordInput(AppTokens t, Strings s) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          s.pairSheetPasswordHint,
+          style: TextStyle(fontSize: 13, color: t.textMuted, height: 1.5),
+        ),
+        const SizedBox(height: 18),
+        TextField(
+          controller: _passwordCtrl,
+          focusNode: _passwordFocusNode,
+          obscureText: true,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          style: TextStyle(fontSize: 14, color: t.text),
+          decoration: InputDecoration(hintText: s.pairSheetPasswordLabel),
+          onSubmitted: (_) => _pairWithPassword(),
+        ),
+        if (_passwordError != null) ...[
+          const SizedBox(height: 10),
+          Text(_passwordError!, style: TextStyle(fontSize: 12, color: t.error)),
+        ],
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: _pairWithPassword,
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            child: Text(
+              s.pairSheetUsePasswordInstead,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Center(
+          child: TextButton(
+            onPressed: () {
+              _pinCtrl.clear();
+              setState(() {
+                _pinError = null;
+                _phase = _PairPhase.pinInput;
+              });
+            },
+            child: Text(
+              s.pairSheetUsePinInstead,
+              style: TextStyle(fontSize: 14, color: t.textMuted),
             ),
           ),
         ),

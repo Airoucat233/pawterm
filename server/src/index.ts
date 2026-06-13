@@ -346,6 +346,7 @@ async function main(): Promise<void> {
       (!url.startsWith('/api/') && url !== '/ws/shell') ||
       url === '/ws/shell' ||
       url === '/api/pair/start' ||
+      url === '/api/pair/password' ||
       url === '/api/pair/request' ||
       url === '/api/pair/qr-claim' ||
       url === '/api/admin/access-token' ||
@@ -845,6 +846,36 @@ async function main(): Promise<void> {
       }
       const clientIp = req.ip ?? '0.0.0.0';
       const result = await pairingManager.tryRedeemPin(pin, deviceId, deviceName, clientIp);
+      if (!result.ok) {
+        reply.code(result.error === 'rate_limited' ? 429 : 403);
+      }
+      return result;
+    },
+  );
+
+  // POST /api/pair/password — no auth; server password is exchanged for a device token.
+  api.post<{ Body: { deviceId: string; deviceName: string; password: string } }>(
+    '/pair/password',
+    async (req, reply) => {
+      const { deviceId, deviceName, password } = req.body ?? {};
+      if (!deviceId || !deviceName || !password) {
+        reply.code(400);
+        return { ok: false, error: 'missing fields' };
+      }
+      if (!settings.adminPasswordHash && !settings.password) {
+        reply.code(403);
+        return { ok: false, error: 'password_not_set' };
+      }
+      const passwordOk =
+        verifyAdminPassword(password, settings.adminPasswordHash) ||
+        (!!settings.password && password === settings.password);
+      const clientIp = req.ip ?? '0.0.0.0';
+      const result = await pairingManager.tryRedeemPassword(
+        passwordOk,
+        deviceId,
+        deviceName,
+        clientIp,
+      );
       if (!result.ok) {
         reply.code(result.error === 'rate_limited' ? 429 : 403);
       }
