@@ -71,34 +71,6 @@ struct MenuBarContent: View {
 
     private var normalSection: some View {
         Group {
-            // App update banner
-            if serverManager.appUpdateAvailable, let latest = serverManager.latestAppVersion {
-                HStack {
-                    Image(systemName: "arrow.up.circle.fill").foregroundColor(.blue)
-                    Text("App update v\(latest) available").foregroundColor(.blue)
-                }
-                .disabled(true)
-                Button("Download App…") {
-                    NSWorkspace.shared.open(serverManager.appReleasePageURL)
-                }
-                Divider()
-            }
-
-            // Server update banner
-            if serverManager.serverUpdateAvailable,
-               let current = serverManager.currentServerVersion,
-               let latest = serverManager.latestServerVersion {
-                HStack {
-                    Image(systemName: "arrow.up.circle.fill").foregroundColor(.orange)
-                    Text("Server v\(current) → v\(latest)").foregroundColor(.orange)
-                }
-                .disabled(true)
-                Button("Update Server…") {
-                    Task { await serverManager.updateServer() }
-                }
-                Divider()
-            }
-
             // Status line: NSImage baked color bypasses NSMenu template recoloring
             Button(action: {}) {
                 HStack(spacing: 5) {
@@ -164,26 +136,7 @@ struct MenuBarContent: View {
 
             Divider()
 
-            Button("Check for Updates…") {
-                Task {
-                    await serverManager.checkForUpdates()
-                    showUpdateResult()
-                }
-            }
-
-            Toggle("Server prerelease channel", isOn: Binding(
-                get: { serverManager.serverPrereleaseChannelEnabled },
-                set: { serverManager.serverPrereleaseChannelEnabled = $0 }
-            ))
-
-            if serverManager.isDevBuild {
-                Text("PawTerm Dev: official app updates are disabled").disabled(true)
-            } else {
-                Toggle("App prerelease channel", isOn: Binding(
-                    get: { serverManager.appPrereleaseChannelEnabled },
-                    set: { serverManager.appPrereleaseChannelEnabled = $0 }
-                ))
-            }
+            updatesMenu
 
             Menu("About PawTerm") {
                 Text(appVersionString).disabled(true)
@@ -318,21 +271,108 @@ struct MenuBarContent: View {
 
     // MARK: - Update result dialog
 
+    private var updatesMenu: some View {
+        Menu("Updates") {
+            Button("Check All…") {
+                Task {
+                    await serverManager.checkForUpdates()
+                    await handleUpdateResult(scope: .all)
+                }
+            }
+            Button("Check Mac App…") {
+                Task {
+                    await serverManager.checkAppUpdateOnly()
+                    await handleUpdateResult(scope: .macApp)
+                }
+            }
+            .disabled(serverManager.isDevBuild)
+            Button("Check Server…") {
+                Task {
+                    await serverManager.checkServerUpdateOnly()
+                    await handleUpdateResult(scope: .server)
+                }
+            }
+            Divider()
+            Menu("Channels") {
+                if serverManager.isDevBuild {
+                    Text("Mac App updates disabled for dev build").disabled(true)
+                } else {
+                    Toggle("Mac App prerelease", isOn: Binding(
+                        get: { serverManager.appPrereleaseChannelEnabled },
+                        set: { serverManager.appPrereleaseChannelEnabled = $0 }
+                    ))
+                }
+                Toggle("Server prerelease", isOn: Binding(
+                    get: { serverManager.serverPrereleaseChannelEnabled },
+                    set: { serverManager.serverPrereleaseChannelEnabled = $0 }
+                ))
+            }
+        }
+    }
+
+    private enum UpdateScope {
+        case all
+        case macApp
+        case server
+    }
+
     @MainActor
-    private func showUpdateResult() {
+    private func handleUpdateResult(scope: UpdateScope) async {
         var parts: [String] = []
-        if serverManager.serverUpdateAvailable,
+        let includeServer = scope == .all || scope == .server
+        let includeMac = scope == .all || scope == .macApp
+
+        if includeServer,
+           serverManager.serverUpdateAvailable,
            let c = serverManager.currentServerVersion, let l = serverManager.latestServerVersion {
             parts.append("Server: v\(c) → v\(l)")
         }
-        if serverManager.appUpdateAvailable, let l = serverManager.latestAppVersion {
-            parts.append("Mac App: v\(l) available")
+        if includeMac,
+           serverManager.appUpdateAvailable,
+           let current = currentMacAppVersion,
+           let latest = serverManager.latestAppVersion {
+            parts.append("Mac App: v\(current) → v\(latest)")
         }
+
         if parts.isEmpty {
-            let ver = serverManager.currentServerVersion.map { " (v\($0))" } ?? ""
-            Alerts.info("Up to Date", "PawTerm Server\(ver) is up to date.")
-        } else {
-            Alerts.info("Updates Available", parts.joined(separator: "\n"))
+            Alerts.info("Up to Date", upToDateMessage(scope: scope))
+            return
+        }
+
+        let confirmed = Alerts.confirm(
+            "Updates Available",
+            parts.joined(separator: "\n"),
+            confirmText: "Update"
+        )
+        guard confirmed else { return }
+
+        if includeServer && serverManager.serverUpdateAvailable {
+            await serverManager.updateServer()
+        }
+        if includeMac && serverManager.appUpdateAvailable {
+            do {
+                try await serverManager.updateMacApp()
+                return
+            } catch {
+                Alerts.info("Mac App Update Failed", error.localizedDescription)
+            }
+        }
+    }
+
+    private var currentMacAppVersion: String? {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    private func upToDateMessage(scope: UpdateScope) -> String {
+        switch scope {
+        case .all:
+            return "Mac App and PawTerm Server are up to date."
+        case .macApp:
+            let version = currentMacAppVersion.map { " v\($0)" } ?? ""
+            return "Mac App\(version) is up to date."
+        case .server:
+            let version = serverManager.currentServerVersion.map { " v\($0)" } ?? ""
+            return "PawTerm Server\(version) is up to date."
         }
     }
 }

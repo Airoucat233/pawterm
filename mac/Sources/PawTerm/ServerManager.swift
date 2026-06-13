@@ -70,6 +70,7 @@ class ServerManager: ObservableObject {
     @Published var appUpdateAvailable: Bool = false
     @Published var latestAppVersion: String? = nil
     @Published var latestAppReleaseTag: String? = nil
+    @Published var latestAppDownloadURL: URL? = nil
     @Published var appUpdateChannel: AppUpdateChannel = .stable
     @Published var serverUpdateChannel: AppUpdateChannel = .stable
     @Published var availableConfigs: [String] = []
@@ -302,6 +303,14 @@ class ServerManager: ObservableObject {
         async let _ = checkAppUpdate()
     }
 
+    func checkServerUpdateOnly() async {
+        await checkServerUpdate()
+    }
+
+    func checkAppUpdateOnly() async {
+        await checkAppUpdate()
+    }
+
     private func checkServerUpdate() async {
         // When running, version is already set by poll() from /health.
         // Only fall back to binary when stopped (and no custom start_command).
@@ -339,6 +348,7 @@ class ServerManager: ObservableObject {
         if isDevBuild {
             latestAppVersion = nil
             latestAppReleaseTag = nil
+            latestAppDownloadURL = nil
             appUpdateAvailable = false
             return
         }
@@ -358,24 +368,26 @@ class ServerManager: ObservableObject {
               let release = parseMacAppRelease(from: data) else {
             latestAppVersion = nil
             latestAppReleaseTag = nil
+            latestAppDownloadURL = nil
             appUpdateAvailable = false
             return
         }
         let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
         latestAppReleaseTag = release.tagName
         latestAppVersion = release.version
-        appUpdateAvailable = release.version != current
+        latestAppDownloadURL = release.downloadURL
+        appUpdateAvailable = Self.compareVersions(release.version, current) == .orderedDescending
     }
 
-    private func parseMacAppRelease(from data: Data) -> (tagName: String, version: String)? {
+    private func parseMacAppRelease(from data: Data) -> (tagName: String, version: String, downloadURL: URL)? {
         switch appUpdateChannel {
         case .stable:
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tagName = json["tag_name"] as? String,
-                  let version = macAppVersion(fromRelease: json) else {
+                  let asset = macAppAsset(fromRelease: json) else {
                 return nil
             }
-            return (tagName, version)
+            return (tagName, asset.version, asset.downloadURL)
         case .prerelease:
             guard let releases = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
                 return nil
@@ -385,21 +397,23 @@ class ServerManager: ObservableObject {
                       (release["prerelease"] as? Bool) == true,
                       let tagName = release["tag_name"] as? String,
                       tagName.hasPrefix("prerelease-v"),
-                      let version = macAppVersion(fromRelease: release) else {
+                      let asset = macAppAsset(fromRelease: release) else {
                     continue
                 }
-                return (tagName, version)
+                return (tagName, asset.version, asset.downloadURL)
             }
             return nil
         }
     }
 
-    private func macAppVersion(fromRelease release: [String: Any]) -> String? {
+    private func macAppAsset(fromRelease release: [String: Any]) -> (version: String, downloadURL: URL)? {
         guard let assets = release["assets"] as? [[String: Any]] else { return nil }
         for asset in assets {
-            guard let name = asset["name"] as? String else { continue }
+            guard let name = asset["name"] as? String,
+                  let rawURL = asset["browser_download_url"] as? String,
+                  let downloadURL = URL(string: rawURL) else { continue }
             if let version = macAppVersion(fromAssetName: name) {
-                return version
+                return (version, downloadURL)
             }
         }
         return nil
@@ -415,11 +429,146 @@ class ServerManager: ObservableObject {
         return String(name[range])
     }
 
+    enum MacAppUpdateError: LocalizedError {
+        case devBuild
+        case noUpdate
+        case noDownloadURL
+        case downloadFailed
+        case unzipFailed
+        case appNotFound
+        case cannotLocateCurrentApp
+        case relaunchFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .devBuild: return "Dev build does not support official Mac App updates."
+            case .noUpdate: return "Mac App is already up to date."
+            case .noDownloadURL: return "Release asset download URL is missing."
+            case .downloadFailed: return "Failed to download Mac App update."
+            case .unzipFailed: return "Failed to unzip Mac App update."
+            case .appNotFound: return "Downloaded archive does not contain PawTerm.app."
+            case .cannotLocateCurrentApp: return "Cannot locate current PawTerm.app."
+            case .relaunchFailed: return "Failed to launch updater."
+            }
+        }
+    }
+
+    func updateMacApp() async throws {
+        if isDevBuild { throw MacAppUpdateError.devBuild }
+        if !appUpdateAvailable { await checkAppUpdate() }
+        guard appUpdateAvailable else { throw MacAppUpdateError.noUpdate }
+        guard let downloadURL = latestAppDownloadURL else { throw MacAppUpdateError.noDownloadURL }
+
+        let previousStatus = status
+        status = .installing("Downloading PawTerm update…")
+        let tmpRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pawterm-mac-update-\(UUID().uuidString)", isDirectory: true)
+        let zipURL = tmpRoot.appendingPathComponent("PawTerm-update.zip")
+        let unzipDir = tmpRoot.appendingPathComponent("unzipped", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unzipDir, withIntermediateDirectories: true)
+
+        let downloaded: URL
+        do {
+            let (fileURL, _) = try await URLSession.shared.download(from: downloadURL)
+            downloaded = fileURL
+            try? FileManager.default.removeItem(at: zipURL)
+            try FileManager.default.moveItem(at: downloaded, to: zipURL)
+        } catch {
+            status = previousStatus
+            throw MacAppUpdateError.downloadFailed
+        }
+
+        status = .installing("Preparing PawTerm update…")
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        unzip.arguments = ["-x", "-k", zipURL.path, unzipDir.path]
+        try unzip.run()
+        unzip.waitUntilExit()
+        guard unzip.terminationStatus == 0 else {
+            status = previousStatus
+            throw MacAppUpdateError.unzipFailed
+        }
+
+        guard let newApp = findAppBundle(named: "PawTerm.app", under: unzipDir) else {
+            status = previousStatus
+            throw MacAppUpdateError.appNotFound
+        }
+        let currentApp = Bundle.main.bundleURL
+        guard currentApp.pathExtension == "app" else {
+            status = previousStatus
+            throw MacAppUpdateError.cannotLocateCurrentApp
+        }
+
+        status = .installing("Installing PawTerm update…")
+        try launchReplacementScript(newApp: newApp, currentApp: currentApp, tmpRoot: tmpRoot)
+        NSApplication.shared.terminate(nil)
+    }
+
+    private func findAppBundle(named name: String, under root: URL) -> URL? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        for case let url as URL in enumerator {
+            if url.lastPathComponent == name && url.pathExtension == "app" {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private func launchReplacementScript(newApp: URL, currentApp: URL, tmpRoot: URL) throws {
+        let scriptURL = tmpRoot.appendingPathComponent("install-update.sh")
+        let script = """
+        #!/bin/zsh
+        set -e
+        sleep 1
+        /bin/rm -rf "\(currentApp.path)"
+        /usr/bin/ditto "\(newApp.path)" "\(currentApp.path)"
+        /usr/bin/xattr -d com.apple.quarantine "\(currentApp.path)" 2>/dev/null || true
+        /usr/bin/open "\(currentApp.path)"
+        /bin/rm -rf "\(tmpRoot.path)"
+        """
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        proc.arguments = [scriptURL.path]
+        do {
+            try proc.run()
+        } catch {
+            throw MacAppUpdateError.relaunchFailed
+        }
+    }
+
+    private static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        func parts(_ value: String) -> [Int] {
+            value
+                .split(separator: "+", maxSplits: 1).first?
+                .split(separator: "-", maxSplits: 1).first?
+                .split(separator: ".")
+                .map { Int($0) ?? 0 } ?? []
+        }
+        let left = parts(lhs)
+        let right = parts(rhs)
+        let count = max(left.count, right.count)
+        for i in 0..<count {
+            let a = i < left.count ? left[i] : 0
+            let b = i < right.count ? right[i] : 0
+            if a < b { return .orderedAscending }
+            if a > b { return .orderedDescending }
+        }
+        return .orderedSame
+    }
+
     // MARK: - Pairing PIN
 
     func requestPairWindow() async -> (pin: String, expiresAt: Int)? {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/api/admin/pair-window") else { return nil }
+              let url = URL(string: "http://127.0.0.1:\(config.port)/api/admin/pair-window") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -434,7 +583,7 @@ class ServerManager: ObservableObject {
 
     func requestAdminLoginCode() async -> String? {
         guard let token = config.token, !token.isEmpty,
-              let url = URL(string: "http://localhost:\(config.port)/api/admin/login-codes") else { return nil }
+              let url = URL(string: "http://127.0.0.1:\(config.port)/api/admin/login-codes") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
