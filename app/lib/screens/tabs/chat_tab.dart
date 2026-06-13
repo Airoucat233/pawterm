@@ -94,6 +94,7 @@ class _ChatSessionRuntime {
   Timer? observeTimer;
   bool busy = false;
   DateTime? busyStartedAt;
+  bool interrupting = false;
   String? error;
   String? boundKey;
   CcStreamMode mode = CcStreamMode.requesting;
@@ -185,6 +186,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   set _busy(bool value) => _runtime.busy = value;
   DateTime? get _busyStartedAt => _runtime.busyStartedAt;
   set _busyStartedAt(DateTime? value) => _runtime.busyStartedAt = value;
+  bool get _interrupting => _runtime.interrupting;
+  set _interrupting(bool value) => _runtime.interrupting = value;
   String? get _error => _runtime.error;
   set _error(String? value) => _runtime.error = value;
   String? get _boundKey => _runtime.boundKey;
@@ -262,16 +265,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   set _unrespondedUserText(String? value) =>
       _runtime.unrespondedUserText = value;
 
-  /// 用户手动收起过的当前审批浮层。消息流里的审批卡仍保留。
-  String? get _dismissedApprovalPopoverId =>
-      _runtime.dismissedApprovalPopoverId;
-  set _dismissedApprovalPopoverId(String? value) =>
-      _runtime.dismissedApprovalPopoverId = value;
-  Set<String> get _notifiedApprovalIds => _runtime.notifiedApprovalIds;
   Map<String, String> get _codexApprovalDecisions =>
       _runtime.codexApprovalDecisions;
-  Set<String> get _presentedApprovalSheetIds =>
-      _runtime.presentedApprovalSheetIds;
 
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
@@ -374,19 +369,74 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (!_scrollController.hasClients || _messages.isEmpty) return;
     final firstVisible = _firstVisibleMessageIndex();
     final start = min(firstVisible - 1, _messages.length - 1);
+    int? targetIndex;
     for (var i = start; i >= 0; i--) {
       final message = _messages[i];
       if (!_isMainUserMessage(message)) continue;
-      final context = _messageKeys[message]?.currentContext;
-      if (context == null) continue;
-      await Scrollable.ensureVisible(
-        context,
-        duration: const Duration(milliseconds: 240),
-        curve: Curves.easeOutCubic,
-        alignment: 0.08,
-      );
-      return;
+      targetIndex = i;
+      break;
     }
+    if (targetIndex == null) return;
+    await _scrollToMessageIndex(targetIndex);
+  }
+
+  Future<void> _scrollToMessageIndex(int targetIndex) async {
+    for (var attempt = 0; attempt < 6; attempt++) {
+      if (!_scrollController.hasClients) return;
+      if (await _alignMessageIndexNearTop(targetIndex)) {
+        return;
+      }
+
+      final position = _scrollController.position;
+      final max = position.maxScrollExtent;
+      final estimate = _messages.length <= 1
+          ? 0.0
+          : max * (targetIndex / (_messages.length - 1));
+      final nextOffset = estimate.clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      await position.animateTo(
+        nextOffset.toDouble(),
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+  }
+
+  RenderBox? _messageRenderBox(BuildContext context) {
+    final object = context.findRenderObject();
+    if (object is RenderBox && object.attached) return object;
+    return null;
+  }
+
+  Future<bool> _alignMessageIndexNearTop(int index) async {
+    if (!_scrollController.hasClients) return false;
+    final message = _messages[index];
+    final context = _messageKeys[message]?.currentContext;
+    if (context == null) return false;
+    final messageBox = _messageRenderBox(context);
+    final viewportContext = _scrollController.position.context.storageContext;
+    final viewportObject = viewportContext.findRenderObject();
+    if (messageBox == null || viewportObject is! RenderBox) return false;
+
+    final messageTop = messageBox.localToGlobal(Offset.zero).dy;
+    final viewportTop = viewportObject.localToGlobal(Offset.zero).dy;
+    final desired = _scrollController.position.pixels +
+        messageTop -
+        viewportTop -
+        (_scrollController.position.viewportDimension * 0.08);
+    final target = desired.clamp(
+      _scrollController.position.minScrollExtent,
+      _scrollController.position.maxScrollExtent,
+    );
+    await _scrollController.animateTo(
+      target.toDouble(),
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
+    );
+    return true;
   }
 
   void _closeSse() {
@@ -474,6 +524,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _connected = true;
         _busy = false;
         _busyStartedAt = null;
+        _interrupting = false;
         _error = null;
       });
       _syncForegroundStreamService();
@@ -601,6 +652,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _observeMode = false;
       _observeHolderDeviceId = null;
       _busy = false;
+      _interrupting = false;
       _error = null;
       _boundKey = key;
       _pendingKey = null;
@@ -1332,6 +1384,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _connected = true;
             _busy = false;
             _busyStartedAt = null;
+            _interrupting = false;
             _mode = CcStreamMode.requesting;
           });
           _syncForegroundStreamService(busy: false);
@@ -1456,6 +1509,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (last is StreamingAssistant) last.stopped = true;
         _busy = false;
         _busyStartedAt = null;
+        _interrupting = false;
         _mode = CcStreamMode.requesting;
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
@@ -1499,6 +1553,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           }
         });
       } else if (msg is ErrorMsg) {
+        _interrupting = false;
         _error = msg.message;
         _messages.add(msg);
         _debugTrack(msg, json);
@@ -1587,7 +1642,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _debugTrack(msg, json);
       }
     });
-    _scheduleCodexApprovalSideEffects();
+    _scheduleCodexApprovalSideEffects(runtime: eventRuntime);
     _publishRuntimeStatus(_runtime);
     if (_isActiveRuntime(_runtime)) _scrollToEnd();
   }
@@ -1877,6 +1932,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           if (!mounted) return;
           void applyFailure() {
             _busy = false;
+            _interrupting = false;
             _error = '$e';
             if (requeueOnFailure) {
               _pending.insert(0, text);
@@ -1939,14 +1995,23 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _interrupt() {
     final session = _runtime.session ?? ref.read(currentSessionProvider);
+    if (_interrupting) return;
     if (_busy && _sessionId != null && _chatApi != null && session != null) {
       final uuid = _sessionId!;
       final api = _chatApi!;
-      unawaited(api.interrupt(uuid, agent: session.agent).catchError((error) {
+      setState(() {
+        _interrupting = true;
+        _error = null;
+      });
+      unawaited(api.interrupt(uuid, agent: session.agent).then((_) {
+        if (!mounted) return;
+        setState(() => _interrupting = false);
+      }).catchError((error) {
         if (!mounted) return;
         if (error is ChatApiException && error.status == 404) {
           _closeSse();
           setState(() {
+            _interrupting = false;
             _busy = false;
             _busyStartedAt = null;
             _mode = CcStreamMode.requesting;
@@ -1958,7 +2023,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           });
           _syncForegroundStreamService(session: session, busy: false);
           unawaited(_refreshActiveRunState());
+          return;
         }
+        setState(() {
+          _interrupting = false;
+          _error = '$error';
+        });
       }));
     }
   }
@@ -2019,6 +2089,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _unrespondedUserText = null;
       _busy = false;
       _busyStartedAt = null;
+      _interrupting = false;
       _mode = CcStreamMode.requesting;
       _currentBlockKind = null;
       _thinkingStartedAt = null;
@@ -2078,26 +2149,45 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final uuid = runtime.sessionId;
     final api = runtime.chatApi;
     if (uuid == null || api == null) return;
-    runtime.notifiedApprovalIds.remove(requestId);
-    runtime.codexApprovalDecisions[requestId] = decision;
+    void markAnswered() {
+      runtime.notifiedApprovalIds.remove(requestId);
+      runtime.codexApprovalDecisions[requestId] = decision;
+      runtime.dismissedApprovalPopoverId = requestId;
+    }
+
+    if (mounted && _isActiveRuntime(runtime)) {
+      setState(markAnswered);
+    } else {
+      markAnswered();
+    }
     ref
         .read(inAppChatNotificationsProvider.notifier)
         .dismissApprovalsForRequest(requestId);
-    if (mounted) {
-      setState(() => _dismissedApprovalPopoverId = requestId);
-    }
-    unawaited(api.answerCodexApproval(uuid, requestId, decision));
+    unawaited(api.answerCodexApproval(uuid, requestId, decision).catchError(
+      (Object error) {
+        void markError() {
+          runtime.error = '$error';
+        }
+
+        if (mounted && _isActiveRuntime(runtime)) {
+          setState(markError);
+        } else {
+          markError();
+        }
+      },
+    ));
   }
 
   void _notifyCodexApprovalIfNeeded(
+    _ChatSessionRuntime runtime,
     _PendingCodexApproval approval,
     Connection config,
   ) {
-    final uuid = _sessionId;
-    final session = _runtime.session ?? ref.read(currentSessionProvider);
+    final uuid = runtime.sessionId;
+    final session = runtime.session;
     if (uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
-    if (!_notifiedApprovalIds.add(requestId)) return;
+    if (!runtime.notifiedApprovalIds.add(requestId)) return;
     final payload = _completionPayloadFor(session);
     final title = _approvalNotificationTitle(session, approval.toolUse.name);
     final body = _approvalNotificationBody(approval.toolUse);
@@ -2190,27 +2280,37 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     return toolResults;
   }
 
-  void _scheduleCodexApprovalSideEffects() {
+  void _scheduleCodexApprovalSideEffects({_ChatSessionRuntime? runtime}) {
+    final target = runtime ?? _runtime;
     final config = ref.read(activeConnectionProvider);
-    final activeApproval = _latestPendingCodexApproval(_buildToolResultIndex());
-    if (activeApproval == null || config == null || _sessionId == null) return;
+    final activeApproval = _withRuntime(
+      target,
+      () => _latestPendingCodexApproval(_buildToolResultIndex()),
+    );
+    if (activeApproval == null || config == null || target.sessionId == null) {
+      return;
+    }
     if (!_appInForeground) {
-      _notifyCodexApprovalIfNeeded(activeApproval, config);
+      _notifyCodexApprovalIfNeeded(target, activeApproval, config);
       return;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _notifyCodexApprovalIfNeeded(activeApproval, config);
-      _showCodexApprovalSheetIfNeeded(activeApproval);
+      _notifyCodexApprovalIfNeeded(target, activeApproval, config);
+      if (_isActiveRuntime(target)) {
+        _showCodexApprovalSheetIfNeeded(target, activeApproval);
+      }
     });
   }
 
   Future<void> _showCodexApprovalSheetIfNeeded(
+    _ChatSessionRuntime runtime,
     _PendingCodexApproval approval,
   ) async {
     final requestId = approval.toolUse.id;
-    if (_dismissedApprovalPopoverId == requestId) return;
-    if (!_presentedApprovalSheetIds.add(requestId)) return;
+    if (!_isActiveRuntime(runtime)) return;
+    if (runtime.dismissedApprovalPopoverId == requestId) return;
+    if (!runtime.presentedApprovalSheetIds.add(requestId)) return;
 
     FocusManager.instance.primaryFocus?.unfocus();
     final submitted = await showModalBottomSheet<bool>(
@@ -2223,19 +2323,31 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         toolUse: approval.toolUse,
         result: approval.result,
         onSubmit: (id, decision) {
-          _sendCodexApproval(id, decision);
+          _sendCodexApprovalForRuntime(runtime, id, decision);
           Navigator.of(sheetContext).pop(true);
         },
       ),
     );
     if (!mounted) return;
+    void markDismissed() {
+      runtime.dismissedApprovalPopoverId = requestId;
+      if (submitted != true) {
+        runtime.presentedApprovalSheetIds.remove(requestId);
+      }
+    }
+
     if (submitted == true) {
-      setState(() => _dismissedApprovalPopoverId = requestId);
+      if (_isActiveRuntime(runtime)) {
+        setState(markDismissed);
+      } else {
+        markDismissed();
+      }
     } else {
-      setState(() {
-        _dismissedApprovalPopoverId = requestId;
-        _presentedApprovalSheetIds.remove(requestId);
-      });
+      if (_isActiveRuntime(runtime)) {
+        setState(markDismissed);
+      } else {
+        markDismissed();
+      }
     }
   }
 
@@ -2290,7 +2402,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (block is! ToolUseBlock) continue;
         if (!_isCodexApprovalRequestName(block.name)) continue;
         final result = toolResults[block.id];
-        if (result == null && block.id != _dismissedApprovalPopoverId) {
+        if (result == null && block.id != _runtime.dismissedApprovalPopoverId) {
           return _PendingCodexApproval(toolUse: block, result: result);
         }
         return null;
@@ -2573,6 +2685,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             focusNode: _textFocusNode,
             connected: _connected,
             busy: _busy,
+            interrupting: _interrupting,
             hasText: _hasText,
             attachments: _attachments,
             attachmentsAllReady: _attachmentsAllReady,
@@ -3250,6 +3363,7 @@ class _Composer extends ConsumerWidget {
   final FocusNode focusNode;
   final bool connected;
   final bool busy;
+  final bool interrupting;
   final bool hasText;
   final List<_AttachmentState> attachments;
   final bool attachmentsAllReady;
@@ -3273,6 +3387,7 @@ class _Composer extends ConsumerWidget {
     required this.focusNode,
     required this.connected,
     required this.busy,
+    required this.interrupting,
     required this.hasText,
     required this.attachments,
     required this.attachmentsAllReady,
@@ -3373,6 +3488,7 @@ class _Composer extends ConsumerWidget {
                   const SizedBox(width: 8),
                   _SendOrStopButton(
                     busy: busy,
+                    interrupting: interrupting,
                     canSend: canSend,
                     canQueue: canQueue,
                     onSubmit: onSubmit,
@@ -3440,15 +3556,15 @@ class _Composer extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: 4),
-                  if (agent != AgentKind.codex) ...[
-                    _ModelPickerButton(
-                      agent: agent,
-                      model: _modelForRuntime(agent, model, runtime),
-                      chatApi: chatApi,
-                      onSwitchModel: onSwitchModel,
-                    ),
-                    const SizedBox(width: 4),
-                  ],
+                  _ModelPickerButton(
+                    agent: agent,
+                    model: _modelForRuntime(agent, model, runtime),
+                    runtime: runtime,
+                    chatApi: chatApi,
+                    onSwitchModel: onSwitchModel,
+                    onPatchRuntime: onPatchRuntime,
+                  ),
+                  const SizedBox(width: 4),
                   _RuntimeSettingsButton(
                     agent: agent,
                     runtime: runtime,
@@ -3486,13 +3602,17 @@ class _Composer extends ConsumerWidget {
 class _ModelPickerButton extends StatelessWidget {
   final AgentKind agent;
   final ModelOption model;
+  final Map<String, dynamic> runtime;
   final ChatApi? chatApi;
   final void Function(ModelOption) onSwitchModel;
+  final void Function(Map<String, dynamic>) onPatchRuntime;
   const _ModelPickerButton({
     required this.agent,
     required this.model,
+    required this.runtime,
     required this.chatApi,
     required this.onSwitchModel,
+    required this.onPatchRuntime,
   });
 
   Future<void> _open(BuildContext context) async {
@@ -3521,9 +3641,19 @@ class _ModelPickerButton extends StatelessWidget {
         current: current,
         models: models,
         providerLabel: serverModels?.providerLabel,
+        reasoningEffort:
+            agent == AgentKind.codex ? _reasoningEffort(runtime) : null,
+        onPickReasoningEffort: agent == AgentKind.codex
+            ? (value) => onPatchRuntime({'reasoning_effort': value})
+            : null,
       ),
     );
     if (picked != null) onSwitchModel(picked);
+  }
+
+  String _reasoningEffort(Map<String, dynamic> runtime) {
+    final value = (runtime['reasoning_effort'] ?? 'medium').toString().trim();
+    return value.isEmpty ? 'medium' : value;
   }
 
   ModelOption _currentFromServer(ModelOption fallback,
@@ -3638,7 +3768,7 @@ class _RuntimeSettingsButton extends StatelessWidget {
   }
 }
 
-enum _RuntimeSettingsPage { overview, permissions, codexModel }
+enum _RuntimeSettingsPage { overview, permissions }
 
 class _CodexPermissionMode {
   final String label;
@@ -3679,6 +3809,48 @@ const _codexPermissionModes = <_CodexPermissionMode>[
   ),
 ];
 
+const _codexSandboxOptions = <_RuntimeOption>[
+  _RuntimeOption(
+    value: 'read-only',
+    label: 'read-only',
+    description: '只读沙箱，不允许直接写入文件',
+    icon: Icons.visibility_outlined,
+  ),
+  _RuntimeOption(
+    value: 'workspace-write',
+    label: 'workspace-write',
+    description: '允许写入工作区，工作区外仍受限',
+    icon: Icons.folder_copy_outlined,
+  ),
+  _RuntimeOption(
+    value: 'danger-full-access',
+    label: 'danger-full-access',
+    description: '不限制文件系统访问范围',
+    icon: Icons.warning_amber_rounded,
+  ),
+];
+
+const _codexApprovalPolicyOptions = <_RuntimeOption>[
+  _RuntimeOption(
+    value: 'untrusted',
+    label: 'untrusted',
+    description: '更保守，更多操作需要你确认',
+    icon: Icons.lock_outline_rounded,
+  ),
+  _RuntimeOption(
+    value: 'on-request',
+    label: 'on-request',
+    description: '按需请求确认，适合日常使用',
+    icon: Icons.rule_folder_outlined,
+  ),
+  _RuntimeOption(
+    value: 'never',
+    label: 'never',
+    description: '不主动请求审批，适合完全信任的环境',
+    icon: Icons.no_encryption_gmailerrorred_outlined,
+  ),
+];
+
 _CodexPermissionMode? _codexPermissionModeFor(
   String sandbox,
   String approvalPolicy,
@@ -3715,14 +3887,6 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
   late Map<String, dynamic> _runtime = _normalizeRuntime(widget.runtime);
   late CcPermissionMode _permissionMode = widget.permissionMode;
   _RuntimeSettingsPage _page = _RuntimeSettingsPage.overview;
-  ServerModels? _codexModels;
-  bool _loadingCodexModels = false;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_loadCodexModels());
-  }
 
   Map<String, dynamic> _normalizeRuntime(Map<String, dynamic> value) {
     final next = Map<String, dynamic>.from(value);
@@ -3735,22 +3899,6 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
           (next['reasoning_effort'] ?? 'medium').toString();
     }
     return next;
-  }
-
-  Future<void> _loadCodexModels() async {
-    if (widget.agent != AgentKind.codex || widget.chatApi == null) return;
-    setState(() => _loadingCodexModels = true);
-    try {
-      final models = await widget.chatApi!.fetchModels(agent: AgentKind.codex);
-      if (!mounted) return;
-      setState(() {
-        _codexModels = models;
-        _loadingCodexModels = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loadingCodexModels = false);
-    }
   }
 
   void _patchRuntime(Map<String, dynamic> patch) {
@@ -3772,10 +3920,6 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
     if (oldWidget.permissionMode != widget.permissionMode) {
       _permissionMode = widget.permissionMode;
     }
-    if (oldWidget.chatApi != widget.chatApi ||
-        oldWidget.agent != widget.agent) {
-      unawaited(_loadCodexModels());
-    }
   }
 
   @override
@@ -3789,23 +3933,17 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
     final title = switch (_page) {
       _RuntimeSettingsPage.overview => rootTitle,
       _RuntimeSettingsPage.permissions => '权限设置',
-      _RuntimeSettingsPage.codexModel => '模型与推理强度',
     };
     final icon = switch (_page) {
       _RuntimeSettingsPage.permissions => Icons.shield_outlined,
-      _RuntimeSettingsPage.codexModel => Icons.auto_awesome_outlined,
       _ => Icons.tune_rounded,
     };
     return PopScope(
-      canPop: _page == _RuntimeSettingsPage.overview,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _page != _RuntimeSettingsPage.overview) {
-          setState(() => _page = _RuntimeSettingsPage.overview);
-        }
-      },
+      canPop: true,
       child: Container(
         height: 470,
         margin: const EdgeInsets.all(8),
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: t.surface,
           borderRadius: BorderRadius.circular(18),
@@ -3838,31 +3976,32 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
               ),
               Divider(color: t.borderSubt, height: 0.5),
               Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 220),
-                  transitionBuilder: (child, animation) {
-                    final enteringOverview =
-                        child.key == const ValueKey('overview');
-                    final begin = enteringOverview
-                        ? const Offset(-1, 0)
-                        : const Offset(1, 0);
-                    return SlideTransition(
-                      position: Tween<Offset>(
-                        begin: begin,
-                        end: Offset.zero,
-                      ).animate(CurvedAnimation(
-                        parent: animation,
-                        curve: Curves.easeOutCubic,
-                      )),
-                      child: FadeTransition(opacity: animation, child: child),
-                    );
-                  },
-                  child: switch (_page) {
-                    _RuntimeSettingsPage.permissions =>
-                      _runtimePermissionPage(),
-                    _RuntimeSettingsPage.codexModel => _codexModelPage(),
-                    _RuntimeSettingsPage.overview => _runtimeOverviewPage(),
-                  },
+                child: ClipRect(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    transitionBuilder: (child, animation) {
+                      final enteringOverview =
+                          child.key == const ValueKey('overview');
+                      final begin = enteringOverview
+                          ? const Offset(-1, 0)
+                          : const Offset(1, 0);
+                      return SlideTransition(
+                        position: Tween<Offset>(
+                          begin: begin,
+                          end: Offset.zero,
+                        ).animate(CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                        )),
+                        child: FadeTransition(opacity: animation, child: child),
+                      );
+                    },
+                    child: switch (_page) {
+                      _RuntimeSettingsPage.permissions =>
+                        _runtimePermissionPage(),
+                      _RuntimeSettingsPage.overview => _runtimeOverviewPage(),
+                    },
+                  ),
                 ),
               ),
             ],
@@ -3878,13 +4017,6 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
         key: const ValueKey('overview'),
         padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
         children: [
-          _RuntimeActionRow(
-            icon: Icons.auto_awesome_outlined,
-            title: '模型',
-            value: '${_codexModelLabel()} · ${_effortLabel(_codexEffort())}',
-            onTap: () =>
-                setState(() => _page = _RuntimeSettingsPage.codexModel),
-          ),
           _RuntimeActionRow(
             icon: Icons.rule_folder_outlined,
             title: '权限',
@@ -3950,52 +4082,11 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
     );
   }
 
-  Widget _codexModelPage() {
-    return _CodexRuntimeModelPage(
-      key: const ValueKey('codexModel'),
-      runtimeModel: (_runtime['model'] ?? '').toString().trim(),
-      reasoningEffort: _codexEffort(),
-      serverModels: _codexModels,
-      loading: _loadingCodexModels,
-      onPatchRuntime: _patchRuntime,
-    );
-  }
-
-  String _codexEffort() =>
-      (_runtime['reasoning_effort'] ?? 'medium').toString().trim().isEmpty
-          ? 'medium'
-          : (_runtime['reasoning_effort'] ?? 'medium').toString().trim();
-
-  String _codexModelLabel() {
-    final runtimeModel = (_runtime['model'] ?? '').toString().trim();
-    final current = runtimeModel.isNotEmpty
-        ? runtimeModel
-        : (_codexModels?.current ?? '').trim();
-    if (current.isEmpty) {
-      return _loadingCodexModels ? '读取模型中' : 'Codex 配置模型';
-    }
-    final serverModels = _codexModels?.models ?? const <ServerModelInfo>[];
-    for (final model in serverModels) {
-      if (model.id == current) {
-        return model.label.trim().isNotEmpty ? model.label : model.id;
-      }
-    }
-    return ModelOption.custom(current).label;
-  }
-
   String _permissionLabel(CcPermissionMode m) => switch (m) {
         CcPermissionMode.defaultMode => 'Claude 配置策略',
         CcPermissionMode.acceptEdits => 'Accept Edits',
         CcPermissionMode.plan => 'Plan',
         CcPermissionMode.bypass => 'Bypass',
-      };
-
-  String _effortLabel(String value) => switch (value) {
-        'low' => 'low',
-        'medium' => 'medium',
-        'high' => 'high',
-        'xhigh' => 'xhigh',
-        _ => value,
       };
 
   String _codexPermissionSummary(String sandbox, String approvalPolicy) {
@@ -4131,7 +4222,7 @@ class _CodexRuntimePermissionPage extends StatelessWidget {
       key: const ValueKey('permission'),
       padding: const EdgeInsets.fromLTRB(0, 6, 0, 12),
       children: [
-        _InlineSectionLabel(label: 'Codex /permissions', t: t),
+        _InlineSectionLabel(label: 'Preset', t: t),
         for (var i = 0; i < _codexPermissionModes.length; i++) ...[
           if (i > 0)
             Divider(
@@ -4173,221 +4264,21 @@ class _CodexRuntimePermissionPage extends StatelessWidget {
             onTap: () {},
           ),
         ],
-      ],
-    );
-  }
-}
-
-class _CodexRuntimeModelPage extends StatefulWidget {
-  final String runtimeModel;
-  final String reasoningEffort;
-  final ServerModels? serverModels;
-  final bool loading;
-  final void Function(Map<String, dynamic>) onPatchRuntime;
-
-  const _CodexRuntimeModelPage({
-    super.key,
-    required this.runtimeModel,
-    required this.reasoningEffort,
-    required this.serverModels,
-    required this.loading,
-    required this.onPatchRuntime,
-  });
-
-  @override
-  State<_CodexRuntimeModelPage> createState() => _CodexRuntimeModelPageState();
-}
-
-class _CodexRuntimeModelPageState extends State<_CodexRuntimeModelPage> {
-  bool _showCustomInput = false;
-  final _customController = TextEditingController();
-
-  @override
-  void dispose() {
-    _customController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    final models =
-        widget.serverModels?.models.map(ModelOption.fromServer).toList() ??
-            const <ModelOption>[];
-    final selectedModel = widget.runtimeModel.isNotEmpty
-        ? widget.runtimeModel
-        : (widget.serverModels?.current ?? '').trim();
-    final currentModels = models.isNotEmpty
-        ? models
-        : selectedModel.isNotEmpty
-            ? <ModelOption>[ModelOption.custom(selectedModel)]
-            : const <ModelOption>[];
-
-    return ListView(
-      key: const ValueKey('codexModel'),
-      padding: const EdgeInsets.fromLTRB(0, 6, 0, 12),
-      children: [
-        _InlineSectionLabel(label: '模型', t: t),
-        if (widget.loading && currentModels.isEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-            child: Text('读取 Codex 模型中',
-                style: TextStyle(color: t.textMuted, fontSize: 13)),
-          )
-        else if (currentModels.isEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-            child: Text('Codex 配置模型',
-                style: TextStyle(color: t.textMuted, fontSize: 13)),
-          )
-        else
-          for (var i = 0; i < currentModels.length; i++) ...[
-            if (i > 0)
-              Divider(
-                color: t.borderSubt,
-                height: 0.5,
-                indent: 16,
-                endIndent: 16,
-              ),
-            _ModelRow(
-              model: currentModels[i],
-              selected: currentModels[i].id == selectedModel,
-              onTap: () =>
-                  widget.onPatchRuntime({'model': currentModels[i].id}),
-            ),
-          ],
-        Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
-        if (!_showCustomInput)
-          InkWell(
-            onTap: () => setState(() => _showCustomInput = true),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-              child: Row(
-                children: [
-                  Container(
-                    width: 18,
-                    height: 18,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: t.border, width: 1.5),
-                    ),
-                    child: Icon(Icons.add, size: 11, color: t.textDim),
-                  ),
-                  const SizedBox(width: 12),
-                  Text('自定义 Model ID',
-                      style: TextStyle(color: t.textMuted, fontSize: 14)),
-                ],
-              ),
-            ),
-          )
-        else
-          _CustomModelInput(
-            controller: _customController,
-            hintText: 'e.g. gpt-5.5',
-            onSubmit: (id) {
-              widget.onPatchRuntime({'model': id});
-              setState(() => _showCustomInput = false);
-            },
-          ),
-        Divider(color: t.borderSubt, height: 16),
-        _InlineSectionLabel(label: '推理强度', t: t),
+        Divider(color: t.borderSubt, height: 20),
+        _InlineSectionLabel(label: '高级设置 / sandbox', t: t),
         _CodexRuntimeOptionList(
-          value: widget.reasoningEffort,
-          options: const [
-            _RuntimeOption(
-              value: 'low',
-              label: 'low',
-              description: '更快响应，适合轻量修改',
-              icon: Icons.speed_rounded,
-            ),
-            _RuntimeOption(
-              value: 'medium',
-              label: 'medium',
-              description: '均衡速度和推理质量',
-              icon: Icons.tune_rounded,
-            ),
-            _RuntimeOption(
-              value: 'high',
-              label: 'high',
-              description: '更强推理，适合复杂代码任务',
-              icon: Icons.psychology_alt_outlined,
-            ),
-          ],
-          onPick: (v) => widget.onPatchRuntime({'reasoning_effort': v}),
+          value: sandbox,
+          options: _codexSandboxOptions,
+          onPick: (value) => onPatchRuntime({'sandbox': value}),
+        ),
+        Divider(color: t.borderSubt, height: 20),
+        _InlineSectionLabel(label: '高级设置 / approval_policy', t: t),
+        _CodexRuntimeOptionList(
+          value: approvalPolicy,
+          options: _codexApprovalPolicyOptions,
+          onPick: (value) => onPatchRuntime({'approval_policy': value}),
         ),
       ],
-    );
-  }
-}
-
-class _CustomModelInput extends StatelessWidget {
-  final TextEditingController controller;
-  final String hintText;
-  final ValueChanged<String> onSubmit;
-
-  const _CustomModelInput({
-    required this.controller,
-    required this.hintText,
-    required this.onSubmit,
-  });
-
-  void _submit() {
-    final id = controller.text.trim();
-    if (id.isNotEmpty) onSubmit(id);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: controller,
-              autofocus: true,
-              style: TextStyle(
-                fontSize: 13,
-                color: t.text,
-                fontFamily: 'monospace',
-              ),
-              decoration: InputDecoration(
-                hintText: hintText,
-                hintStyle: TextStyle(fontSize: 12, color: t.textDim),
-                isDense: true,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: t.border),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: t.border),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: t.accent),
-                ),
-              ),
-              onSubmitted: (_) => _submit(),
-            ),
-          ),
-          const SizedBox(width: 8),
-          GestureDetector(
-            onTap: _submit,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: t.accent,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.check, size: 16, color: Colors.white),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -4536,12 +4427,14 @@ class _CodexRuntimeOptionRow extends StatelessWidget {
 /// - busy=true, canQueue=false → 停止方块
 class _SendOrStopButton extends StatefulWidget {
   final bool busy;
+  final bool interrupting;
   final bool canSend;
   final bool canQueue;
   final VoidCallback onSubmit;
   final VoidCallback onStop;
   const _SendOrStopButton({
     required this.busy,
+    required this.interrupting,
     required this.canSend,
     required this.canQueue,
     required this.onSubmit,
@@ -4565,7 +4458,18 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
     final Color fg;
     final Widget icon;
 
-    if (widget.busy && widget.canQueue) {
+    if (widget.interrupting) {
+      bg = dark ? t.text : const Color(0xFF101828);
+      fg = dark ? const Color(0xFF0B1210) : Colors.white;
+      icon = SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          valueColor: AlwaysStoppedAnimation<Color>(fg),
+        ),
+      );
+    } else if (widget.busy && widget.canQueue) {
       // 排队模式：accent 色背景 + 上箭头
       bg = t.accent;
       fg = Colors.white;
@@ -4593,7 +4497,9 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
 
     // 点击行为
     final VoidCallback? onTap;
-    if (widget.busy) {
+    if (widget.interrupting) {
+      onTap = null;
+    } else if (widget.busy) {
       onTap = widget.canQueue ? widget.onSubmit : widget.onStop;
     } else {
       onTap = widget.canSend ? widget.onSubmit : null;
@@ -4601,11 +4507,16 @@ class _SendOrStopButtonState extends State<_SendOrStopButton> {
 
     return GestureDetector(
       onTapDown: (_) {
+        if (onTap == null) return;
         HapticFeedback.lightImpact();
         setState(() => _pressed = true);
       },
-      onTapUp: (_) => setState(() => _pressed = false),
-      onTapCancel: () => setState(() => _pressed = false),
+      onTapUp: (_) {
+        if (_pressed) setState(() => _pressed = false);
+      },
+      onTapCancel: () {
+        if (_pressed) setState(() => _pressed = false);
+      },
       onTap: onTap,
       child: AnimatedScale(
         scale: _pressed ? 0.96 : 1.0,
@@ -4647,8 +4558,15 @@ class _ModelSheet extends StatefulWidget {
   final ModelOption current;
   final List<ModelOption> models;
   final String? providerLabel;
-  const _ModelSheet(
-      {required this.current, required this.models, this.providerLabel});
+  final String? reasoningEffort;
+  final ValueChanged<String>? onPickReasoningEffort;
+  const _ModelSheet({
+    required this.current,
+    required this.models,
+    this.providerLabel,
+    this.reasoningEffort,
+    this.onPickReasoningEffort,
+  });
 
   @override
   State<_ModelSheet> createState() => _ModelSheetState();
@@ -4657,6 +4575,7 @@ class _ModelSheet extends StatefulWidget {
 class _ModelSheetState extends State<_ModelSheet> {
   bool _showCustomInput = false;
   final _customController = TextEditingController();
+  late String? _reasoningEffort = widget.reasoningEffort;
 
   @override
   void dispose() {
@@ -4827,6 +4746,39 @@ class _ModelSheetState extends State<_ModelSheet> {
                   ],
                 ),
               ),
+            if (widget.reasoningEffort != null &&
+                widget.onPickReasoningEffort != null) ...[
+              Divider(
+                  color: t.borderSubt, height: 16, indent: 16, endIndent: 16),
+              _InlineSectionLabel(label: '推理强度', t: t),
+              _CodexRuntimeOptionList(
+                value: _reasoningEffort!,
+                options: const [
+                  _RuntimeOption(
+                    value: 'low',
+                    label: 'low',
+                    description: '更快响应，适合轻量修改',
+                    icon: Icons.speed_rounded,
+                  ),
+                  _RuntimeOption(
+                    value: 'medium',
+                    label: 'medium',
+                    description: '均衡速度和推理质量',
+                    icon: Icons.tune_rounded,
+                  ),
+                  _RuntimeOption(
+                    value: 'high',
+                    label: 'high',
+                    description: '更强推理，适合复杂代码任务',
+                    icon: Icons.psychology_alt_outlined,
+                  ),
+                ],
+                onPick: (value) {
+                  setState(() => _reasoningEffort = value);
+                  widget.onPickReasoningEffort!(value);
+                },
+              ),
+            ],
             const SizedBox(height: 6),
           ],
         ),
