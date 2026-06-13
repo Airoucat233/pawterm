@@ -81,7 +81,7 @@ function TokenGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get('admin_login_code');
-    if (!code || token) return;
+    if (!code) return;
 
     let alive = true;
     setLoading(true);
@@ -103,7 +103,7 @@ function TokenGate({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [token, setToken]);
+  }, [setToken]);
 
   if (token) return <>{children}</>;
 

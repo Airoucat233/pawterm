@@ -225,6 +225,11 @@ class Strings {
   // New single-flow pairing strings
   final String pairSheetSuccess;
   final String pairSheetUsePinInstead;
+  final String pairSheetUsePasswordInstead;
+  final String pairSheetPasswordHint;
+  final String pairSheetPasswordLabel;
+  final String pairSheetBadPassword;
+  final String pairSheetPasswordNotSet;
   final String pairSheetDone;
   final String pairSheetNameLabel;
   final String pairSheetScanQr;
@@ -464,6 +469,11 @@ class Strings {
     required this.pairSheetAutoCancel,
     required this.pairSheetSuccess,
     required this.pairSheetUsePinInstead,
+    required this.pairSheetUsePasswordInstead,
+    required this.pairSheetPasswordHint,
+    required this.pairSheetPasswordLabel,
+    required this.pairSheetBadPassword,
+    required this.pairSheetPasswordNotSet,
     required this.pairSheetDone,
     required this.pairSheetNameLabel,
     required this.pairSheetScanQr,
@@ -697,6 +707,13 @@ const Strings stringsEn = Strings(
   pairSheetAutoCancel: 'Cancel',
   pairSheetSuccess: 'Connected!',
   pairSheetUsePinInstead: 'Use PIN instead',
+  pairSheetUsePasswordInstead: 'Use server password',
+  pairSheetPasswordHint:
+      'Use the server password set with pawterm-server password set',
+  pairSheetPasswordLabel: 'Server password',
+  pairSheetBadPassword: 'Wrong server password',
+  pairSheetPasswordNotSet:
+      'No server password is set. Set one on your computer first.',
   pairSheetDone: 'Done',
   pairSheetNameLabel: 'Name',
   pairSheetScanQr: 'Scan QR code',
@@ -942,6 +959,11 @@ const Strings stringsZh = Strings(
   pairSheetAutoCancel: '取消',
   pairSheetSuccess: '连接成功！',
   pairSheetUsePinInstead: '使用 PIN 配对',
+  pairSheetUsePasswordInstead: '使用服务器密码',
+  pairSheetPasswordHint: '使用 pawterm-server password set 设置的服务器密码',
+  pairSheetPasswordLabel: '服务器密码',
+  pairSheetBadPassword: '服务器密码错误',
+  pairSheetPasswordNotSet: '这台服务器还没有设置连接密码，请先在电脑上设置',
   pairSheetDone: '完成',
   pairSheetNameLabel: '名称',
   pairSheetScanQr: '扫描二维码',

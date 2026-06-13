@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/build_defaults.dart';
+import 'connection_resolver.dart';
 import 'lan_scanner.dart';
 import 'server_config.dart';
 
@@ -89,16 +90,14 @@ class ReconnectNotifier extends StateNotifier<ReconnectState> {
         state = ReconnectState(
             status: ReconnectStatus.found, updatedConnectionId: foundId);
       } else {
-        // Fallback: probe recentHosts for each paired connection
+        // Fallback: probe full recent URLs first so https connections do not
+        // get downgraded to http by legacy host-only reconnect.
         for (final conn in paired) {
-          if (conn.recentHosts.isEmpty) continue;
-          final liveHost =
-              await LanScanner.probeRecentHosts(conn.recentHosts, conn.port);
-          if (liveHost != null) {
-            final freshUrl = 'http://$liveHost:${conn.port}';
+          final resolved = await const ConnectionResolver().resolve(conn);
+          if (resolved != null) {
             await _ref
                 .read(connectionsProvider.notifier)
-                .updateUrl(conn.id, freshUrl);
+                .updateUrl(conn.id, resolved.url);
             foundId = conn.id;
             break;
           }

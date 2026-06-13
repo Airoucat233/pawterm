@@ -13,6 +13,7 @@ class LanScanResult {
   final String name;
   final String host;
   final int port;
+  final String scheme;
   final String version;
   final bool pairingOpen;
   bool alreadyPaired; // mutable so caller can fill it
@@ -22,12 +23,13 @@ class LanScanResult {
     required this.name,
     required this.host,
     required this.port,
+    this.scheme = 'http',
     required this.version,
     required this.pairingOpen,
     this.alreadyPaired = false,
   });
 
-  String get httpBase => 'http://$host:$port';
+  String get httpBase => '$scheme://$host:$port';
 }
 
 class LanScanner {

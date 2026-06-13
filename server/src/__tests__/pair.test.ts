@@ -162,6 +162,28 @@ describe('PairingManager', () => {
     });
   });
 
+  describe('tryRedeemPassword', () => {
+    it('issues a device token when the server password is valid', async () => {
+      const result = await pairingManager.tryRedeemPassword(true, 'dev5', 'Travel Phone', '7.7.7.7');
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.deviceToken).toMatch(/^dt-/);
+        expect(result.serverId).toBe('test-server-uuid');
+      }
+      expect(settings.pairedDevices[0]!.deviceId).toBe('dev5');
+    });
+
+    it('rate limits repeated bad server password attempts by IP', async () => {
+      for (let i = 0; i < 5; i++) {
+        const result = await pairingManager.tryRedeemPassword(false, 'dev5', 'Travel Phone', '8.8.8.8');
+        expect(result).toEqual({ ok: false, error: 'bad_password' });
+      }
+
+      const result = await pairingManager.tryRedeemPassword(true, 'dev5', 'Travel Phone', '8.8.8.8');
+      expect(result).toEqual({ ok: false, error: 'rate_limited' });
+    });
+  });
+
   describe('revokeDevice', () => {
     it('removes device from pairedDevices', async () => {
       await pairingManager.issueDeviceToken('dev3', 'Watch');

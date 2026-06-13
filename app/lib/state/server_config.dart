@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'connection_url.dart';
+
 /// Single model replacing the former ServerEntry + PairedServer split.
 /// [serverId] non-null means the connection was established via PIN/QR pairing.
 /// Manual (unauthenticated) connections have serverId == null.
@@ -14,10 +16,11 @@ class Connection {
   final String id; // local UUID, list key
   final String name; // user-editable display name
   final String emoji;
-  final String url; // http://host:port — single source of truth for address
+  final String url; // scheme://host:port — single source of truth for address
   final String? token; // device token from pairing (null = no auth)
   final String? serverId; // stable server identity; null = manually added
   final List<String> recentHosts; // past IPs for cross-network reconnect
+  final List<String> recentUrls; // past full base URLs for reconnect
   final DateTime? lastConnected;
   final DateTime? lastSeen;
 
@@ -29,6 +32,7 @@ class Connection {
     this.token,
     this.serverId,
     this.recentHosts = const [],
+    this.recentUrls = const [],
     this.lastConnected,
     this.lastSeen,
   });
@@ -37,7 +41,7 @@ class Connection {
 
   String get httpBase => url;
   String get apiBase => '${url.replaceFirst(RegExp(r'/$'), '')}/api';
-  String get wsBase => url.replaceFirst(RegExp(r'^http'), 'ws');
+  String get wsBase => webSocketBaseForHttpBase(url);
   String get host => Uri.parse(url).host;
   int get port => Uri.parse(url).port;
 
@@ -52,6 +56,7 @@ class Connection {
     String? token,
     String? serverId,
     List<String>? recentHosts,
+    List<String>? recentUrls,
     DateTime? lastConnected,
     DateTime? lastSeen,
   }) =>
@@ -63,6 +68,7 @@ class Connection {
         token: token ?? this.token,
         serverId: serverId ?? this.serverId,
         recentHosts: recentHosts ?? this.recentHosts,
+        recentUrls: recentUrls ?? this.recentUrls,
         lastConnected: lastConnected ?? this.lastConnected,
         lastSeen: lastSeen ?? this.lastSeen,
       );
@@ -75,25 +81,38 @@ class Connection {
         if (token != null) 'token': token,
         if (serverId != null) 'serverId': serverId,
         'recentHosts': recentHosts,
+        'recentUrls': recentUrls,
         'lastConnected': lastConnected?.toIso8601String(),
         'lastSeen': lastSeen?.toIso8601String(),
       };
 
-  factory Connection.fromJson(Map<String, dynamic> j) => Connection(
-        id: j['id'] as String,
-        name: j['name'] as String,
-        emoji: j['emoji'] as String? ?? '🖥️',
-        url: j['url'] as String,
-        token: j['token'] as String?,
-        serverId: j['serverId'] as String?,
-        recentHosts: ((j['recentHosts'] as List?) ?? []).cast<String>(),
-        lastConnected: j['lastConnected'] != null
-            ? DateTime.tryParse(j['lastConnected'] as String)
-            : null,
-        lastSeen: j['lastSeen'] != null
-            ? DateTime.tryParse(j['lastSeen'] as String)
-            : null,
-      );
+  factory Connection.fromJson(Map<String, dynamic> j) {
+    final url = j['url'] as String;
+    final recentHosts = ((j['recentHosts'] as List?) ?? []).cast<String>();
+    final rawRecentUrls = ((j['recentUrls'] as List?) ?? []).cast<String>();
+    final uri = Uri.tryParse(url);
+    final legacyUrls = rawRecentUrls.isNotEmpty || uri == null
+        ? const <String>[]
+        : [
+            for (final host in recentHosts) '${uri.scheme}://$host:${uri.port}',
+          ];
+    return Connection(
+      id: j['id'] as String,
+      name: j['name'] as String,
+      emoji: j['emoji'] as String? ?? '🖥️',
+      url: url,
+      token: j['token'] as String?,
+      serverId: j['serverId'] as String?,
+      recentHosts: recentHosts,
+      recentUrls: rawRecentUrls.isNotEmpty ? rawRecentUrls : legacyUrls,
+      lastConnected: j['lastConnected'] != null
+          ? DateTime.tryParse(j['lastConnected'] as String)
+          : null,
+      lastSeen: j['lastSeen'] != null
+          ? DateTime.tryParse(j['lastSeen'] as String)
+          : null,
+    );
+  }
 }
 
 class ConnectionsNotifier extends StateNotifier<List<Connection>> {
@@ -165,6 +184,12 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
                     ...c.recentHosts.where((h) => h != Uri.parse(newUrl).host),
                   ].take(5).toList()
                 : c.recentHosts,
+            recentUrls: newUrl != c.url
+                ? [
+                    c.url,
+                    ...c.recentUrls.where((u) => u != newUrl && u != c.url),
+                  ].take(8).toList()
+                : c.recentUrls,
           )
         else
           c,

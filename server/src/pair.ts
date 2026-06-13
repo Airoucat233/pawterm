@@ -119,6 +119,33 @@ class PairingManager {
     return this.issueDeviceToken(deviceId, deviceName);
   }
 
+  async tryRedeemPassword(
+    passwordOk: boolean,
+    deviceId: string,
+    deviceName: string,
+    clientIp: string,
+  ): Promise<
+    | { ok: true; deviceToken: string; serverId: string }
+    | { ok: false; error: 'bad_password' | 'rate_limited' }
+  > {
+    const rl = this.getRateLimitEntry(clientIp);
+    if (rl.cooldownUntil !== null && Date.now() < rl.cooldownUntil) {
+      return { ok: false, error: 'rate_limited' };
+    }
+
+    if (!passwordOk) {
+      rl.failures += 1;
+      if (rl.failures >= RATE_LIMIT_MAX_FAILURES) {
+        rl.cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+        rl.failures = 0;
+      }
+      return { ok: false, error: 'bad_password' };
+    }
+
+    this.resetRateLimit(clientIp);
+    return this.issueDeviceTokenAndNotify(deviceId, deviceName);
+  }
+
   /**
    * Issue a device token without PIN (QR claim path, already authenticated via adminToken).
    */
