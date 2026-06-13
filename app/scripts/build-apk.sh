@@ -78,10 +78,41 @@ if [[ "$FLAVOR" == "prod" && "${CI:-}" != "true" ]]; then
   SEMVER="${VERSION%%+*}"
   BUILD="${VERSION#*+}"
   [[ "$BUILD" == "$VERSION" ]] && BUILD="1"
-  IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
+  BASE_SEMVER="${SEMVER%%-*}"
+  PRE_BASE="$BASE_SEMVER"
+  PRE_N=0
+  if [[ "$SEMVER" =~ -prerelease\.([0-9]+)$ ]]; then
+    PRE_BASE="${SEMVER%%-prerelease.*}"
+    PRE_N="${match[1]}"
+  fi
+  IFS='.' read -r MAJOR MINOR PATCH <<<"$BASE_SEMVER"
+  IFS='.' read -r PRE_MAJOR PRE_MINOR PRE_PATCH <<<"$PRE_BASE"
 
   echo
-  cat <<MENU
+  if [[ $PRE_N -gt 0 ]]; then
+    cat <<MENU
+  Choose bump:
+    1)  stable   $PRE_BASE+$((BUILD+1))  (promote from $VERSION)
+    2)  patch    $PRE_MAJOR.$PRE_MINOR.$((PRE_PATCH+1))+1
+    3)  minor    $PRE_MAJOR.$((PRE_MINOR+1)).0+1
+    4)  major    $((PRE_MAJOR+1)).0.0+1
+    q)  quit
+MENU
+
+    printf "  → [1-4/q, default=1]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-1}"
+
+    case "$CHOICE" in
+      1|stable|release) NEW="$PRE_BASE+$((BUILD+1))" ;;
+      2|patch)          NEW="$PRE_MAJOR.$PRE_MINOR.$((PRE_PATCH+1))+1" ;;
+      3|minor)          NEW="$PRE_MAJOR.$((PRE_MINOR+1)).0+1" ;;
+      4|major)          NEW="$((PRE_MAJOR+1)).0.0+1" ;;
+      q|quit)           echo "  aborted."; exit 0 ;;
+      *)                echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  else
+    cat <<MENU
   Choose bump:
     1)  same     $VERSION
     2)  build    ${SEMVER}+$((BUILD+1))
@@ -91,19 +122,20 @@ if [[ "$FLAVOR" == "prod" && "${CI:-}" != "true" ]]; then
     q)  quit
 MENU
 
-  printf "  → [1-5/q, default=3]: "
-  read -r CHOICE
-  CHOICE="${CHOICE:-3}"
+    printf "  → [1-5/q, default=3]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-3}"
 
-  case "$CHOICE" in
-    1|same)  NEW="$VERSION" ;;
-    2|build) NEW="${SEMVER}+$((BUILD+1))" ;;
-    3|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))+1" ;;
-    4|minor) NEW="$MAJOR.$((MINOR+1)).0+1" ;;
-    5|major) NEW="$((MAJOR+1)).0.0+1" ;;
-    q|quit)  echo "  aborted."; exit 0 ;;
-    *)       echo "  invalid choice" >&2; exit 1 ;;
-  esac
+    case "$CHOICE" in
+      1|same)  NEW="$VERSION" ;;
+      2|build) NEW="${SEMVER}+$((BUILD+1))" ;;
+      3|patch) NEW="$MAJOR.$MINOR.$((PATCH+1))+1" ;;
+      4|minor) NEW="$MAJOR.$((MINOR+1)).0+1" ;;
+      5|major) NEW="$((MAJOR+1)).0.0+1" ;;
+      q|quit)  echo "  aborted."; exit 0 ;;
+      *)       echo "  invalid choice" >&2; exit 1 ;;
+    esac
+  fi
 
   if [[ "$NEW" != "$VERSION" ]]; then
     /usr/bin/python3 - "$PUBSPEC" "$NEW" <<'PY'

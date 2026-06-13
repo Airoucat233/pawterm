@@ -20,15 +20,8 @@ class ConnectionUrlParts {
   String get baseUrl => '$scheme://$host:$port';
 }
 
-int defaultPortForScheme(String scheme) {
-  switch (scheme.toLowerCase()) {
-    case 'https':
-      return 443;
-    case 'http':
-      return 80;
-    default:
-      return BuildDefaults.defaultServerPort;
-  }
+int defaultPortForScheme(String _) {
+  return BuildDefaults.defaultServerPort;
 }
 
 String normalizeHostForPlatform(String host) {

@@ -106,6 +106,11 @@ class InAppChatNotificationsNotifier
     state = state.where((item) => item.id != id).toList(growable: false);
   }
 
+  void dismissForPayloadKey(String key) {
+    state =
+        state.where((item) => item.payload.key != key).toList(growable: false);
+  }
+
   void dismissApprovalsForRequest(String requestId) {
     state = state
         .where((item) => !item.id.endsWith('|$requestId'))

@@ -131,7 +131,7 @@ pnpm release:server:pre   # Server / npm prerelease dist-tag
 
 预发布语义：
 
-- App tag：`prerelease-v{semver}`
+- App tag：`prerelease-v{version}`，App 预发布版本使用 `{nextStable}-prerelease.N`，例如 `0.8.9-prerelease.1`、`0.8.9-prerelease.2`
 - Server tag：`prerelease-server-v{version}`
 - npm dist-tag：`prerelease`
 
@@ -193,7 +193,7 @@ bash scripts/release.sh              # 交互式 bump → commit → push main �
 ### 预发布与本地 dev 包
 
 - GitHub Release 只发布正式 App 包名：Android `com.airoucat.pawterm`、macOS `com.airoucat.pawterm`。
-- 稳定版 tag：`release-v{semver}`；预发布 tag：`prerelease-v{semver}`。
+- 稳定版 tag：`release-v{semver}`；预发布 tag：`prerelease-v{version}`。App 预发布不消耗稳定 patch/minor 版本号，正式发布时从 `{nextStable}-prerelease.N` promote 到 `{nextStable}`。
 - `scripts/release.sh --prerelease` 发布预发布，仍然构建正式 App 包名，供 App 内“预发布频道”覆盖升级。
 - `app/scripts/build-apk.sh --dev` 只用于本地开发包，Android 包名 `com.airoucat.pawterm.dev`，显示名 `PawTerm Dev`，默认只构建 arm64，并通过 `pawtermAbiFilter=arm64-v8a` 过滤 Android 原生依赖 ABI；产物留在 `app/build/app/outputs/flutter-apk/`，不得上传 GitHub Release。
 - `mac/scripts/build.sh --dev [--install]` 只用于本地 `PawTermDev.app`，bundle id `com.airoucat.pawterm.dev`，不得上传 GitHub Release。

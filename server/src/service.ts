@@ -73,6 +73,20 @@ function tryExec(cmd: string): void {
   try { execSync(cmd, { stdio: 'ignore' }); } catch { /* ignore */ }
 }
 
+function darwinLaunchctlStatus(): { running: boolean; output: string } {
+  const uid = process.getuid?.();
+  if (typeof uid === 'number') {
+    const scoped = spawnSync('launchctl', ['print', `gui/${uid}/${LABEL}`], { encoding: 'utf-8' });
+    const output = [scoped.stdout, scoped.stderr].filter(Boolean).join('').trim();
+    if (scoped.status === 0) {
+      return { running: /\bstate = running\b/.test(output) || /\bpid = \d+\b/.test(output), output };
+    }
+  }
+
+  const legacy = spawnSync('launchctl', ['list', LABEL], { encoding: 'utf-8' });
+  return { running: legacy.status === 0, output: legacy.stdout.trim() };
+}
+
 function sleepSync(ms: number): void {
   spawnSync(process.execPath, ['-e', `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ms})`], {
     stdio: 'ignore',
@@ -183,8 +197,7 @@ export function runServiceCommand(cmd: string, args: string[] = []): void {
   if (cmd === 'start') {
     if (p === 'darwin') {
       if (!existsSync(PLIST_PATH)) { console.error('Service not installed. Run: pawterm-server install'); process.exit(1); }
-      const running = spawnSync('launchctl', ['list', LABEL], { encoding: 'utf-8' });
-      if (running.status === 0) { console.log('Service is already running.'); return; }
+      if (darwinLaunchctlStatus().running) { console.log('Service is already running.'); return; }
       exec(`launchctl load "${PLIST_PATH}"`);
       console.log('✓ Service started');
     } else if (p === 'linux') {
@@ -199,8 +212,7 @@ export function runServiceCommand(cmd: string, args: string[] = []): void {
   if (cmd === 'stop') {
     if (p === 'darwin') {
       if (!existsSync(PLIST_PATH)) { console.error('Service not installed.'); process.exit(1); }
-      const running = spawnSync('launchctl', ['list', LABEL], { encoding: 'utf-8' });
-      if (running.status !== 0) { console.log('Service is not running.'); return; }
+      if (!darwinLaunchctlStatus().running) { console.log('Service is not running.'); return; }
       exec(`launchctl unload "${PLIST_PATH}"`);
       console.log('✓ Service stopped');
     } else if (p === 'linux') {
@@ -281,10 +293,10 @@ Usage: pawterm-server [command]
     let ver = 'unknown';
     try { ver = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version ?? 'unknown'; } catch {}
     if (p === 'darwin') {
-      const r = spawnSync('launchctl', ['list', LABEL], { encoding: 'utf-8' });
-      if (r.status === 0) {
+      const launchd = darwinLaunchctlStatus();
+      if (launchd.running) {
         console.log(`● pawterm-server ${ver}  [running]`);
-        if (r.stdout.trim()) console.log(r.stdout.trim());
+        if (launchd.output) console.log(launchd.output);
       } else {
         console.log(`● pawterm-server ${ver}  [not running]`);
         if (!existsSync(PLIST_PATH)) console.log('  not installed — run: pawterm-server install');

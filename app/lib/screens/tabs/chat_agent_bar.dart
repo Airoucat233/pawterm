@@ -58,7 +58,8 @@ class ChatAgentBar extends StatelessWidget {
         final sandbox = (runtime['sandbox'] ?? 'workspace-write').toString();
         final approval =
             (runtime['approval_policy'] ?? 'on-request').toString();
-        final effort = (runtime['reasoning_effort'] ?? '').toString().trim();
+        final effort =
+            (runtime['reasoning_effort'] ?? 'medium').toString().trim();
         parts.add(sandbox);
         parts.add(approval);
         if (effort.isNotEmpty) parts.add(effort);
@@ -67,6 +68,6 @@ class ChatAgentBar extends StatelessWidget {
         if (approval.isNotEmpty) parts.add(approval);
     }
 
-    return parts.isEmpty ? '默认运行时' : parts.join(' / ');
+    return parts.isEmpty ? '运行时未配置' : parts.join(' / ');
   }
 }

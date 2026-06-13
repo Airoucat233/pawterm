@@ -132,7 +132,7 @@ describe('CodexAgentProvider', () => {
     expect(run.sessionId).toBe('new-thread');
   });
 
-  it('passes Codex sandbox and approval policy when resuming a thread', async () => {
+  it('passes Codex sandbox, approval policy, and reasoning effort when resuming a thread', async () => {
     const client = new FakeCodexClient();
     const provider = providerWith(client);
 
@@ -140,7 +140,12 @@ describe('CodexAgentProvider', () => {
       cwd: '/repo',
       sessionId: 'thread-1',
       text: 'hello',
-      runtime: { agent: 'codex', sandbox: 'danger-full-access', approval_policy: 'never' },
+      runtime: {
+        agent: 'codex',
+        sandbox: 'danger-full-access',
+        approval_policy: 'never',
+        reasoning_effort: 'high',
+      },
       deviceId: 'phone',
     });
 
@@ -151,6 +156,14 @@ describe('CodexAgentProvider', () => {
         cwd: '/repo',
         sandbox: 'danger-full-access',
         approvalPolicy: 'never',
+        config: { model_reasoning_effort: 'high' },
+      }),
+    });
+    expect(client.requests.find((call) => call.method === 'turn/start')).toEqual({
+      method: 'turn/start',
+      params: expect.objectContaining({
+        threadId: 'new-thread',
+        effort: 'high',
       }),
     });
   });

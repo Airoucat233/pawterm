@@ -339,7 +339,7 @@ class ServerManager: ObservableObject {
            let latest = json["version"] as? String {
             latestServerVersion = latest
             if let current = currentServerVersion, !current.isEmpty {
-                serverUpdateAvailable = current != latest
+                serverUpdateAvailable = Self.compareVersions(latest, current) == .orderedDescending
             }
         }
     }
@@ -545,21 +545,40 @@ class ServerManager: ObservableObject {
     }
 
     private static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        func parts(_ value: String) -> [Int] {
-            value
-                .split(separator: "+", maxSplits: 1).first?
-                .split(separator: "-", maxSplits: 1).first?
-                .split(separator: ".")
-                .map { Int($0) ?? 0 } ?? []
+        struct ParsedVersion {
+            let parts: [Int]
+            let preNumber: Int?
         }
-        let left = parts(lhs)
-        let right = parts(rhs)
+
+        func parse(_ value: String) -> ParsedVersion {
+            let semantic = value.split(separator: "+", maxSplits: 1).first.map(String.init) ?? ""
+            let base = semantic.split(separator: "-", maxSplits: 1).first.map(String.init) ?? ""
+            var preNumber: Int? = nil
+            if let range = semantic.range(of: #"-(?:prerelease|pre|rc)\.(\d+)$"#, options: .regularExpression),
+               let suffix = semantic[range].split(separator: ".").last {
+                preNumber = Int(suffix)
+            }
+            return ParsedVersion(
+                parts: base.split(separator: ".").map { Int($0) ?? 0 },
+                preNumber: preNumber
+            )
+        }
+        let leftVersion = parse(lhs)
+        let rightVersion = parse(rhs)
+        let left = leftVersion.parts
+        let right = rightVersion.parts
         let count = max(left.count, right.count)
         for i in 0..<count {
             let a = i < left.count ? left[i] : 0
             let b = i < right.count ? right[i] : 0
             if a < b { return .orderedAscending }
             if a > b { return .orderedDescending }
+        }
+        if leftVersion.preNumber == nil && rightVersion.preNumber != nil { return .orderedDescending }
+        if leftVersion.preNumber != nil && rightVersion.preNumber == nil { return .orderedAscending }
+        if let leftPre = leftVersion.preNumber, let rightPre = rightVersion.preNumber {
+            if leftPre < rightPre { return .orderedAscending }
+            if leftPre > rightPre { return .orderedDescending }
         }
         return .orderedSame
     }

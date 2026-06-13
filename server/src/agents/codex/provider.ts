@@ -32,6 +32,7 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
         agent: 'codex',
         sandbox: 'workspace-write',
         approval_policy: 'on-request',
+        reasoning_effort: 'medium',
       },
       capabilities: {
         streaming: true,
@@ -121,10 +122,12 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
     deviceId: string;
   }): Promise<AgentRun> {
     const runtime = input.runtime;
+    const modelReasoningEffort = runtime.reasoning_effort ?? 'medium';
     const client = await this.client();
     const startThread = () => client.request('thread/start', {
       cwd: input.cwd,
       model: runtime.model ?? null,
+      config: { model_reasoning_effort: modelReasoningEffort },
       sandbox: runtime.sandbox,
       approvalPolicy: runtime.approval_policy,
       experimentalRawEvents: false,
@@ -135,6 +138,7 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
           threadId: input.sessionId,
           cwd: input.cwd,
           model: runtime.model ?? null,
+          config: { model_reasoning_effort: modelReasoningEffort },
           sandbox: runtime.sandbox,
           approvalPolicy: runtime.approval_policy,
           persistExtendedHistory: false,
@@ -146,6 +150,7 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
       threadId,
       input: [{ type: 'text', text: input.text }],
       model: runtime.model ?? null,
+      effort: modelReasoningEffort,
     }).catch((err) => {
       stream.close();
       throw err;

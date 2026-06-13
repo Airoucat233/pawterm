@@ -32,6 +32,7 @@ class MessageView extends StatelessWidget {
 
   /// 提交 Codex app-server approval 决策的回调。
   final void Function(String requestId, String decision)? onAnswerCodexApproval;
+  final Map<String, String>? codexApprovalDecisions;
 
   /// 原始 SSE event data（仅 debug 打包时传入，release 为 null）。
   /// 长按消息可查看。
@@ -47,6 +48,7 @@ class MessageView extends StatelessWidget {
     this.subMsgsMap,
     this.onAnswerQuestion,
     this.onAnswerCodexApproval,
+    this.codexApprovalDecisions,
     this.rawJson,
     this.onOpenFilePath,
     this.onSaveFilePath,
@@ -349,6 +351,7 @@ class MessageView extends StatelessWidget {
         return CodexApprovalCard(
           toolUse: block,
           answeredResult: result,
+          localDecision: codexApprovalDecisions?[block.id],
           onSubmit: onAnswerCodexApproval!,
         );
       }

@@ -265,8 +265,24 @@ class _InAppChatNotificationHost extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final items = ref.watch(inAppChatNotificationsProvider);
-    if (items.isEmpty) return const SizedBox.shrink();
-    final item = items.first;
+    final current = ref.watch(currentSessionProvider);
+    final currentKey =
+        current == null ? null : ChatCompletionPayload.fromSession(current).key;
+    final visibleItems = currentKey == null
+        ? items
+        : items
+            .where((item) => item.payload.key != currentKey)
+            .toList(growable: false);
+    if (currentKey != null && visibleItems.length != items.length) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        ref
+            .read(inAppChatNotificationsProvider.notifier)
+            .dismissForPayloadKey(currentKey);
+      });
+    }
+    if (visibleItems.isEmpty) return const SizedBox.shrink();
+    final item = visibleItems.first;
     return Positioned(
       top: MediaQuery.of(context).padding.top + 64,
       right: 12,

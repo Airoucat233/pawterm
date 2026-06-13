@@ -378,35 +378,24 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   SizedBox(
-                    width: 96,
-                    child: DropdownButtonFormField<String>(
+                    width: 108,
+                    child: _SchemeSegmentedControl(
                       value: _scheme,
-                      items: const [
-                        DropdownMenuItem(value: 'http', child: Text('http://')),
-                        DropdownMenuItem(
-                            value: 'https', child: Text('https://')),
-                      ],
-                      onChanged: (_phase == _SheetState.input ||
-                              _phase == _SheetState.error ||
-                              isEditing)
-                          ? (value) {
-                              if (value == null) return;
-                              setState(() {
-                                _scheme = value;
-                                _portCtrl.text =
-                                    '${defaultPortForScheme(value)}';
-                                if (_phase == _SheetState.error) {
-                                  _phase = _SheetState.input;
-                                }
-                              });
-                            }
-                          : null,
-                      style: TextStyle(
-                          fontFamily: 'monospace', fontSize: 13, color: t.text),
-                      decoration: const InputDecoration(
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 10, vertical: 13),
-                      ),
+                      enabled: _phase == _SheetState.input ||
+                          _phase == _SheetState.error ||
+                          isEditing,
+                      onChanged: (value) {
+                        setState(() {
+                          _scheme = value;
+                          if (_portCtrl.text.trim().isEmpty) {
+                            _portCtrl.text =
+                                '${BuildDefaults.defaultServerPort}';
+                          }
+                          if (_phase == _SheetState.error) {
+                            _phase = _SheetState.input;
+                          }
+                        });
+                      },
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -602,6 +591,84 @@ class _AddConnectionSheetState extends ConsumerState<AddConnectionSheet> {
                 ),
               ]),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SchemeSegmentedControl extends StatelessWidget {
+  final String value;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+
+  const _SchemeSegmentedControl({
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        border: Border.all(color: t.border, width: 0.5),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          Expanded(child: _schemeOption(context, t, 'http')),
+          const SizedBox(width: 3),
+          Expanded(child: _schemeOption(context, t, 'https')),
+        ],
+      ),
+    );
+  }
+
+  Widget _schemeOption(BuildContext context, AppTokens t, String scheme) {
+    final selected = value == scheme;
+    final textColor = !enabled
+        ? t.textDim
+        : selected
+            ? t.text
+            : t.textMuted;
+    return Tooltip(
+      message: '$scheme://',
+      child: InkWell(
+        onTap: enabled && !selected ? () => onChanged(scheme) : null,
+        borderRadius: BorderRadius.circular(4),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? t.accentSubt : Colors.transparent,
+            borderRadius: BorderRadius.circular(4),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: t.accent.withValues(alpha: 0.08),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Text(
+            scheme == 'https' ? 'https' : 'http',
+            maxLines: 1,
+            overflow: TextOverflow.clip,
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 11,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+              color: textColor,
+            ),
           ),
         ),
       ),
