@@ -22,6 +22,7 @@ import '../../i18n/strings.dart';
 import '../../state/projects_store.dart';
 import '../../state/server_config.dart';
 import '../../theme.dart';
+import '../../widgets/top_toast.dart';
 
 // ── preview type ────────────────────────────────────────────────────
 
@@ -297,9 +298,11 @@ class _FilesTabState extends ConsumerState<FilesTab> {
       if (dialogOpen && mounted) Navigator.of(context).pop();
       if (mounted) {
         final s = ref.read(stringsProvider);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(s.filesDownloadFailedTpl.replaceAll('{err}', '$e')),
-        ));
+        showTopToast(
+          context,
+          s.filesDownloadFailedTpl.replaceAll('{err}', '$e'),
+          icon: Icons.error_outline_rounded,
+        );
       }
       return null;
     }
@@ -336,9 +339,11 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     final result = await OpenFile.open(file.path);
     if (result.type != ResultType.done && mounted) {
       final s = ref.read(stringsProvider);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('${s.filesOpenFailed}: ${result.message}'),
-      ));
+      showTopToast(
+        context,
+        '${s.filesOpenFailed}: ${result.message}',
+        icon: Icons.error_outline_rounded,
+      );
     }
   }
 
@@ -429,8 +434,10 @@ class _FilesTabState extends ConsumerState<FilesTab> {
     if (!mounted) return;
     if (result.type != ResultType.done &&
         result.type != ResultType.noAppToOpen) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('安装失败: ${result.message}')),
+      showTopToast(
+        context,
+        '安装失败: ${result.message}',
+        icon: Icons.error_outline_rounded,
       );
     }
   }
@@ -447,18 +454,24 @@ class _FilesTabState extends ConsumerState<FilesTab> {
         'headers': api.authHeaders,
       });
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${entry.name} 已在通知栏后台下载')),
+      showTopToast(
+        context,
+        '${entry.name} 已在通知栏后台下载',
+        icon: Icons.download_done_rounded,
       );
     } on PlatformException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('启动后台下载失败: ${e.message ?? e.code}')),
+      showTopToast(
+        context,
+        '启动后台下载失败: ${e.message ?? e.code}',
+        icon: Icons.error_outline_rounded,
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('启动后台下载失败: $e')),
+      showTopToast(
+        context,
+        '启动后台下载失败: $e',
+        icon: Icons.error_outline_rounded,
       );
     }
   }

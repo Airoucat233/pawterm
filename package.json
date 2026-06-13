@@ -25,14 +25,17 @@
     "release:pre": "zsh scripts/release.sh --prerelease",
     "release:pre:local": "zsh scripts/release.sh --prerelease --local",
     "release:server": "zsh server/scripts/publish.sh",
+    "release:server:local": "zsh server/scripts/publish.sh --local",
     "release:server:pre": "zsh server/scripts/publish.sh --prerelease",
+    "release:server:pre:local": "zsh server/scripts/publish.sh --prerelease --local",
     "start": "pnpm run start:server",
     "start:server": "pnpm --filter pawterm-server run start",
     "preview:web": "pnpm --filter @pawterm/web run preview",
     "typecheck": "pnpm -r run typecheck",
     "typecheck:server": "pnpm --filter pawterm-server run typecheck",
     "typecheck:web": "pnpm --filter @pawterm/web run typecheck",
-    "test:server": "pnpm --filter pawterm-server run test",
+    "test:server": "pnpm --filter pawterm-server run test-server",
+    "test:server:unit": "pnpm --filter pawterm-server run test",
     "test:server:watch": "pnpm --filter pawterm-server run test:watch"
   },
   "devDependencies": {

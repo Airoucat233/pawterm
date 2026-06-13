@@ -46,9 +46,11 @@ pnpm exec vitest run src/__tests__/event-buffer.test.ts   # 跑单个测试文�
 
 ```bash
 cd app
-flutter pub get
+PUB_HOSTED_URL=https://pub.dev flutter pub get
 flutter run               # 调试 Android，默认 flavor=prod；dev 用 --flavor dev
 ```
+
+本仓库提交的 `app/pubspec.lock` 必须保持 hosted registry 为 `https://pub.dev`。如果本机 shell 配了 `PUB_HOSTED_URL=https://pub.flutter-io.cn` 等镜像，裸跑 `flutter pub get` 会污染 lock；因此 App 端解析依赖时必须显式写 `PUB_HOSTED_URL=https://pub.dev flutter pub get`，或使用仓库脚本中已内置的同等环境覆盖。
 
 ---
 
@@ -238,6 +240,15 @@ Server 没有独立 dev 安装身份，预发布会覆盖同一个 `pawterm-serv
 ---
 
 ## 架构要点
+
+### HTTP API 规范
+
+- 新增 HTTP API 只允许使用 `GET` 和 `POST`。不要新增 `PUT`、`PATCH`、`DELETE` 等方法。
+- URL path 不允许使用占位符参数，例如不要新增 `/api/ideas/:id`、`/chat/:id/events` 这类新接口。
+- 标识符和筛选条件放在 query string 或 JSON body 中：
+  - 查询/下载/预览类接口使用 `GET /api/xxx?id=...` 或 `GET /api/xxx?path=...`。
+  - 创建/修改/删除/动作类接口使用 `POST /api/xxx`，在 JSON body 中传 `id`、`action`、`payload` 等字段。
+- 旧接口可保持兼容；新增和重构接口必须优先遵守这套规范。
 
 ### Server（`server/src/index.ts` 入口）
 

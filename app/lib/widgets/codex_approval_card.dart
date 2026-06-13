@@ -8,12 +8,14 @@ import '../theme.dart';
 class CodexApprovalCard extends StatefulWidget {
   final ToolUseBlock toolUse;
   final ToolResultBlock? answeredResult;
+  final bool initiallyExpanded;
   final void Function(String requestId, String decision) onSubmit;
 
   const CodexApprovalCard({
     super.key,
     required this.toolUse,
     required this.answeredResult,
+    this.initiallyExpanded = true,
     required this.onSubmit,
   });
 
@@ -23,6 +25,7 @@ class CodexApprovalCard extends StatefulWidget {
 
 class _CodexApprovalCardState extends State<CodexApprovalCard> {
   String? _localDecision;
+  late bool _expanded = widget.initiallyExpanded;
 
   @override
   Widget build(BuildContext context) {
@@ -34,52 +37,11 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
     final input = widget.toolUse.input;
     final title = _title(method);
     final summary = _summary(method, input);
+    final reason = _reason(input);
     final decisionLabel = _decisionLabel(decision);
     final decisionColor = _decisionColor(t, decision);
-
-    if (answered) {
-      return Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: BorderRadius.circular(8),
-          border: Border(
-            top: BorderSide(color: t.border, width: 0.5),
-            right: BorderSide(color: t.border, width: 0.5),
-            bottom: BorderSide(color: t.border, width: 0.5),
-            left: BorderSide(color: decisionColor, width: 3),
-          ),
-        ),
-        padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
-        child: Row(
-          children: [
-            Icon(Icons.privacy_tip_outlined, size: 15, color: decisionColor),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: t.text,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              decisionLabel ?? '已处理',
-              style: TextStyle(
-                color: decisionColor,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+    final statusLabel = decisionLabel ?? '等待确认';
+    final statusColor = answered ? decisionColor : t.warning;
 
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 160),
@@ -93,76 +55,118 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
             top: BorderSide(color: t.border, width: 0.5),
             right: BorderSide(color: t.border, width: 0.5),
             bottom: BorderSide(color: t.border, width: 0.5),
-            left: BorderSide(color: t.warning, width: 3),
+            left: BorderSide(
+              color: answered ? decisionColor : t.warning,
+              width: 3,
+            ),
           ),
         ),
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(Icons.privacy_tip_outlined, size: 15, color: t.warning),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    title,
-                    style: TextStyle(
-                      color: t.text,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
+            InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              onDoubleTap: _expanded
+                  ? () => setState(() => _expanded = false)
+                  : null,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Icon(Icons.privacy_tip_outlined,
+                        size: 15, color: statusColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: t.text,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 8),
+                    Text(
+                      statusLabel,
+                      style: TextStyle(
+                        color: statusColor,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(
+                      _expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 18,
+                      color: t.textDim,
+                    ),
+                  ],
                 ),
-                Text(
-                  decisionLabel ?? '等待确认',
-                  style: TextStyle(
-                    color: answered ? decisionColor : t.warning,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              method,
-              style: TextStyle(
-                color: t.textDim,
-                fontSize: 10,
-                fontFamily: 'monospace',
               ),
             ),
-            const SizedBox(height: 8),
-            _DetailBox(text: summary, t: t),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _ActionButton(
-                    label: '拒绝',
-                    color: t.error,
-                    onTap: () => _submit('decline'),
-                  ),
+            if (!_expanded && reason != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                reason,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: t.textMuted,
+                  fontSize: 11.5,
+                  height: 1.35,
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _ActionButton(
-                    label: '允许本次',
-                    color: t.accent,
-                    onTap: () => _submit('accept'),
-                  ),
+              ),
+            ],
+            if (_expanded) ...[
+              const SizedBox(height: 8),
+              Text(
+                method,
+                style: TextStyle(
+                  color: t.textDim,
+                  fontSize: 10,
+                  fontFamily: 'monospace',
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _ActionButton(
-                    label: '本会话允许',
-                    color: t.warning,
-                    onTap: () => _submit('acceptForSession'),
-                  ),
+              ),
+              const SizedBox(height: 8),
+              _DetailBox(text: summary, t: t),
+              if (!answered) ...[
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _ActionButton(
+                        label: '拒绝',
+                        color: t.error,
+                        onTap: () => _submit('decline'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _ActionButton(
+                        label: '允许本次',
+                        color: t.accent,
+                        onTap: () => _submit('accept'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _ActionButton(
+                        label: '本会话允许',
+                        color: t.warning,
+                        onTap: () => _submit('acceptForSession'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
-            ),
+            ],
           ],
         ),
       ),
@@ -171,7 +175,10 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
 
   void _submit(String decision) {
     if (_localDecision != null || widget.answeredResult != null) return;
-    setState(() => _localDecision = decision);
+    setState(() {
+      _localDecision = decision;
+      _expanded = false;
+    });
     widget.onSubmit(widget.toolUse.id, decision);
   }
 
@@ -214,7 +221,7 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
   }
 
   String _summary(String method, Map<String, dynamic> input) {
-    final reason = input['reason']?.toString();
+    final reason = _reason(input);
     final lines = <String>[];
     if (reason != null && reason.trim().isNotEmpty) {
       lines.add('reason: $reason');
@@ -236,6 +243,12 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
     }
     if (lines.isEmpty) return _pretty(input);
     return lines.join('\n');
+  }
+
+  String? _reason(Map<String, dynamic> input) {
+    final reason = input['reason']?.toString().trim();
+    if (reason != null && reason.isNotEmpty) return reason;
+    return null;
   }
 
   String _pretty(Object? value) {

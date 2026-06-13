@@ -268,6 +268,11 @@ class Strings {
   final String updateUpToDate;
   final String updateAvailableTpl; // {version}
   final String updateCheckFailed;
+  final String updateDialogTitle;
+  final String updateDialogMessageTpl; // {version}
+  final String updateInstallInApp;
+  final String updateOpenInBrowser;
+  final String updateInstallStartedTpl; // {name}
 
   // Generic
   final String genericRetry;
@@ -492,6 +497,11 @@ class Strings {
     required this.updateUpToDate,
     required this.updateAvailableTpl,
     required this.updateCheckFailed,
+    required this.updateDialogTitle,
+    required this.updateDialogMessageTpl,
+    required this.updateInstallInApp,
+    required this.updateOpenInBrowser,
+    required this.updateInstallStartedTpl,
     required this.genericRetry,
     required this.genericClose,
     required this.genericConfirm,
@@ -736,6 +746,12 @@ const Strings stringsEn = Strings(
   updateUpToDate: 'Up to date',
   updateAvailableTpl: '{version} available',
   updateCheckFailed: 'Check failed',
+  updateDialogTitle: 'Update available',
+  updateDialogMessageTpl:
+      'Version {version} is available. Choose how to update.',
+  updateInstallInApp: 'Download and install',
+  updateOpenInBrowser: 'Open in browser',
+  updateInstallStartedTpl: 'Downloading {name} in the background',
   genericRetry: 'Retry',
   genericClose: 'Close',
   genericConfirm: 'OK',
@@ -975,6 +991,11 @@ const Strings stringsZh = Strings(
   updateUpToDate: '已是最新',
   updateAvailableTpl: '有新版本 {version}',
   updateCheckFailed: '检测失败',
+  updateDialogTitle: '发现新版本',
+  updateDialogMessageTpl: '检测到 {version}，请选择更新方式。',
+  updateInstallInApp: '应用内下载并安装',
+  updateOpenInBrowser: '浏览器中打开下载',
+  updateInstallStartedTpl: '{name} 已在后台下载',
   genericRetry: '重试',
   genericClose: '关闭',
   genericConfirm: '确定',

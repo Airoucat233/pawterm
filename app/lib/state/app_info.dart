@@ -5,3 +5,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
   return PackageInfo.fromPlatform();
 });
+
+String formatPackageVersion(PackageInfo info) {
+  final buildNumber = info.buildNumber.trim();
+  if (buildNumber.isEmpty) return 'v${info.version}';
+  return 'v${info.version}+$buildNumber';
+}

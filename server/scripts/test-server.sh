@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# 独立测试 server 控制脚本（端口 8766）。
+# 独立测试 server 控制脚本（端口 8765）。
 #
-# 跟 `pnpm dev` 的主 server（端口 8765）完全隔离 —— 各自一份 config.json，
-# 各自一份 SDK session map。改源码不会自动 reload（避免热重载链断流）。
+# 使用跟 `pnpm dev` 一样的 server/config.json，但不 watch。
+# 改源码不会自动 reload（避免热重载链断流）；需要手动 restart。
 #
+#   ./scripts/test-server.sh          # restart：停 → 起，换入最新代码
 #   ./scripts/test-server.sh start    # 后台起 → /tmp/pawterm-test-server.log
 #   ./scripts/test-server.sh stop     # 杀进程
 #   ./scripts/test-server.sh restart  # 停 → 起
@@ -18,10 +19,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_DIR="$(dirname "$SCRIPT_DIR")"
-CONFIG_FILE="$SERVER_DIR/config.test.json"
+CONFIG_FILE="$SERVER_DIR/config.json"
 LOG_FILE="/tmp/pawterm-test-server.log"
 PID_FILE="/tmp/pawterm-test-server.pid"
-PORT=8766
+PORT=8765
+DETACHED_STARTER="$SERVER_DIR/scripts/start-detached-test-server.cjs"
 
 # ── colors ────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -87,20 +89,17 @@ cmd_start() {
 
   info "starting on port $PORT, config=$CONFIG_FILE"
   cd "$SERVER_DIR"
-  # nohup + disown：彻底脱离 controlling terminal、shell job table、父进程组。
-  # 这样 claude code 重启 / 终端关 / shell 退出，都不会发 SIGHUP/SIGTERM 把它带走。
-  # PID 文件存 root pnpm 进程，stop 时杀 root 会级联到 tsx/node 全部子进程。
-  nohup env PAWTERM_CONFIG="$CONFIG_FILE" pnpm exec tsx src/index.ts \
-    > "$LOG_FILE" 2>&1 &
-  local started=$!
-  disown "$started" 2>/dev/null || true
-  echo "$started" > "$PID_FILE"
+  # detached + unref：创建独立进程组，避免 claude/codex 工具会话结束时带走 server。
+  node "$DETACHED_STARTER" "$SERVER_DIR" "$CONFIG_FILE" "$LOG_FILE" "$PID_FILE"
 
   # 等端口绑定，确认真正起来了
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.4
-    if lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null | grep -q .; then
-      ok "started pid=$started"
+    local listen_pid
+    listen_pid=$(lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    if [[ -n "$listen_pid" ]]; then
+      echo "$listen_pid" > "$PID_FILE"
+      ok "started pid=$listen_pid"
       info "log: tail -f $LOG_FILE"
       return 0
     fi
@@ -171,7 +170,8 @@ cmd_logs() {
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────
-cmd="${1:-}"
+if [[ "${1:-}" == "--" ]]; then shift; fi
+cmd="${1:-restart}"
 shift || true
 case "$cmd" in
   start)   cmd_start  "$@" ;;
@@ -179,14 +179,14 @@ case "$cmd" in
   restart) cmd_restart "$@" ;;
   status)  cmd_status "$@" ;;
   logs)    cmd_logs   "$@" ;;
-  ""|help|-h|--help)
+  help|-h|--help)
     cat <<EOF
 Usage: ./scripts/test-server.sh <command>
 
 Commands:
+  restart   stop + start (default)
   start     Launch detached test server on port $PORT
   stop      Kill it (TERM, then KILL after 1.5s)
-  restart   stop + start
   status    Show pid + port if running
   logs      tail -f $LOG_FILE
   logs -n   tail -n 100 $LOG_FILE (one-shot)

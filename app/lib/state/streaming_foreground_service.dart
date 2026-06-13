@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter/services.dart';
 
-import '../api/agents_api.dart';
 import 'chat_completion_notifier.dart';
 
 @pragma('vm:entry-point')
@@ -20,6 +20,18 @@ class _StreamingForegroundTaskHandler extends TaskHandler {
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
+}
+
+const _nativeNotificationsChannel = MethodChannel('pawterm/notifications');
+
+class ActiveSessionProgress {
+  final ChatCompletionPayload payload;
+  final String activity;
+
+  const ActiveSessionProgress({
+    required this.payload,
+    required this.activity,
+  });
 }
 
 class StreamingForegroundService {
@@ -82,6 +94,7 @@ class StreamingForegroundService {
       if (await FlutterForegroundTask.isRunningService) {
         await FlutterForegroundTask.stopService();
       }
+      await _clearProgressNotification();
       return;
     }
 
@@ -113,30 +126,71 @@ class StreamingForegroundService {
   }
 
   String _title() {
-    if (_active.length == 1) {
-      final payload = _active.values.first;
-      return '${_agentLabel(payload.agent)} 正在处理';
-    }
-    return '${_active.length} 个会话正在后台处理';
+    return 'PawTerm 正在后台处理';
   }
 
   String _body() {
-    if (_active.length == 1) {
-      final payload = _active.values.first;
-      final label = payload.label.isEmpty ? payload.cwd : payload.label;
-      final activity = _activity[payload.key] ?? '保持连接，等待最新进度';
-      return '$label · $activity';
-    }
-    return _active.values.take(3).map((payload) {
-      final label = payload.label.isEmpty ? payload.cwd : payload.label;
-      final activity = _activity[payload.key];
-      return activity == null ? label : '$label: $activity';
-    }).join(' · ');
+    return activeSessionCompactBody(_progressItems());
   }
 
-  String _agentLabel(AgentKind agent) => switch (agent) {
-        AgentKind.claude => 'Claude',
-        AgentKind.codex => 'Codex',
-        AgentKind.gemini => 'Gemini',
-      };
+  List<ActiveSessionProgress> _progressItems() {
+    return _active.values
+        .map((payload) => ActiveSessionProgress(
+              payload: payload,
+              activity: _activity[payload.key] ?? '保持连接',
+            ))
+        .toList(growable: false);
+  }
+
+  Future<void> _clearProgressNotification() async {
+    try {
+      await _nativeNotificationsChannel.invokeMethod<void>(
+        'clearActiveSessionProgress',
+      );
+    } on MissingPluginException {
+      // Non-Android platforms and early startup can miss the native channel.
+    } on PlatformException {
+      // Clearing a notification is best-effort.
+    }
+  }
+}
+
+String activeSessionSummary(List<ActiveSessionProgress> items) {
+  if (items.isEmpty) return '没有后台会话';
+  final approvals = items.where((item) => item.activity.contains('审批')).length;
+  if (approvals > 0) {
+    return '${items.length} 个会话运行中，$approvals 个等待审批';
+  }
+  return items.length == 1 ? '1 个会话运行中' : '${items.length} 个会话运行中';
+}
+
+String activeSessionCompactBody(List<ActiveSessionProgress> items) {
+  if (items.isEmpty) return '没有后台会话';
+  if (items.length == 1) {
+    final item = items.first;
+    return '${_sessionDisplayName(item.payload)} · ${item.activity}';
+  }
+  return activeSessionSummary(items);
+}
+
+String _sessionDisplayName(ChatCompletionPayload payload) {
+  final cwd = payload.cwd.trim();
+  final cwdName = _basename(cwd);
+  if (cwdName.isNotEmpty) return _shorten(cwdName);
+  final label = payload.label.trim();
+  if (label.isNotEmpty) return _shorten(label);
+  return '未命名会话';
+}
+
+String _shorten(String value) {
+  const max = 28;
+  if (value.length <= max) return value;
+  return '${value.substring(0, max - 1)}…';
+}
+
+String _basename(String path) {
+  if (path.isEmpty) return '';
+  final normalized = path.replaceAll('\\', '/');
+  final parts = normalized.split('/').where((part) => part.isNotEmpty).toList();
+  return parts.isEmpty ? normalized : parts.last;
 }

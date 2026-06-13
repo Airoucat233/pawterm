@@ -57,6 +57,24 @@ function webSearchInput(item: CodexItem): Record<string, unknown> {
   };
 }
 
+function webSearchResultContent(item: CodexItem, input: Record<string, unknown>): string {
+  const candidates = [
+    item.results,
+    item.result,
+    item.output,
+    item.contentItems,
+    item.summary,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    const text = typeof candidate === 'string' ? candidate : safeStringify(candidate);
+    if (text.trim().length === 0) continue;
+    if (text.trim() === safeStringify(input).trim()) continue;
+    return text;
+  }
+  return item.error ? safeStringify(item.error) : 'Search completed.';
+}
+
 function isFinishedStatus(status: unknown): boolean {
   return status !== 'inProgress' && status !== undefined && status !== null;
 }
@@ -97,7 +115,7 @@ export function codexThreadItemToWire(item: CodexItem): ChatServerMessage | null
         type: 'assistant',
         content: [
           namedToolUse(item, 'WebSearch', input),
-          toolResult(item, safeStringify(input), false),
+          toolResult(item, webSearchResultContent(item, input), !!item.error),
         ],
       };
     }

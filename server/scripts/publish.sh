@@ -1,12 +1,15 @@
 #!/usr/bin/env zsh
-# Bump server version, commit, push, push release tag, then npm publish.
+# Bump server version, commit, push, then push release tag.
 #
 # --prerelease: prerelease publish from feature/next (tag: prerelease-server-v*, npm tag: prerelease)
+# --local: build and publish to npm locally after pushing the tag
 # --dev: deprecated alias for --prerelease
 #
 # Usage:
-#   ./scripts/publish.sh               # publish to npm latest (main branch)
-#   ./scripts/publish.sh --prerelease  # publish to npm prerelease tag (feature/next)
+#   ./scripts/publish.sh               # push release-server-v* tag; CI publishes npm latest
+#   ./scripts/publish.sh --prerelease  # push prerelease-server-v* tag; CI publishes npm prerelease
+#   ./scripts/publish.sh --local       # publish npm latest locally after pushing tag
+#   ./scripts/publish.sh --prerelease --local
 
 set -euo pipefail
 
@@ -16,10 +19,12 @@ REPO_ROOT="$(dirname "$SERVER_DIR")"
 PKG="$SERVER_DIR/package.json"
 
 PRERELEASE=0
+LOCAL=0
 USED_DEV_ALIAS=0
 for arg in "$@"; do
   case "$arg" in
     --prerelease|--pre) PRERELEASE=1 ;;
+    --local) LOCAL=1 ;;
     --dev) PRERELEASE=1; USED_DEV_ALIAS=1 ;;
   esac
 done
@@ -31,8 +36,8 @@ fi
 # -------- 0. Branch guard --------
 
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-if [[ $PRERELEASE -eq 1 && "$CURRENT_BRANCH" != "feature/next" && "$CURRENT_BRANCH" != "main" ]]; then
-  echo "✗ prerelease must be run from feature/next or main (current: $CURRENT_BRANCH)" >&2
+if [[ $PRERELEASE -eq 1 && "$CURRENT_BRANCH" != "feature/next" ]]; then
+  echo "✗ prerelease must be run from feature/next (current: $CURRENT_BRANCH)" >&2
   exit 1
 fi
 if [[ $PRERELEASE -eq 0 && "$CURRENT_BRANCH" != "main" ]]; then
@@ -178,10 +183,12 @@ git -C "$REPO_ROOT" tag -l | grep -qx "$TAG" && TAG_EXISTS=1
 
 # -------- 4. Confirm --------
 
-if [[ $PRERELEASE -eq 1 ]]; then
-  printf "  → bump, commit, push, tag, npm publish --tag prerelease? [y/N]: "
+if [[ $LOCAL -eq 1 && $PRERELEASE -eq 1 ]]; then
+  printf "  → bump, commit, push, tag, local npm publish --tag prerelease? [y/N]: "
+elif [[ $LOCAL -eq 1 ]]; then
+  printf "  → bump, commit, push, tag, local npm publish? [y/N]: "
 else
-  printf "  → bump, commit, push, tag, npm publish? [y/N]: "
+  printf "  → bump, commit, push, tag (CI publishes npm)? [y/N]: "
 fi
 read -r CONFIRM
 [[ "${CONFIRM:-N}" != [yY] ]] && { echo "  aborted."; exit 0; }
@@ -232,7 +239,17 @@ else
   echo "  tag $TAG already exists, skipping"
 fi
 
-# -------- 8. Build + npm publish --------
+# -------- 8. CI publish or local publish --------
+
+if [[ $LOCAL -eq 0 ]]; then
+  echo
+  printf "\033[32m✓ tag pushed\033[0m — CI will publish pawterm-server@%s\n" "$NEW"
+  echo "  Watch: https://github.com/Airoucat233/pawterm/actions"
+  echo "  tag:   $TAG"
+  exit 0
+fi
+
+# -------- 9. Build + npm publish locally --------
 
 # Check if this version is already published
 NPM_PUBLISHED=$(npm view "pawterm-server@$NEW" version 2>/dev/null || echo "")

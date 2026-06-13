@@ -157,11 +157,14 @@ class ChatApi {
   /// Interrupt the active run.
   Future<void> interrupt(String uuid,
       {AgentKind agent = AgentKind.claude}) async {
-    await http.post(
+    final resp = await http.post(
       Uri.parse('$_apiBase/chat/interrupt'),
       headers: {'Content-Type': 'application/json', ..._auth},
       body: jsonEncode({'uuid': uuid, 'agent': agent.wire}),
     );
+    if (resp.statusCode != 200) {
+      throw ChatApiException(resp.statusCode, resp.body);
+    }
   }
 
   Future<void> runtime(

@@ -2,8 +2,10 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/protocol.dart';
+import '../state/prefs.dart';
 import '../theme.dart';
 import 'diff_view.dart';
 
@@ -14,7 +16,7 @@ import 'diff_view.dart';
 /// 展开态：分两段
 ///   Input  — 调用参数（diff/命令/JSON……）+ pretty|raw segmented control
 ///   Output — 工具返回（文本，>4000 字符截断）
-class ToolCallCard extends StatefulWidget {
+class ToolCallCard extends ConsumerStatefulWidget {
   final ToolUseBlock toolUse;
 
   /// 可选：和这次调用匹配的结果（通过 tool_use_id 配对）。null 表示尚未返回。
@@ -32,11 +34,12 @@ class ToolCallCard extends StatefulWidget {
   });
 
   @override
-  State<ToolCallCard> createState() => _ToolCallCardState();
+  ConsumerState<ToolCallCard> createState() => _ToolCallCardState();
 }
 
-class _ToolCallCardState extends State<ToolCallCard> {
-  late bool _expanded = toolUse.name == 'fileChange';
+class _ToolCallCardState extends ConsumerState<ToolCallCard> {
+  late bool _expanded =
+      toolUse.name == 'fileChange' && ref.read(fileToolCardsExpandedProvider);
   bool _viewRaw = false;
 
   ToolUseBlock get toolUse => widget.toolUse;
@@ -62,6 +65,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
 
     return InkWell(
       onTap: canExpand ? () => setState(() => _expanded = !_expanded) : null,
+      onDoubleTap: canExpand && _expanded
+          ? () => setState(() => _expanded = false)
+          : null,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.only(top: 0, bottom: 1),
@@ -268,6 +274,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
 
     return InkWell(
       onTap: () => setState(() => _expanded = !_expanded),
+      onDoubleTap: _expanded ? () => setState(() => _expanded = false) : null,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),

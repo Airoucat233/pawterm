@@ -102,3 +102,109 @@ class PrereleaseChannelNotifier extends StateNotifier<bool> {
 final prereleaseChannelProvider =
     StateNotifierProvider<PrereleaseChannelNotifier, bool>(
         (_) => PrereleaseChannelNotifier());
+
+class FileToolCardsExpandedNotifier extends StateNotifier<bool> {
+  FileToolCardsExpandedNotifier() : super(true) {
+    _load();
+  }
+
+  static const _key = 'file_tool_cards_expanded_v1';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? true;
+  }
+
+  Future<void> set(bool value) async {
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, value);
+  }
+}
+
+final fileToolCardsExpandedProvider =
+    StateNotifierProvider<FileToolCardsExpandedNotifier, bool>(
+  (_) => FileToolCardsExpandedNotifier(),
+);
+
+class ScrollToBottomOnSessionSwitchNotifier extends StateNotifier<bool> {
+  ScrollToBottomOnSessionSwitchNotifier() : super(true) {
+    _load();
+  }
+
+  static const _key = 'scroll_to_bottom_on_session_switch_v1';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? true;
+  }
+
+  Future<void> set(bool value) async {
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, value);
+  }
+}
+
+final scrollToBottomOnSessionSwitchProvider =
+    StateNotifierProvider<ScrollToBottomOnSessionSwitchNotifier, bool>(
+  (_) => ScrollToBottomOnSessionSwitchNotifier(),
+);
+
+enum BottomTabId {
+  chat('chat'),
+  shell('shell'),
+  files('files');
+
+  final String wire;
+  const BottomTabId(this.wire);
+
+  static BottomTabId? fromWire(String value) {
+    for (final tab in values) {
+      if (tab.wire == value) return tab;
+    }
+    return null;
+  }
+}
+
+class BottomTabOrderNotifier extends StateNotifier<List<BottomTabId>> {
+  BottomTabOrderNotifier() : super(defaultOrder) {
+    _load();
+  }
+
+  static const _key = 'bottom_tab_order_v1';
+  static const defaultOrder = [
+    BottomTabId.chat,
+    BottomTabId.shell,
+    BottomTabId.files,
+  ];
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = _normalize(
+      prefs.getStringList(_key)?.map(BottomTabId.fromWire).toList(),
+    );
+  }
+
+  Future<void> set(List<BottomTabId> order) async {
+    state = _normalize(order);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_key, state.map((tab) => tab.wire).toList());
+  }
+
+  static List<BottomTabId> _normalize(List<BottomTabId?>? raw) {
+    final result = <BottomTabId>[];
+    for (final tab in raw ?? const <BottomTabId?>[]) {
+      if (tab != null && !result.contains(tab)) result.add(tab);
+    }
+    for (final tab in defaultOrder) {
+      if (!result.contains(tab)) result.add(tab);
+    }
+    return result;
+  }
+}
+
+final bottomTabOrderProvider =
+    StateNotifierProvider<BottomTabOrderNotifier, List<BottomTabId>>(
+  (_) => BottomTabOrderNotifier(),
+);

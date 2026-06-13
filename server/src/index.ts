@@ -26,6 +26,9 @@ import { buildLoggerOptions, SILENT_PATHS } from './logger.js';
 import { startMdns } from './mdns.js';
 import { createNetworkAddressService, type AdvertisedAddress } from './network-address.js';
 import { pairingManager } from './pair.js';
+import { registerIdeasApi } from './ideas-api.js';
+import { listFsEntries } from './fs-api.js';
+import { registerSessionFilesApi } from './session-files-api.js';
 import { registerSessionsApi } from './sessions-api.js';
 import { registerUpload } from './upload.js';
 import { handleShellSocket } from './ws-shell.js';
@@ -124,6 +127,22 @@ async function _codexModelsFromCli(): Promise<ModelInfo[]> {
 
 function isValidPassword(pw: string): boolean {
   return pw.length >= 8 && /[a-zA-Z]/.test(pw) && /[0-9]/.test(pw);
+}
+
+function contentTypeForPath(p: string): string {
+  const lower = p.toLowerCase();
+  if (lower.endsWith('.js')) return 'application/javascript; charset=utf-8';
+  if (lower.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html; charset=utf-8';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (lower.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.txt') || lower.endsWith('.md')) return 'text/plain; charset=utf-8';
+  if (lower.endsWith('.woff2')) return 'font/woff2';
+  return 'application/octet-stream';
 }
 
 async function promptPassword(prompt: string): Promise<string> {
@@ -283,7 +302,9 @@ async function main(): Promise<void> {
   const truncate = (s: string) =>
     s.length <= BODY_LIMIT ? s : `${s.slice(0, BODY_LIMIT)} …(+${s.length - BODY_LIMIT} bytes)`;
   const redactUrl = (url: string) =>
-    url.replace(/([?&]admin_login_code=)[^&\s]+/g, '$1<redacted>');
+    url
+      .replace(/([?&]admin_login_code=)[^&\s]+/g, '$1<redacted>')
+      .replace(/([?&]token=)[^&\s]+/g, '$1<redacted>');
   const redactSecrets = (text: string) =>
     text
       .replace(/("(?:admin_login_code|admin_access_token|access_token|deviceToken|device_token|token)"\s*:\s*")[^"]+/g, '$1<redacted>')
@@ -314,6 +335,12 @@ async function main(): Promise<void> {
   // /health which remains a root LAN/discovery probe.
   app.addHook('onRequest', async (req, reply) => {
     const url = req.url.split('?')[0];
+    const queryToken = new URL(req.url, 'http://pawterm.local').searchParams.get('token');
+    const isValidQueryToken = !!queryToken && (
+      queryToken === settings.adminToken ||
+      adminAccessManager.isAdminAccessToken(queryToken) ||
+      settings.pairedDevices.some((d) => d.deviceToken === queryToken)
+    );
     if (
       url === '/health' ||
       (!url.startsWith('/api/') && url !== '/ws/shell') ||
@@ -322,7 +349,8 @@ async function main(): Promise<void> {
       url === '/api/pair/request' ||
       url === '/api/pair/qr-claim' ||
       url === '/api/admin/access-token' ||
-      url.startsWith('/api/pair/poll/')
+      url.startsWith('/api/pair/poll/') ||
+      (url === '/api/fs/preview' && isValidQueryToken)
     ) {
       return;
     }
@@ -594,30 +622,7 @@ async function main(): Promise<void> {
     const abs = resolve(p.replace(/^~/, homedir()));
     if (!isPathAllowed(abs)) { reply.code(403); return { error: 'path not allowed', path: abs }; }
     try {
-      const entries = await readdir(abs, { withFileTypes: true });
-      const items = await Promise.all(entries.map(async (e) => {
-        if (e.name.startsWith('.')) return null;
-        const fp = join(abs, e.name);
-        try {
-          const st = await stat(fp);
-          return {
-            name: e.name,
-            path: fp,
-            isDir: e.isDirectory(),
-            sizeBytes: st.size,
-            modifiedMs: Math.floor(st.mtimeMs),
-          };
-        } catch {
-          return null;
-        }
-      }));
-      type Entry = NonNullable<(typeof items)[number]>;
-      const visible: Entry[] = items.filter((x): x is Entry => x !== null);
-      visible.sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-      return { path: abs, entries: visible };
+      return { path: abs, entries: await listFsEntries(abs) };
     } catch (err) {
       reply.code(500);
       return { error: (err as Error).message };
@@ -702,8 +707,35 @@ async function main(): Promise<void> {
     }
   });
 
+  api.get<{ Querystring: { path?: string } }>('/fs/preview', async (req, reply) => {
+    const p = req.query.path;
+    if (!p) { reply.code(400); return { error: 'path required' }; }
+    const abs = resolve(p.replace(/^~/, homedir()));
+    if (!isPathAllowed(abs)) { reply.code(403); return { error: 'path not allowed' }; }
+    try {
+      const st = await stat(abs);
+      if (!st.isFile()) { reply.code(400); return { error: 'not a file' }; }
+      reply
+        .header('Content-Type', contentTypeForPath(abs))
+        .header('Content-Length', String(st.size))
+        .header('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(basename(abs))}`);
+      return reply.send(createReadStream(abs));
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'ENOENT') { reply.code(404); return { error: 'not found' }; }
+      reply.code(500);
+      return { error: e.message };
+    }
+  });
+
   // REST: sessions
   await registerSessionsApi(api, { registry: defaultAgentRegistry });
+
+  // REST: global inspiration drawer
+  await registerIdeasApi(api);
+
+  // REST: per-session file collection
+  await registerSessionFilesApi(api);
 
   // REST + SSE: chat
   await registerChatRest(api);
@@ -1019,22 +1051,13 @@ async function main(): Promise<void> {
   const packagedWebDist = resolve(__dirname, '..', 'dist-web');
   const repoWebDist = resolve(__dirname, '..', '..', 'web', 'dist');
   const webDist = existsSync(packagedWebDist) ? packagedWebDist : repoWebDist;
-  const contentType = (p: string): string => {
-    if (p.endsWith('.js')) return 'application/javascript; charset=utf-8';
-    if (p.endsWith('.css')) return 'text/css; charset=utf-8';
-    if (p.endsWith('.html')) return 'text/html; charset=utf-8';
-    if (p.endsWith('.svg')) return 'image/svg+xml';
-    if (p.endsWith('.json')) return 'application/json';
-    if (p.endsWith('.woff2')) return 'font/woff2';
-    return 'application/octet-stream';
-  };
   const serveStatic = async (relPath: string, reply: import('fastify').FastifyReply) => {
     const { readFile } = await import('node:fs/promises');
     const abs = resolve(webDist, relPath);
     if (!abs.startsWith(webDist)) { reply.code(403).send({ error: 'forbidden' }); return; }
     try {
       const buf = await readFile(abs);
-      reply.header('Content-Type', contentType(abs)).send(buf);
+      reply.header('Content-Type', contentTypeForPath(abs)).send(buf);
     } catch {
       reply.code(404).send({ error: 'not found' });
     }

@@ -1,0 +1,84 @@
+name: Server Publish
+
+on:
+  push:
+    tags:
+      - 'prerelease-server-v*'
+      - 'release-server-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Read server version
+        id: ver
+        run: |
+          VERSION=$(node -p "require('./server/package.json').version")
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == prerelease-server-v* ]]; then
+            MODE=prerelease
+            EXPECTED="prerelease-server-v$VERSION"
+            NPM_TAG=prerelease
+          else
+            MODE=release
+            EXPECTED="release-server-v$VERSION"
+            NPM_TAG=latest
+          fi
+          if [[ "$TAG" != "$EXPECTED" ]]; then
+            echo "Tag $TAG does not match server/package.json version $VERSION; expected $EXPECTED" >&2
+            exit 1
+          fi
+          if [[ "$MODE" == release && "$VERSION" == *-* ]]; then
+            echo "Stable server release cannot publish prerelease version $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm version
+        id: npm
+        run: |
+          if npm view "pawterm-server@${{ steps.ver.outputs.version }}" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "pawterm-server@${{ steps.ver.outputs.version }} already published; skipping npm publish."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build web
+        if: steps.npm.outputs.published == 'false'
+        run: pnpm --filter @pawterm/web run build
+
+      - name: Build server
+        if: steps.npm.outputs.published == 'false'
+        run: pnpm --filter pawterm-server run build
+
+      - name: Smoke test packaged server
+        if: steps.npm.outputs.published == 'false'
+        run: pnpm --filter pawterm-server run smoke:packaged
+
+      - name: Publish to npm
+        if: steps.npm.outputs.published == 'false'
+        working-directory: server
+        run: npm publish --tag "${{ steps.ver.outputs.npm_tag }}" --registry https://registry.npmjs.org
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

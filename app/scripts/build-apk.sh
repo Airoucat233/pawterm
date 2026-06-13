@@ -44,6 +44,7 @@ done
 
 DEFAULT_PORT=$([[ "$FLAVOR" == "dev" ]] && echo 8765 || echo 18765)
 DART_DEFINES=(--dart-define=PAWTERM_DEFAULT_PORT=$DEFAULT_PORT)
+PUB_HOSTED_URL_FOR_BUILD="${PAWTERM_PUB_HOSTED_URL:-https://pub.dev}"
 
 SPLIT_PER_ABI=1
 if [[ $ARM64_ONLY -eq 1 || ( "$FLAVOR" == "dev" && $ALL_ABI -eq 0 ) ]]; then
@@ -65,7 +66,7 @@ echo "  port   : \033[36m$DEFAULT_PORT\033[0m"
 if [[ $DEBUG -eq 1 ]]; then
   echo
   echo "▶ flutter build apk --debug --flavor $FLAVOR --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a"
-  flutter build apk --debug --flavor "$FLAVOR" "${DART_DEFINES[@]}" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
+  PUB_HOSTED_URL="$PUB_HOSTED_URL_FOR_BUILD" flutter build apk --debug --flavor "$FLAVOR" "${DART_DEFINES[@]}" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
   echo
   echo "\033[32m✓ debug build done\033[0m  →  $OUT_DIR"
   exit 0
@@ -124,15 +125,15 @@ find "$OUT_DIR" -maxdepth 1 -name "*.apk" -delete 2>/dev/null || true
 find "$DIST_DIR" -maxdepth 1 -name "$NAME_PREFIX-*.apk" -delete 2>/dev/null || true
 
 echo "▶ flutter pub get"
-flutter pub get
+PUB_HOSTED_URL="$PUB_HOSTED_URL_FOR_BUILD" flutter pub get
 
 echo
 if [[ $SPLIT_PER_ABI -eq 1 ]]; then
   echo "▶ flutter build apk --release --flavor $FLAVOR --split-per-abi"
-  flutter build apk --release --flavor "$FLAVOR" "${DART_DEFINES[@]}" --split-per-abi
+  PUB_HOSTED_URL="$PUB_HOSTED_URL_FOR_BUILD" flutter build apk --release --flavor "$FLAVOR" "${DART_DEFINES[@]}" --split-per-abi
 else
   echo "▶ flutter build apk --release --flavor $FLAVOR --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a"
-  flutter build apk --release --flavor "$FLAVOR" "${DART_DEFINES[@]}" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
+  PUB_HOSTED_URL="$PUB_HOSTED_URL_FOR_BUILD" flutter build apk --release --flavor "$FLAVOR" "${DART_DEFINES[@]}" --target-platform android-arm64 --android-project-arg=pawtermAbiFilter=arm64-v8a
 fi
 
 # -------- Organize into versioned dir --------

@@ -18,6 +18,10 @@ export interface MdnsOptions {
   getPairingState: () => 'open' | 'closed';
 }
 
+export function mdnsServiceName(opts: Pick<MdnsOptions, 'hostname' | 'port'>): string {
+  return `PawTerm on ${opts.hostname}:${opts.port}`;
+}
+
 function safeStop(svc: Service, cb?: () => void): void {
   if (typeof svc.stop === 'function') {
     svc.stop(cb);
@@ -38,7 +42,7 @@ export function startMdns(opts: MdnsOptions): () => void {
   try {
     bonjour = new Bonjour();
     service = bonjour.publish({
-      name: `PawTerm on ${opts.hostname}`,
+      name: mdnsServiceName(opts),
       type: 'pawterm',
       port: opts.port,
       protocol: 'tcp',
@@ -61,7 +65,7 @@ export function startMdns(opts: MdnsOptions): () => void {
         try {
           safeStop(capturedService, () => {
             service = capturedBonjour.publish({
-              name: `PawTerm on ${opts.hostname}`,
+              name: mdnsServiceName(opts),
               type: 'pawterm',
               port: opts.port,
               protocol: 'tcp',

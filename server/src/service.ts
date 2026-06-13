@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_SERVER_PORT } from './defaults.js';
 
 const LABEL = 'com.airoucat.pawterm-server';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -70,6 +71,51 @@ function exec(cmd: string): void {
 
 function tryExec(cmd: string): void {
   try { execSync(cmd, { stdio: 'ignore' }); } catch { /* ignore */ }
+}
+
+function sleepSync(ms: number): void {
+  spawnSync(process.execPath, ['-e', `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ms})`], {
+    stdio: 'ignore',
+  });
+}
+
+function isTcpPortInUse(port: number): boolean {
+  const result = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+    stdio: 'ignore',
+  });
+  return result.status === 0;
+}
+
+function servicePort(): number {
+  const configPath = existsSync(ACTIVE_CONFIG_PTR)
+    ? resolve(readFileSync(ACTIVE_CONFIG_PTR, 'utf-8').trim().replace(/^~/, HOME))
+    : resolve(CONFIG_DIR, 'config.json');
+  try {
+    const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as { port?: unknown };
+    return typeof raw.port === 'number' ? raw.port : DEFAULT_SERVER_PORT;
+  } catch {
+    return DEFAULT_SERVER_PORT;
+  }
+}
+
+export function waitForPortRelease(opts: {
+  port: number;
+  timeoutMs?: number;
+  intervalMs?: number;
+  isPortInUse?: () => boolean;
+  sleep?: (ms: number) => void;
+}): boolean {
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const intervalMs = opts.intervalMs ?? 100;
+  const isPortInUse = opts.isPortInUse ?? (() => isTcpPortInUse(opts.port));
+  const sleep = opts.sleep ?? sleepSync;
+  const deadline = Date.now() + timeoutMs;
+
+  while (isPortInUse()) {
+    if (Date.now() >= deadline) return false;
+    sleep(intervalMs);
+  }
+  return true;
 }
 
 function warnIfNpx(): void {
@@ -169,7 +215,13 @@ export function runServiceCommand(cmd: string, args: string[] = []): void {
   if (cmd === 'restart') {
     if (p === 'darwin') {
       if (!existsSync(PLIST_PATH)) { console.error('Service not installed. Run: pawterm-server install'); process.exit(1); }
+      const port = servicePort();
       tryExec(`launchctl unload "${PLIST_PATH}"`);
+      if (!waitForPortRelease({ port })) {
+        console.error(`✗ Port ${port} is still in use after stopping the service.`);
+        console.error(`  Run: lsof -nP -iTCP:${port} -sTCP:LISTEN`);
+        process.exit(1);
+      }
       exec(`launchctl load "${PLIST_PATH}"`);
       console.log('✓ Service restarted');
     } else if (p === 'linux') {

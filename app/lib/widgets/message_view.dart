@@ -2,7 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:markdown/markdown.dart' as md;
 
 import '../api/protocol.dart';
 import '../theme.dart';
@@ -35,6 +37,9 @@ class MessageView extends StatelessWidget {
   /// 长按消息可查看。
   final Map<String, dynamic>? rawJson;
 
+  final void Function(String path)? onOpenFilePath;
+  final void Function(String path)? onSaveFilePath;
+
   const MessageView({
     super.key,
     required this.message,
@@ -43,6 +48,8 @@ class MessageView extends StatelessWidget {
     this.onAnswerQuestion,
     this.onAnswerCodexApproval,
     this.rawJson,
+    this.onOpenFilePath,
+    this.onSaveFilePath,
   });
 
   @override
@@ -288,8 +295,18 @@ class MessageView extends StatelessWidget {
       if (block.text.trim().isEmpty) return const SizedBox.shrink();
       // 外层 _gutterRow 已经管 bottom 间距，这里不再叠加
       return MarkdownBody(
-        data: block.text,
+        data: _promoteFilePathCode(block.text),
         selectable: true,
+        inlineSyntaxes:
+            onOpenFilePath == null ? null : [_FilePathInlineSyntax()],
+        builders: onOpenFilePath == null
+            ? const <String, MarkdownElementBuilder>{}
+            : <String, MarkdownElementBuilder>{
+                _FilePathInlineSyntax.tag: _FilePathInlineBuilder(
+                  onOpen: onOpenFilePath!,
+                  onSave: onSaveFilePath,
+                ),
+              },
         styleSheet: MarkdownStyleSheet(
           p: TextStyle(color: t.text, fontSize: 13, height: 1.6),
           code: TextStyle(
@@ -372,6 +389,161 @@ class MessageView extends StatelessWidget {
 
     return const SizedBox.shrink();
   }
+}
+
+final _absoluteFilePathPattern = RegExp(
+  r'/(?:[^\s`"<>:|?*]+/)*[^\s`"<>:|?*]+\.[A-Za-z0-9]{1,12}',
+);
+
+class _FilePathInlineSyntax extends md.InlineSyntax {
+  static const tag = 'file_path_ref';
+
+  _FilePathInlineSyntax()
+      : super(
+          r'(?<![\w])/(?:[^\s`"<>:|?*]+/)*[^\s`"<>:|?*]+\.[A-Za-z0-9]{1,12}',
+          startCharacter: 47,
+        );
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    final raw = match.group(0);
+    if (raw == null) return false;
+    final cleaned = raw.replaceFirst(RegExp(r'[),.;]+$'), '');
+    final trailing = raw.substring(cleaned.length);
+    final element = md.Element.text(tag, cleaned);
+    element.attributes['path'] = cleaned;
+    parser.addNode(element);
+    if (trailing.isNotEmpty) {
+      parser.addNode(md.Text(trailing));
+    }
+    return true;
+  }
+}
+
+class _FilePathInlineBuilder extends MarkdownElementBuilder {
+  final void Function(String path) onOpen;
+  final void Function(String path)? onSave;
+
+  _FilePathInlineBuilder({
+    required this.onOpen,
+    required this.onSave,
+  });
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final t = AppTokens.of(context);
+    final path = element.attributes['path'] ?? element.textContent;
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: () => onOpen(path),
+      onLongPress: () => _showFilePathActions(context, path),
+      child: Text(
+        path,
+        style: (preferredStyle ?? parentStyle ?? const TextStyle()).copyWith(
+          color: t.accent,
+          decoration: TextDecoration.underline,
+          decorationColor: t.accent.withValues(alpha: 0.45),
+          decorationThickness: 1,
+        ),
+      ),
+    );
+  }
+
+  void _showFilePathActions(BuildContext context, String path) {
+    final t = AppTokens.of(context);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                path,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: t.text,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.open_in_new_rounded, color: t.accent),
+                title: const Text('打开'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  onOpen(path);
+                },
+              ),
+              if (onSave != null)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.bookmark_add_outlined, color: t.accent),
+                  title: const Text('加入会话文件'),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    onSave!(path);
+                  },
+                ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.copy_rounded, color: t.textMuted),
+                title: const Text('复制路径'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  Clipboard.setData(ClipboardData(text: path));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('已复制路径')),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _promoteFilePathCode(String markdown) {
+  final withoutPathBlocks = markdown.replaceAllMapped(
+    RegExp(r'```[^\n]*\n([\s\S]*?)\n```', multiLine: true),
+    (match) {
+      final path = _singleAbsoluteFilePath(match.group(1) ?? '');
+      if (path == null) return match.group(0)!;
+      return path;
+    },
+  );
+  return withoutPathBlocks.replaceAllMapped(
+    RegExp(r'`([^`\n]+)`'),
+    (match) {
+      final path = _singleAbsoluteFilePath(match.group(1) ?? '');
+      if (path == null) return match.group(0)!;
+      return path;
+    },
+  );
+}
+
+String? _singleAbsoluteFilePath(String raw) {
+  final text = raw.trim();
+  if (text.contains('\n')) return null;
+  final match = _absoluteFilePathPattern.firstMatch(text);
+  final path = match?.group(0);
+  return path == text ? path : null;
 }
 
 bool _isCodexApprovalRequest(String name) {

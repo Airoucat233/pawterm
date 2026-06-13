@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,9 +11,12 @@ import '../api/git_api.dart';
 import '../api/sessions_api.dart';
 import '../i18n/locale_provider.dart';
 import '../state/agents_store.dart';
+import '../state/chat_completion_notifier.dart';
 import '../state/open_chat_windows.dart';
+import '../state/prefs.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
+import '../state/streaming_foreground_service.dart';
 import '../theme.dart';
 import 'settings_screen.dart';
 import 'tabs/chat_tab.dart';
@@ -26,16 +30,58 @@ class MainShell extends ConsumerStatefulWidget {
   ConsumerState<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends ConsumerState<MainShell> {
-  int _index = 0;
+class _MainShellState extends ConsumerState<MainShell>
+    with WidgetsBindingObserver {
+  BottomTabId _tab = BottomTabId.chat;
   // 保留弹出栏的展开状态，关闭再打开时保持上次展开的项目。
   final Set<String> _sheetExpanded = {};
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(mainShellMountedProvider.notifier).state = true;
+        unawaited(_syncAppForegroundNotifications());
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    ref.read(mainShellMountedProvider.notifier).state = false;
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_syncAppForegroundNotifications());
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(StreamingForegroundService.instance.setAppInForeground(false));
+    }
+  }
+
+  Future<void> _syncAppForegroundNotifications() async {
+    await StreamingForegroundService.instance.setAppInForeground(true);
+    await ChatCompletionNotifier.instance.clearSessionNotifications();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    ref.listen<int>(chatNotificationNavigationProvider, (previous, next) {
+      if (previous == null || previous == next) return;
+      if (_tab != BottomTabId.chat) {
+        setState(() => _tab = BottomTabId.chat);
+      }
+    });
     final conn = ref.watch(activeConnectionProvider);
     final session = ref.watch(currentSessionProvider);
     final openWindows = ref.watch(openChatWindowsProvider);
+    final bottomTabOrder = ref.watch(bottomTabOrderProvider);
     final s = ref.watch(stringsProvider);
     final t = AppTokens.of(context);
     if (session != null) {
@@ -46,70 +92,81 @@ class _MainShellState extends ConsumerState<MainShell> {
     }
 
     final tabs = <_TabSpec>[
-      _TabSpec(s.tabChat, Icons.chat_bubble_outline),
-      _TabSpec(s.tabShell, Icons.terminal),
-      _TabSpec(s.tabFiles, Icons.folder_outlined),
+      _TabSpec(BottomTabId.chat, s.tabChat, Icons.chat_bubble_outline),
+      _TabSpec(BottomTabId.shell, s.tabShell, Icons.terminal),
+      _TabSpec(BottomTabId.files, s.tabFiles, Icons.folder_outlined),
     ];
+    final tabsById = {for (final tab in tabs) tab.id: tab};
 
     return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            _TopBar(
-              conn: conn,
-              session: session,
-              tabIndex: _index,
-              onSessionTap: () => _showSessionSwitcher(context),
+      body: Stack(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Column(
+              children: [
+                _TopBar(
+                  conn: conn,
+                  session: session,
+                  tabIndex: _tab.index,
+                  onSessionTap: () => _showSessionSwitcher(context),
+                ),
+                Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
+                Expanded(
+                  child: _LazyTabSwitcher(
+                    index: _tab.index,
+                    builders: [
+                      _LazyBuilder(
+                          builder: () => ChatTab(
+                                onGitTap: () {
+                                  final currentConn =
+                                      ref.read(activeConnectionProvider);
+                                  final currentSession =
+                                      ref.read(currentSessionProvider);
+                                  if (currentConn == null ||
+                                      currentSession == null) {
+                                    return;
+                                  }
+                                  _showGitPanel(
+                                      context, currentConn, currentSession);
+                                },
+                              )),
+                      const _LazyBuilder(builder: _buildShell),
+                      const _LazyBuilder(builder: _buildFiles),
+                    ],
+                  ),
+                ),
+                _BottomNav(
+                  tabs: [
+                    for (final id in bottomTabOrder) tabsById[id]!,
+                  ],
+                  selectedId: _tab,
+                  hasRunningChat: openWindows.windows.any(
+                    (window) => window.status == OpenChatWindowStatus.running,
+                  ),
+                  onChanged: (id) {
+                    if (id == BottomTabId.chat && _tab == BottomTabId.chat) {
+                      _showOpenChatWindows(context);
+                      return;
+                    }
+                    setState(() => _tab = id);
+                  },
+                  onChatSwipeUp: () => _showOpenChatWindows(context),
+                ),
+              ],
             ),
-            Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
-            Expanded(
-              child: _LazyTabSwitcher(
-                index: _index,
-                builders: [
-                  _LazyBuilder(
-                      builder: () => ChatTab(
-                            onGitTap: () {
-                              final currentConn =
-                                  ref.read(activeConnectionProvider);
-                              final currentSession =
-                                  ref.read(currentSessionProvider);
-                              if (currentConn == null ||
-                                  currentSession == null) {
-                                return;
-                              }
-                              _showGitPanel(
-                                  context, currentConn, currentSession);
-                            },
-                          )),
-                  const _LazyBuilder(builder: _buildShell),
-                  const _LazyBuilder(builder: _buildFiles),
-                ],
-              ),
-            ),
-            _BottomNav(
-              tabs: tabs,
-              index: _index,
-              hasRunningChat: openWindows.windows.any(
-                (window) => window.status == OpenChatWindowStatus.running,
-              ),
-              onChanged: (i) {
-                if (i == 0 && _index == 0) {
-                  _showOpenChatWindows(context);
-                  return;
-                }
-                setState(() => _index = i);
-              },
-            ),
-          ],
-        ),
+          ),
+          const _InAppChatNotificationHost(),
+        ],
       ),
     );
   }
 
   void _showOpenChatWindows(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
     showGeneralDialog<void>(
       context: context,
+      requestFocus: false,
       barrierDismissible: true,
       barrierLabel: '打开的会话',
       barrierColor: Colors.transparent,
@@ -120,7 +177,7 @@ class _MainShellState extends ConsumerState<MainShell> {
           ref
               .read(openChatWindowsProvider.notifier)
               .select(sessionKey(session));
-          setState(() => _index = 0);
+          setState(() => _tab = BottomTabId.chat);
           Navigator.of(ctx).pop();
         },
         onClose: (key) {
@@ -152,8 +209,10 @@ class _MainShellState extends ConsumerState<MainShell> {
   }
 
   void _showSessionSwitcher(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
     showModalBottomSheet(
       context: context,
+      requestFocus: false,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => _SessionSwitcherSheet(
@@ -171,8 +230,10 @@ class _MainShellState extends ConsumerState<MainShell> {
     Connection conn,
     CurrentSession session,
   ) {
+    FocusManager.instance.primaryFocus?.unfocus();
     showGeneralDialog(
       context: context,
+      requestFocus: false,
       barrierDismissible: true,
       barrierLabel: 'Git',
       barrierColor: Colors.black.withValues(alpha: 0.28),
@@ -198,12 +259,257 @@ class _MainShellState extends ConsumerState<MainShell> {
   }
 }
 
+class _InAppChatNotificationHost extends ConsumerWidget {
+  const _InAppChatNotificationHost();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(inAppChatNotificationsProvider);
+    if (items.isEmpty) return const SizedBox.shrink();
+    final item = items.first;
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 64,
+      right: 12,
+      child: _InAppChatNotificationCard(
+        key: ValueKey(item.id),
+        item: item,
+        onTap: () {
+          ref.read(currentSessionProvider.notifier).state = CurrentSession(
+            cwd: item.payload.cwd,
+            label: item.payload.label,
+            resumeId: item.payload.resumeId,
+            agent: item.payload.agent,
+            runtime: item.payload.runtime.isEmpty ? null : item.payload.runtime,
+          );
+          ref.read(chatNotificationNavigationProvider.notifier).state++;
+          if (!item.persistent) {
+            ref.read(inAppChatNotificationsProvider.notifier).dismiss(item.id);
+          }
+        },
+        onDismiss: () =>
+            ref.read(inAppChatNotificationsProvider.notifier).dismiss(item.id),
+      ),
+    );
+  }
+}
+
+class _InAppChatNotificationCard extends StatefulWidget {
+  final InAppChatNotification item;
+  final VoidCallback onTap;
+  final VoidCallback? onDismiss;
+
+  const _InAppChatNotificationCard({
+    super.key,
+    required this.item,
+    required this.onTap,
+    this.onDismiss,
+  });
+
+  @override
+  State<_InAppChatNotificationCard> createState() =>
+      _InAppChatNotificationCardState();
+}
+
+class _InAppChatNotificationCardState extends State<_InAppChatNotificationCard>
+    with TickerProviderStateMixin {
+  static const _completionDuration = Duration(seconds: 10);
+
+  late final AnimationController _controller;
+  late final AnimationController _progressController;
+  late final Animation<Offset> _slide;
+  late final Animation<double> _fade;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+      reverseDuration: const Duration(milliseconds: 150),
+    );
+    _progressController = AnimationController(
+      vsync: this,
+      duration: _completionDuration,
+    );
+    final curved =
+        CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+    _slide = Tween<Offset>(
+      begin: const Offset(1.05, 0),
+      end: Offset.zero,
+    ).animate(curved);
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+    _controller.forward();
+    if (!widget.item.persistent) {
+      _progressController.forward();
+      _timer = Timer(_completionDuration, _dismiss);
+    }
+  }
+
+  Future<void> _dismiss() async {
+    _timer?.cancel();
+    if (!mounted) return;
+    await _controller.reverse();
+    if (mounted) widget.onDismiss?.call();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _progressController.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final isApproval = widget.item.kind == InAppChatNotificationKind.approval;
+    final accent = isApproval ? t.warning : t.success;
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final width = max(158.0, min(screenWidth * 0.5, 190.0));
+    return SlideTransition(
+      position: _slide,
+      child: FadeTransition(
+        opacity: _fade,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onTap,
+            borderRadius: BorderRadius.circular(13),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(13),
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(sigmaX: 11, sigmaY: 11),
+                child: Container(
+                  width: width,
+                  padding: const EdgeInsets.fromLTRB(8, 7, 8, 0),
+                  foregroundDecoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(13),
+                    gradient: LinearGradient(
+                      colors: [
+                        accent.withValues(alpha: 0.11),
+                        Colors.white.withValues(alpha: 0.035),
+                        Colors.transparent,
+                      ],
+                      stops: const [0, 0.55, 1],
+                    ),
+                  ),
+                  decoration: BoxDecoration(
+                    color: t.surface.withValues(alpha: 0.68),
+                    borderRadius: BorderRadius.circular(13),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.025),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.18),
+                        blurRadius: 18,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 21,
+                            height: 21,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: accent.withValues(alpha: 0.12),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: accent.withValues(alpha: 0.14),
+                                  blurRadius: 14,
+                                ),
+                              ],
+                            ),
+                            alignment: Alignment.center,
+                            child: Icon(
+                              isApproval
+                                  ? Icons.priority_high_rounded
+                                  : Icons.done_rounded,
+                              size: 13,
+                              color: accent,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              isApproval ? widget.item.title : widget.item.body,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: t.text,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                height: 1.22,
+                                shadows: [
+                                  Shadow(
+                                    color: Colors.black.withValues(alpha: 0.28),
+                                    blurRadius: 10,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          if (widget.item.persistent) ...[
+                            const SizedBox(width: 3),
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: _dismiss,
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: Icon(Icons.close_rounded,
+                                    color: t.textDim, size: 15),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      if (!widget.item.persistent) ...[
+                        const SizedBox(height: 7),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: AnimatedBuilder(
+                            animation: _progressController,
+                            builder: (_, __) => FractionallySizedBox(
+                              widthFactor:
+                                  1 - _progressController.value.clamp(0, 1),
+                              child: Container(
+                                height: 2,
+                                decoration: BoxDecoration(
+                                  color: t.success.withValues(alpha: 0.72),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ── Tab helpers ───────────────────────────────────────────────
 
 class _TabSpec {
+  final BottomTabId id;
   final String label;
   final IconData icon;
-  const _TabSpec(this.label, this.icon);
+  const _TabSpec(this.id, this.label, this.icon);
 }
 
 Widget _buildShell() => const ShellTab();
@@ -961,6 +1267,7 @@ class _SheetProjectNode extends ConsumerWidget {
     final t = AppTokens.of(context);
     final isCurrent = currentCwd == project.path;
     final myDeviceId = ref.watch(deviceIdProvider).valueOrNull ?? '';
+    final inAppNotifications = ref.watch(inAppChatNotificationsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1057,6 +1364,8 @@ class _SheetProjectNode extends ConsumerWidget {
                             _SheetSessionTile(
                               session: s,
                               isCurrent: s.sessionId == currentSessionId,
+                              hasPendingApproval:
+                                  _hasPendingApproval(inAppNotifications, s),
                               onTap: () => onPickSession(s),
                               myDeviceId: myDeviceId,
                             ),
@@ -1071,16 +1380,29 @@ class _SheetProjectNode extends ConsumerWidget {
       ],
     );
   }
+
+  bool _hasPendingApproval(
+    List<InAppChatNotification> notifications,
+    SessionSummary session,
+  ) {
+    return notifications.any((item) =>
+        item.kind == InAppChatNotificationKind.approval &&
+        item.payload.resumeId == session.sessionId &&
+        item.payload.agent == session.agent &&
+        (session.cwd == null || item.payload.cwd == session.cwd));
+  }
 }
 
 class _SheetSessionTile extends StatelessWidget {
   final SessionSummary session;
   final bool isCurrent;
+  final bool hasPendingApproval;
   final VoidCallback onTap;
   final String myDeviceId;
   const _SheetSessionTile(
       {required this.session,
       required this.isCurrent,
+      required this.hasPendingApproval,
       required this.onTap,
       required this.myDeviceId});
 
@@ -1120,7 +1442,14 @@ class _SheetSessionTile extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      if (isCurrent)
+                      if (hasPendingApproval) ...[
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: _PulsingStatusDot(color: t.warning),
+                        ),
+                        const SizedBox(width: 4),
+                      ] else if (isCurrent)
                         Container(
                           width: 5,
                           height: 5,
@@ -1145,7 +1474,11 @@ class _SheetSessionTile extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (session.holderDeviceId != null) ...[
+                      if (hasPendingApproval) ...[
+                        const SizedBox(width: 6),
+                        Text('待审批',
+                            style: TextStyle(fontSize: 10, color: t.warning)),
+                      ] else if (session.holderDeviceId != null) ...[
                         const SizedBox(width: 6),
                         if (session.holderDeviceId == myDeviceId) ...[
                           Container(
@@ -1235,14 +1568,16 @@ class _SheetChip extends StatelessWidget {
 
 class _BottomNav extends StatelessWidget {
   final List<_TabSpec> tabs;
-  final int index;
+  final BottomTabId selectedId;
   final bool hasRunningChat;
-  final ValueChanged<int> onChanged;
+  final ValueChanged<BottomTabId> onChanged;
+  final VoidCallback onChatSwipeUp;
   const _BottomNav({
     required this.tabs,
-    required this.index,
+    required this.selectedId,
     this.hasRunningChat = false,
     required this.onChanged,
+    required this.onChatSwipeUp,
   });
 
   @override
@@ -1259,14 +1594,16 @@ class _BottomNav extends StatelessWidget {
           height: 58,
           child: Row(
             children: List.generate(tabs.length, (i) {
-              final selected = i == index;
+              final tab = tabs[i];
+              final selected = tab.id == selectedId;
               return Expanded(
                 child: _NavItem(
-                  label: tabs[i].label,
-                  icon: tabs[i].icon,
+                  label: tab.label,
+                  icon: tab.icon,
                   selected: selected,
-                  showRunningDot: i == 0 && hasRunningChat,
-                  onTap: () => onChanged(i),
+                  showRunningDot: tab.id == BottomTabId.chat && hasRunningChat,
+                  onTap: () => onChanged(tab.id),
+                  onSwipeUp: tab.id == BottomTabId.chat ? onChatSwipeUp : null,
                 ),
               );
             }),
@@ -1283,20 +1620,29 @@ class _NavItem extends StatelessWidget {
   final bool selected;
   final bool showRunningDot;
   final VoidCallback onTap;
+  final VoidCallback? onSwipeUp;
   const _NavItem({
     required this.label,
     required this.icon,
     required this.selected,
     this.showRunningDot = false,
     required this.onTap,
+    this.onSwipeUp,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
     final color = selected ? t.accent : t.textMuted;
-    return InkWell(
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
+      onVerticalDragEnd: onSwipeUp == null
+          ? null
+          : (details) {
+              final velocity = details.primaryVelocity ?? 0;
+              if (velocity < -220) onSwipeUp!();
+            },
       child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
