@@ -63,6 +63,7 @@ export function parseRuntimeFromChatBody(body: {
     return {
       agent: 'codex',
       ...(body.model ? { model: body.model } : {}),
+      reasoning_effort: 'medium',
       sandbox: 'workspace-write',
       approval_policy: 'on-request',
     };
@@ -104,7 +105,7 @@ function parseFullRuntime(agent: AgentKind, runtime: unknown): AgentRuntime {
       sandbox: sandbox as 'read-only' | 'workspace-write' | 'danger-full-access',
       approval_policy: approvalPolicy as 'untrusted' | 'on-request' | 'never',
       ...(typeof runtime['model'] === 'string' ? { model: runtime['model'] } : {}),
-      ...(typeof reasoningEffort === 'string' ? { reasoning_effort: reasoningEffort as 'low' | 'medium' | 'high' | 'xhigh' } : {}),
+      reasoning_effort: (typeof reasoningEffort === 'string' ? reasoningEffort : 'medium') as 'low' | 'medium' | 'high' | 'xhigh',
     };
   }
   return {

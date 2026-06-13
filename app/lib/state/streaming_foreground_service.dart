@@ -87,6 +87,19 @@ class StreamingForegroundService {
     await _sync();
   }
 
+  Future<void> complete(ChatCompletionPayload payload) async {
+    final removed = _active.remove(payload.key) != null;
+    _activity.remove(payload.key);
+    if (!removed && _active.length == 1) {
+      final only = _active.values.single;
+      if (only.cwd == payload.cwd && only.agent == payload.agent) {
+        _active.remove(only.key);
+        _activity.remove(only.key);
+      }
+    }
+    await _sync();
+  }
+
   Future<void> _sync() async {
     if (!Platform.isAndroid) return;
     await init();
@@ -126,7 +139,7 @@ class StreamingForegroundService {
   }
 
   String _title() {
-    return 'PawTerm 正在后台处理';
+    return 'PawTerm 正在继续回复';
   }
 
   String _body() {

@@ -21,12 +21,27 @@ describe('parseRuntimeFromChatBody', () => {
         model: 'gpt-5.4',
         sandbox: 'workspace-write',
         approval_policy: 'on-request',
+        reasoning_effort: 'high',
       },
     })).toEqual({
       agent: 'codex',
       model: 'gpt-5.4',
       sandbox: 'workspace-write',
       approval_policy: 'on-request',
+      reasoning_effort: 'high',
+    });
+  });
+
+  it('uses concrete codex reasoning effort for legacy bodies', () => {
+    expect(parseRuntimeFromChatBody({
+      agent: 'codex',
+      model: 'gpt-5.4',
+    })).toEqual({
+      agent: 'codex',
+      model: 'gpt-5.4',
+      sandbox: 'workspace-write',
+      approval_policy: 'on-request',
+      reasoning_effort: 'medium',
     });
   });
 

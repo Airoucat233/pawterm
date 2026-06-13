@@ -95,7 +95,8 @@ class CurrentSession {
         AgentKind.codex => {
             'agent': 'codex',
             'sandbox': 'workspace-write',
-            'approval_policy': 'on-request'
+            'approval_policy': 'on-request',
+            'reasoning_effort': 'medium'
           },
         AgentKind.gemini => {'agent': 'gemini'},
       };

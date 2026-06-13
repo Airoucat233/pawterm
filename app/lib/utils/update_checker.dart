@@ -70,24 +70,43 @@ Future<GithubRelease?> _fetchPrereleaseRelease() async {
 }
 
 bool isNewerVersion(String latestTag, String currentVersion) {
-  final latest = versionFromTag(latestTag);
-  final current = currentVersion.split('+').first;
-  final l = _versionParts(latest);
-  final c = _versionParts(current);
+  final latest = _ParsedVersion.parse(versionFromTag(latestTag));
+  final current = _ParsedVersion.parse(currentVersion);
+  final l = latest.parts;
+  final c = current.parts;
   for (var i = 0; i < 3; i++) {
     final lv = i < l.length ? l[i] : 0;
     final cv = i < c.length ? c[i] : 0;
     if (lv > cv) return true;
     if (lv < cv) return false;
   }
+  if (latest.preNumber == null && current.preNumber != null) return true;
+  if (latest.preNumber != null && current.preNumber == null) return false;
+  if (latest.preNumber != null && current.preNumber != null) {
+    return latest.preNumber! > current.preNumber!;
+  }
   return false;
 }
 
-List<int> _versionParts(String version) {
-  return version
-      .split('.')
-      .map((s) => int.tryParse(s.replaceAll(RegExp(r'[^0-9].*$'), '')) ?? 0)
-      .toList();
+class _ParsedVersion {
+  final List<int> parts;
+  final int? preNumber;
+
+  const _ParsedVersion({required this.parts, required this.preNumber});
+
+  static _ParsedVersion parse(String value) {
+    final semantic = value.split('+').first;
+    final match =
+        RegExp(r'-(?:prerelease|pre|rc)\.(\d+)$').firstMatch(semantic);
+    final base = semantic.split('-').first;
+    return _ParsedVersion(
+      parts: base
+          .split('.')
+          .map((s) => int.tryParse(s.replaceAll(RegExp(r'[^0-9].*$'), '')) ?? 0)
+          .toList(),
+      preNumber: int.tryParse(match?.group(1) ?? ''),
+    );
+  }
 }
 
 String versionFromTag(String tagName) {

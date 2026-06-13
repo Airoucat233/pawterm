@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -178,16 +179,22 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
                       itemCount: ideas.length,
                       itemBuilder: (_, i) {
                         final idea = ideas[i];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Dismissible(
-                            key: ValueKey('idea-${idea.id}'),
-                            direction: DismissDirection.endToStart,
-                            confirmDismiss: (_) async {
-                              await _delete(idea);
-                              return true;
-                            },
-                            background: const _DeleteBackground(),
+                        return _SwipeableIdeaCard(
+                          key: ValueKey('idea-${idea.id}'),
+                          idea: idea,
+                          archived: _showArchived,
+                          onEdit: () => _edit(idea),
+                          onArchive: () async {
+                            await widget.api.archive(idea.id);
+                            _reload();
+                          },
+                          onUnarchive: () async {
+                            await widget.api.unarchive(idea.id);
+                            _reload();
+                          },
+                          onDelete: () => _delete(idea),
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
                             child: _IdeaCard(
                               idea: idea,
                               archived: _showArchived,
@@ -384,6 +391,231 @@ class _IdeaComposerCard extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SwipeableIdeaCard extends StatefulWidget {
+  final Idea idea;
+  final bool archived;
+  final VoidCallback onEdit;
+  final VoidCallback onArchive;
+  final VoidCallback onUnarchive;
+  final VoidCallback onDelete;
+  final Widget child;
+
+  const _SwipeableIdeaCard({
+    super.key,
+    required this.idea,
+    required this.archived,
+    required this.onEdit,
+    required this.onArchive,
+    required this.onUnarchive,
+    required this.onDelete,
+    required this.child,
+  });
+
+  @override
+  State<_SwipeableIdeaCard> createState() => _SwipeableIdeaCardState();
+}
+
+class _SwipeableIdeaCardState extends State<_SwipeableIdeaCard> {
+  static const double _maxOffset = 164;
+  static const double _openThreshold = 0.42;
+  double _offset = 0;
+  bool _dragging = false;
+
+  double get _progress => (_offset / _maxOffset).clamp(0.0, 1.0);
+
+  void _close() {
+    if (_offset == 0) return;
+    setState(() {
+      _dragging = false;
+      _offset = 0;
+    });
+  }
+
+  void _runAction(VoidCallback action) {
+    _close();
+    action();
+  }
+
+  void _onDragStart(DragStartDetails details) {
+    setState(() => _dragging = true);
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    final next = (_offset - details.delta.dx).clamp(0.0, _maxOffset);
+    if (next == _offset) return;
+    setState(() => _offset = next);
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    final velocity = -(details.primaryVelocity ?? 0);
+    final shouldOpen =
+        velocity > 360 || (velocity > -360 && _progress >= _openThreshold);
+    setState(() {
+      _dragging = false;
+      _offset = shouldOpen ? _maxOffset : 0;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final progress = Curves.easeOutCubic.transform(_progress);
+    final cardScale = lerpDouble(1, 0.972, progress)!;
+    final duration =
+        _dragging ? Duration.zero : const Duration(milliseconds: 190);
+    final archiveLabel = widget.archived ? '移回' : '归档';
+    final archiveIcon =
+        widget.archived ? Icons.unarchive_outlined : Icons.inventory_2_outlined;
+    final archiveColor = widget.archived ? t.success : t.warning;
+
+    return Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.centerRight,
+      children: [
+        Positioned.fill(
+          bottom: 10,
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: SizedBox(
+              width: _maxOffset,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  _SwipeActionButton(
+                    progress: progress,
+                    delay: 0.0,
+                    color: t.accent,
+                    icon: Icons.edit_outlined,
+                    label: '编辑',
+                    onTap: () => _runAction(widget.onEdit),
+                  ),
+                  const SizedBox(width: 6),
+                  _SwipeActionButton(
+                    progress: progress,
+                    delay: 0.08,
+                    color: archiveColor,
+                    icon: archiveIcon,
+                    label: archiveLabel,
+                    onTap: () => _runAction(
+                      widget.archived ? widget.onUnarchive : widget.onArchive,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  _SwipeActionButton(
+                    progress: progress,
+                    delay: 0.16,
+                    color: t.error,
+                    icon: Icons.delete_outline_rounded,
+                    label: '删除',
+                    onTap: () => _runAction(widget.onDelete),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragStart: _onDragStart,
+          onHorizontalDragUpdate: _onDragUpdate,
+          onHorizontalDragEnd: _onDragEnd,
+          onHorizontalDragCancel: () {
+            setState(() {
+              _dragging = false;
+              _offset = _progress >= _openThreshold ? _maxOffset : 0;
+            });
+          },
+          child: AnimatedContainer(
+            duration: duration,
+            curve: Curves.easeOutCubic,
+            transform: Matrix4.identity()
+              ..translate(-_offset)
+              ..scale(cardScale, cardScale),
+            transformAlignment: Alignment.center,
+            child: widget.child,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SwipeActionButton extends StatelessWidget {
+  final double progress;
+  final double delay;
+  final Color color;
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _SwipeActionButton({
+    required this.progress,
+    required this.delay,
+    required this.color,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final local = ((progress - delay) / (1 - delay)).clamp(0.0, 1.0);
+    final eased = Curves.easeOutBack.transform(local);
+    final opacity = Curves.easeOutCubic.transform(local);
+    final scale = lerpDouble(0.72, 1, eased.clamp(0.0, 1.0))!;
+    final shift = lerpDouble(14, 0, opacity)!;
+    return Opacity(
+      opacity: opacity,
+      child: Transform.translate(
+        offset: Offset(shift, 0),
+        child: Transform.scale(
+          scale: scale,
+          child: Semantics(
+            button: true,
+            label: label,
+            child: InkWell(
+              onTap: local > 0.55 ? onTap : null,
+              borderRadius: BorderRadius.circular(999),
+              child: SizedBox(
+                width: 48,
+                height: 58,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.14),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: color.withValues(alpha: 0.22),
+                          width: 0.5,
+                        ),
+                      ),
+                      child: Icon(icon, color: color, size: 20),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      label,
+                      maxLines: 1,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -600,49 +832,6 @@ class _IdeaCardState extends State<_IdeaCard>
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DeleteBackground extends StatelessWidget {
-  const _DeleteBackground();
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Container(
-      alignment: Alignment.centerRight,
-      padding: const EdgeInsets.only(right: 22),
-      decoration: BoxDecoration(
-        color: t.error.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: 1),
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutBack,
-        builder: (_, value, child) => Opacity(
-          opacity: value.clamp(0, 1),
-          child: Transform.scale(scale: value, child: child),
-        ),
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            color: t.error,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: t.error.withValues(alpha: 0.28),
-                blurRadius: 14,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: const Icon(Icons.delete_outline_rounded,
-              color: Colors.white, size: 22),
         ),
       ),
     );

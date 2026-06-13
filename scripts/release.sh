@@ -54,6 +54,13 @@ fi
 CURRENT=$(/usr/bin/awk '/^version:/ {print $2; exit}' "$PUBSPEC")
 [[ -z "$CURRENT" ]] && { echo "✗ Could not read version from pubspec.yaml" >&2; exit 1; }
 SEMVER="${CURRENT%%+*}"
+BASE_SEMVER="${SEMVER%%-*}"
+PRE_BASE="$BASE_SEMVER"
+PRE_N=0
+if [[ "$SEMVER" =~ -prerelease\.([0-9]+)$ ]]; then
+  PRE_BASE="${SEMVER%%-prerelease.*}"
+  PRE_N="${match[1]}"
+fi
 
 resolve_server_version() {
   local version
@@ -191,7 +198,8 @@ fi
 
 BUILD="${CURRENT#*+}"
 [[ "$BUILD" == "$CURRENT" ]] && BUILD="1"
-IFS='.' read -r MAJOR MINOR PATCH <<<"$SEMVER"
+IFS='.' read -r MAJOR MINOR PATCH <<<"$BASE_SEMVER"
+IFS='.' read -r PRE_MAJOR PRE_MINOR PRE_PATCH <<<"$PRE_BASE"
 
 MAC_CURRENT=$(/usr/bin/python3 -c "
 import plistlib
@@ -205,6 +213,82 @@ choose_app_version() {
   printf "  Android current: \033[36m%s\033[0m\n" "$CURRENT"
   [[ $PRERELEASE -eq 1 ]] && echo "  mode           : prerelease (prod app id, tag: prerelease-v*)"
   echo
+
+  if [[ $PRERELEASE -eq 1 ]]; then
+    if [[ $PRE_N -gt 0 ]]; then
+      cat <<MENU
+  Choose Android app bump:
+    1)  same       $CURRENT  (resume / re-run)
+    2)  prerelease ${PRE_BASE}-prerelease.$((PRE_N+1))+$((BUILD+1))
+    3)  patch      $PRE_MAJOR.$PRE_MINOR.$((PRE_PATCH+1))-prerelease.1+$((BUILD+1))
+    4)  minor      $PRE_MAJOR.$((PRE_MINOR+1)).0-prerelease.1+$((BUILD+1))
+    5)  major      $((PRE_MAJOR+1)).0.0-prerelease.1+$((BUILD+1))
+    q)  quit
+MENU
+
+      printf "  → [1-5/q, default=2]: "
+      read -r CHOICE
+      CHOICE="${CHOICE:-2}"
+
+      case "$CHOICE" in
+        1|same)           APP_NEW="$CURRENT" ;;
+        2|prerelease|pre) APP_NEW="${PRE_BASE}-prerelease.$((PRE_N+1))+$((BUILD+1))" ;;
+        3|patch)          APP_NEW="$PRE_MAJOR.$PRE_MINOR.$((PRE_PATCH+1))-prerelease.1+$((BUILD+1))" ;;
+        4|minor)          APP_NEW="$PRE_MAJOR.$((PRE_MINOR+1)).0-prerelease.1+$((BUILD+1))" ;;
+        5|major)          APP_NEW="$((PRE_MAJOR+1)).0.0-prerelease.1+$((BUILD+1))" ;;
+        q|quit)           echo "  aborted."; exit 0 ;;
+        *)                echo "  invalid choice" >&2; exit 1 ;;
+      esac
+    else
+      cat <<MENU
+  Choose Android app bump:
+    1)  patch      $MAJOR.$MINOR.$((PATCH+1))-prerelease.1+$((BUILD+1))
+    2)  minor      $MAJOR.$((MINOR+1)).0-prerelease.1+$((BUILD+1))
+    3)  major      $((MAJOR+1)).0.0-prerelease.1+$((BUILD+1))
+    4)  same-base  $BASE_SEMVER-prerelease.1+$((BUILD+1))
+    q)  quit
+MENU
+
+      printf "  → [1-4/q, default=1]: "
+      read -r CHOICE
+      CHOICE="${CHOICE:-1}"
+
+      case "$CHOICE" in
+        1|patch)          APP_NEW="$MAJOR.$MINOR.$((PATCH+1))-prerelease.1+$((BUILD+1))" ;;
+        2|minor)          APP_NEW="$MAJOR.$((MINOR+1)).0-prerelease.1+$((BUILD+1))" ;;
+        3|major)          APP_NEW="$((MAJOR+1)).0.0-prerelease.1+$((BUILD+1))" ;;
+        4|same|same-base) APP_NEW="$BASE_SEMVER-prerelease.1+$((BUILD+1))" ;;
+        q|quit)           echo "  aborted."; exit 0 ;;
+        *)                echo "  invalid choice" >&2; exit 1 ;;
+      esac
+    fi
+    return
+  fi
+
+  if [[ $PRE_N -gt 0 ]]; then
+    cat <<MENU
+  Choose Android app bump:
+    1)  stable   $PRE_BASE+$((BUILD+1))  (promote from $CURRENT)
+    2)  patch    $PRE_MAJOR.$PRE_MINOR.$((PRE_PATCH+1))+1
+    3)  minor    $PRE_MAJOR.$((PRE_MINOR+1)).0+1
+    4)  major    $((PRE_MAJOR+1)).0.0+1
+    q)  quit
+MENU
+
+    printf "  → [1-4/q, default=1]: "
+    read -r CHOICE
+    CHOICE="${CHOICE:-1}"
+
+    case "$CHOICE" in
+      1|stable|release) APP_NEW="$PRE_BASE+$((BUILD+1))" ;;
+      2|patch)          APP_NEW="$PRE_MAJOR.$PRE_MINOR.$((PRE_PATCH+1))+1" ;;
+      3|minor)          APP_NEW="$PRE_MAJOR.$((PRE_MINOR+1)).0+1" ;;
+      4|major)          APP_NEW="$((PRE_MAJOR+1)).0.0+1" ;;
+      q|quit)           echo "  aborted."; exit 0 ;;
+      *)                echo "  invalid choice" >&2; exit 1 ;;
+    esac
+    return
+  fi
 
   cat <<MENU
   Choose Android app bump:
