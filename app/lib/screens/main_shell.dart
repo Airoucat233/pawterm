@@ -18,6 +18,7 @@ import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../state/streaming_foreground_service.dart';
 import '../theme.dart';
+import '../widgets/agent_badge.dart';
 import 'settings_screen.dart';
 import 'tabs/chat_tab.dart';
 import 'tabs/files_tab.dart';
@@ -70,6 +71,18 @@ class _MainShellState extends ConsumerState<MainShell>
     await ChatCompletionNotifier.instance.clearSessionNotifications();
   }
 
+  Map<String, dynamic> _defaultRuntimeForAgent(AgentKind agent, String cwd) {
+    final agents = ref.read(agentsProvider).valueOrNull ?? const <AgentInfo>[];
+    for (final info in agents) {
+      if (info.kind == agent && info.defaultRuntime.isNotEmpty) {
+        return Map<String, dynamic>.from(info.defaultRuntime);
+      }
+    }
+    return ref
+        .read(projectAgentRuntimeProvider.notifier)
+        .runtimeFor(cwd, agent);
+  }
+
   @override
   Widget build(BuildContext context) {
     ref.listen<int>(chatNotificationNavigationProvider, (previous, next) {
@@ -109,7 +122,7 @@ class _MainShellState extends ConsumerState<MainShell>
                   conn: conn,
                   session: session,
                   tabIndex: _tab.index,
-                  onSessionTap: () => _showSessionSwitcher(context),
+                  onMoreTap: () => _showMainActions(context),
                 ),
                 Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
                 Expanded(
@@ -220,7 +233,70 @@ class _MainShellState extends ConsumerState<MainShell>
         onExpandedChanged: (updated) => _sheetExpanded
           ..clear()
           ..addAll(updated),
+        onNewSession: (project) {
+          Navigator.of(ctx).pop();
+          _showNewSessionSheet(context, project);
+        },
         onPop: () => Navigator.of(ctx).pop(),
+      ),
+    );
+  }
+
+  void _showMainActions(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final session = ref.read(currentSessionProvider);
+    final project = ref.read(selectedProjectProvider) ??
+        (session == null
+            ? null
+            : Project(name: session.label, path: session.cwd));
+    showModalBottomSheet<void>(
+      context: context,
+      requestFocus: false,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _MainActionsSheet(
+        project: project,
+        onSwitchSession: () {
+          Navigator.of(ctx).pop();
+          _showSessionSwitcher(context);
+        },
+        onNewSession: project == null
+            ? null
+            : () {
+                Navigator.of(ctx).pop();
+                _showNewSessionSheet(context, project);
+              },
+        onSettings: () {
+          Navigator.of(ctx).pop();
+          Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const SettingsScreen()),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showNewSessionSheet(BuildContext context, Project project) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final agent =
+        ref.read(projectDefaultAgentProvider.notifier).forProject(project.path);
+    showModalBottomSheet<void>(
+      context: context,
+      requestFocus: false,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _NewSessionSheet(
+        project: project,
+        agent: agent,
+        onStart: () {
+          ref.read(selectedProjectProvider.notifier).state = project;
+          ref.read(currentSessionProvider.notifier).state = CurrentSession(
+            cwd: project.path,
+            label: project.name,
+            agent: agent,
+            runtime: _defaultRuntimeForAgent(agent, project.path),
+          );
+          Navigator.of(ctx).pop();
+          setState(() => _tab = BottomTabId.chat);
+        },
       ),
     );
   }
@@ -590,12 +666,12 @@ class _TopBar extends StatelessWidget {
   final Connection? conn;
   final CurrentSession? session;
   final int tabIndex;
-  final VoidCallback onSessionTap;
+  final VoidCallback onMoreTap;
   const _TopBar({
     required this.conn,
     required this.session,
     required this.tabIndex,
-    required this.onSessionTap,
+    required this.onMoreTap,
   });
 
   @override
@@ -699,20 +775,10 @@ class _TopBar extends StatelessWidget {
 
             IconButton(
               icon: Icon(Icons.more_horiz, size: 20, color: t.textMuted),
-              onPressed: onSessionTap,
+              onPressed: onMoreTap,
               padding: const EdgeInsets.all(6),
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              tooltip: '切换会话',
-            ),
-
-            // Right: settings button
-            IconButton(
-              icon: Icon(Icons.settings_outlined, size: 19, color: t.textMuted),
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
-              ),
-              padding: const EdgeInsets.all(6),
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              tooltip: '更多',
             ),
           ],
         ),
@@ -727,6 +793,270 @@ class _TopBar extends StatelessWidget {
       AgentKind.gemini => 'Gemini',
     };
   }
+}
+
+class _MainActionsSheet extends StatelessWidget {
+  final Project? project;
+  final VoidCallback onSwitchSession;
+  final VoidCallback? onNewSession;
+  final VoidCallback onSettings;
+
+  const _MainActionsSheet({
+    required this.project,
+    required this.onSwitchSession,
+    required this.onNewSession,
+    required this.onSettings,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: t.border, width: 0.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.16),
+              blurRadius: 24,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 38,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: t.border,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            _MainActionTile(
+              icon: Icons.swap_horiz_rounded,
+              title: '切换会话',
+              subtitle: '查看项目和历史会话',
+              onTap: onSwitchSession,
+            ),
+            _MainActionTile(
+              icon: Icons.add_comment_outlined,
+              title: '新会话',
+              subtitle: project == null ? '先选择一个项目' : '在 ${project!.name} 中开始',
+              onTap: onNewSession,
+            ),
+            _MainActionTile(
+              icon: Icons.settings_outlined,
+              title: '设置',
+              subtitle: '应用、通知、对话和更新设置',
+              onTap: onSettings,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MainActionTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  const _MainActionTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final enabled = onTap != null;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: enabled ? t.accent.withValues(alpha: 0.1) : t.surfaceHi,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                icon,
+                size: 19,
+                color: enabled ? t.accent : t.textDim,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: enabled ? t.text : t.textDim,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: t.textMuted, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 18, color: t.textDim),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NewSessionSheet extends StatelessWidget {
+  final Project project;
+  final AgentKind agent;
+  final VoidCallback onStart;
+
+  const _NewSessionSheet({
+    required this.project,
+    required this.agent,
+    required this.onStart,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: t.border, width: 0.5),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 38,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 14),
+                decoration: BoxDecoration(
+                  color: t.border,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ),
+            Text(
+              '开始新会话',
+              style: TextStyle(
+                color: t.text,
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: t.surfaceHi,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: t.borderSubt, width: 0.5),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    project.name,
+                    style: TextStyle(
+                      color: t.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    project.path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: t.textDim,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      AgentBadge(agent: agent, compact: true),
+                      const SizedBox(width: 8),
+                      Text(
+                        _agentLabel(agent),
+                        style: TextStyle(
+                          color: t.textMuted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: FilledButton(
+                onPressed: onStart,
+                style: FilledButton.styleFrom(
+                  backgroundColor: t.accent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('开始'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _agentLabel(AgentKind agent) => switch (agent) {
+        AgentKind.claude => 'Claude Code',
+        AgentKind.codex => 'Codex',
+        AgentKind.gemini => 'Gemini CLI',
+      };
 }
 
 class _GitSidePanel extends StatefulWidget {
@@ -1065,10 +1395,12 @@ class _DiffLine extends StatelessWidget {
 class _SessionSwitcherSheet extends ConsumerStatefulWidget {
   final Set<String> initialExpanded;
   final void Function(Set<String>) onExpandedChanged;
+  final void Function(Project) onNewSession;
   final VoidCallback onPop;
   const _SessionSwitcherSheet({
     required this.initialExpanded,
     required this.onExpandedChanged,
+    required this.onNewSession,
     required this.onPop,
   });
 
@@ -1192,23 +1524,7 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                               }
                               widget.onExpandedChanged(_expanded);
                             }),
-                            onNewSession: () {
-                              final agent = ref
-                                  .read(projectDefaultAgentProvider.notifier)
-                                  .forProject(p.path);
-                              ref.read(selectedProjectProvider.notifier).state =
-                                  p;
-                              ref.read(currentSessionProvider.notifier).state =
-                                  CurrentSession(
-                                cwd: p.path,
-                                label: p.name,
-                                agent: agent,
-                                runtime: ref
-                                    .read(projectAgentRuntimeProvider.notifier)
-                                    .runtimeFor(p.path, agent),
-                              );
-                              widget.onPop();
-                            },
+                            onNewSession: () => widget.onNewSession(p),
                             onPickSession: (s) {
                               ref.read(selectedProjectProvider.notifier).state =
                                   p;
@@ -1218,9 +1534,12 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                                 resumeId: s.sessionId,
                                 label: '${p.name} · ${s.displayTitle}',
                                 agent: s.agent,
-                                runtime: ref
-                                    .read(projectAgentRuntimeProvider.notifier)
-                                    .runtimeFor(p.path, s.agent),
+                                runtime: s.runtime.isNotEmpty
+                                    ? s.runtime
+                                    : ref
+                                        .read(projectAgentRuntimeProvider
+                                            .notifier)
+                                        .runtimeFor(p.path, s.agent),
                               );
                               widget.onPop();
                             },

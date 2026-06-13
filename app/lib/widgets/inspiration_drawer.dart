@@ -11,11 +11,12 @@ Future<void> showInspirationDrawer(
   required IdeasApi api,
   ValueChanged<String>? onUseIdea,
   ValueChanged<String>? onSendIdea,
-}) {
-  return showModalBottomSheet<void>(
+}) async {
+  await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    requestFocus: false,
     backgroundColor: Colors.transparent,
     builder: (_) => _InspirationDrawer(
       api: api,
@@ -198,27 +199,12 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
                             child: _IdeaCard(
                               idea: idea,
                               archived: _showArchived,
-                              onSend: widget.onSendIdea == null
-                                  ? null
-                                  : () {
-                                      widget.onSendIdea!(idea.text);
-                                      Navigator.of(context).pop();
-                                    },
                               onUse: widget.onUseIdea == null
                                   ? null
                                   : () {
                                       widget.onUseIdea!(idea.text);
                                       Navigator.of(context).pop();
                                     },
-                              onEdit: () => _edit(idea),
-                              onArchive: () async {
-                                await widget.api.archive(idea.id);
-                                _reload();
-                              },
-                              onUnarchive: () async {
-                                await widget.api.unarchive(idea.id);
-                                _reload();
-                              },
                             ),
                           ),
                         );
@@ -625,20 +611,12 @@ class _SwipeActionButton extends StatelessWidget {
 class _IdeaCard extends StatefulWidget {
   final Idea idea;
   final bool archived;
-  final VoidCallback? onSend;
   final VoidCallback? onUse;
-  final VoidCallback onEdit;
-  final VoidCallback onArchive;
-  final VoidCallback onUnarchive;
 
   const _IdeaCard({
     required this.idea,
     required this.archived,
-    required this.onSend,
     required this.onUse,
-    required this.onEdit,
-    required this.onArchive,
-    required this.onUnarchive,
   });
 
   @override
@@ -679,15 +657,12 @@ class _IdeaCardState extends State<_IdeaCard>
     });
   }
 
-  Future<void> _sendWithBounce() async {
+  Future<void> _tapBounce() async {
     if (_longPressing) return;
     setState(() => _scale = 1.018);
     await Future<void>.delayed(const Duration(milliseconds: 85));
     if (!mounted) return;
     setState(() => _scale = 1);
-    await Future<void>.delayed(const Duration(milliseconds: 55));
-    if (!mounted) return;
-    widget.onSend?.call();
   }
 
   Future<void> _useWithShake() async {
@@ -703,7 +678,6 @@ class _IdeaCardState extends State<_IdeaCard>
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final canSend = widget.onSend != null;
     return AnimatedBuilder(
       animation: _shakeController,
       builder: (context, child) {
@@ -739,9 +713,9 @@ class _IdeaCardState extends State<_IdeaCard>
               Expanded(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTapDown: canSend ? (_) => _pressDown() : null,
-                  onTapCancel: canSend ? _pressCancel : null,
-                  onTapUp: canSend ? (_) => _sendWithBounce() : null,
+                  onTapDown: (_) => _pressDown(),
+                  onTapCancel: _pressCancel,
+                  onTapUp: (_) => _tapBounce(),
                   onLongPressStart: (_) => _useWithShake(),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(14, 14, 10, 14),
@@ -780,54 +754,6 @@ class _IdeaCardState extends State<_IdeaCard>
                       ],
                     ),
                   ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(0, 8, 8, 8),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (canSend)
-                      IconButton(
-                        tooltip: '发送',
-                        visualDensity: VisualDensity.compact,
-                        onPressed: widget.onSend,
-                        style: IconButton.styleFrom(
-                          minimumSize: const Size(40, 40),
-                          backgroundColor: t.accent.withValues(alpha: 0.1),
-                          foregroundColor: t.accent,
-                        ),
-                        icon: const Icon(Icons.north_east_rounded, size: 18),
-                      ),
-                    PopupMenuButton<String>(
-                      tooltip: '更多',
-                      icon: Icon(
-                        Icons.more_horiz_rounded,
-                        size: 20,
-                        color: t.textDim,
-                      ),
-                      onSelected: (value) {
-                        switch (value) {
-                          case 'edit':
-                            widget.onEdit();
-                            break;
-                          case 'archive':
-                            widget.onArchive();
-                            break;
-                          case 'unarchive':
-                            widget.onUnarchive();
-                            break;
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                        PopupMenuItem(
-                          value: widget.archived ? 'unarchive' : 'archive',
-                          child: Text(widget.archived ? '移回活跃' : '归档'),
-                        ),
-                      ],
-                    ),
-                  ],
                 ),
               ),
             ],

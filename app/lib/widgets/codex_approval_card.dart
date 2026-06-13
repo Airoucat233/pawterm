@@ -10,7 +10,8 @@ class CodexApprovalCard extends StatefulWidget {
   final ToolResultBlock? answeredResult;
   final String? localDecision;
   final bool initiallyExpanded;
-  final void Function(String requestId, String decision) onSubmit;
+  final void Function(String requestId, String decision, String? scope)
+      onSubmit;
 
   const CodexApprovalCard({
     super.key,
@@ -189,7 +190,8 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
                         child: _ActionButton(
                           label: actions[i].label,
                           color: actions[i].color,
-                          onTap: () => _submit(actions[i].decision),
+                          onTap: () =>
+                              _submit(actions[i].decision, actions[i].scope),
                         ),
                       ),
                     ],
@@ -203,17 +205,17 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
     );
   }
 
-  void _submit(String decision) {
+  void _submit(String decision, String? scope) {
     if (_localDecision != null ||
         widget.localDecision != null ||
         widget.answeredResult != null) {
       return;
     }
     setState(() {
-      _localDecision = decision;
+      _localDecision = scope == 'session' ? 'accept:session' : decision;
       _expanded = false;
     });
-    widget.onSubmit(widget.toolUse.id, decision);
+    widget.onSubmit(widget.toolUse.id, decision, scope);
   }
 
   String? _decisionFromResult(ToolResultBlock? result) {
@@ -227,8 +229,8 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
 
   String? _decisionLabel(String? decision) => switch (decision) {
         null => null,
-        'accept' => '已允许本次',
-        'acceptForSession' => '本会话已允许',
+        'accept' || 'accept:turn' => '已允许本次',
+        'accept:session' || 'acceptForSession' => '本会话已允许',
         'decline' => '已拒绝',
         'cancel' => '已取消',
         'resolved' => '已处理',
@@ -237,7 +239,11 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
 
   Color _decisionColor(AppTokens t, String? decision) => switch (decision) {
         'decline' || 'cancel' => t.error,
-        'accept' || 'acceptForSession' => t.success,
+        'accept' ||
+        'accept:turn' ||
+        'accept:session' ||
+        'acceptForSession' =>
+          t.success,
         _ => t.textDim,
       };
 
@@ -245,8 +251,8 @@ class _CodexApprovalCardState extends State<CodexApprovalCard> {
     if (method == 'item/permissions/requestApproval') {
       return [
         _ApprovalAction('拒绝', 'decline', t.error),
-        _ApprovalAction('允许本次', 'accept', t.accent),
-        _ApprovalAction('本会话允许', 'acceptForSession', t.warning),
+        _ApprovalAction('允许本次', 'accept', t.accent, scope: 'turn'),
+        _ApprovalAction('本会话允许', 'accept', t.warning, scope: 'session'),
       ];
     }
     if (method == 'item/fileChange/requestApproval') {
@@ -343,8 +349,9 @@ class _ApprovalAction {
   final String label;
   final String decision;
   final Color color;
+  final String? scope;
 
-  const _ApprovalAction(this.label, this.decision, this.color);
+  const _ApprovalAction(this.label, this.decision, this.color, {this.scope});
 }
 
 class _PrettyApprovalDetails extends StatelessWidget {

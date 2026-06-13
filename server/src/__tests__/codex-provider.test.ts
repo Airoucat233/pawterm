@@ -198,15 +198,15 @@ describe('CodexAgentProvider', () => {
       },
     });
 
-    await run.answerApproval?.('approval-1', 'acceptForSession');
+    await run.answerApproval?.('approval-1', 'accept');
     expect(client.responses).toEqual([
-      { id: 'approval-1', result: { decision: 'acceptForSession' } },
+      { id: 'approval-1', result: { decision: 'accept' } },
     ]);
     await expect(iterator.next()).resolves.toEqual({
       done: false,
       value: {
         method: 'serverRequest/resolved',
-        params: { threadId: 'new-thread', requestId: 'approval-1', decision: 'acceptForSession' },
+        params: { threadId: 'new-thread', requestId: 'approval-1', decision: 'accept' },
       },
     });
     await iterator.return?.();

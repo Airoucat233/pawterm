@@ -148,8 +148,16 @@ cmd_stop() {
   port_pids=$(lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null || true)
   for p in $port_pids; do kill -9 "$p" 2>/dev/null || true; done
   [[ -n "$file_pid" ]] && kill -9 "$file_pid" 2>/dev/null || true
-  rm -f "$PID_FILE"
-  ok "killed"
+  for i in $(seq 1 10); do
+    sleep 0.2
+    if ! lsof -ti :$PORT -sTCP:LISTEN 2>/dev/null | grep -q .; then
+      rm -f "$PID_FILE"
+      ok "killed"
+      return 0
+    fi
+  done
+  err "failed to stop server on port $PORT"
+  return 1
 }
 
 cmd_restart() {

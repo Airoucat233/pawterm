@@ -1,4 +1,4 @@
-import type { AgentKind, AgentRuntime, ClaudeRuntime, PermissionMode } from '@pawterm/shared';
+import type { AgentKind, AgentRuntime, ClaudeRuntime, CodexRuntime, GeminiRuntime, PermissionMode } from '@pawterm/shared';
 
 export type AgentQuery = AgentKind | 'all';
 
@@ -141,5 +141,41 @@ export function parseRuntimePatchForAgent(
     return { agent, patch };
   }
 
-  return { agent, patch: { agent } as Partial<AgentRuntime> };
+  if (agent === 'codex') {
+    const patch: Partial<CodexRuntime> = { agent: 'codex' };
+    if (runtime['model'] !== undefined) {
+      if (typeof runtime['model'] !== 'string') throw badRequest('Codex runtime model must be a string');
+      patch.model = runtime['model'];
+    }
+    if (runtime['reasoning_effort'] !== undefined) {
+      if (typeof runtime['reasoning_effort'] !== 'string' || !validReasoningEfforts.has(runtime['reasoning_effort'])) {
+        throw badRequest(`Invalid Codex reasoning_effort: ${String(runtime['reasoning_effort'])}`);
+      }
+      patch.reasoning_effort = runtime['reasoning_effort'] as CodexRuntime['reasoning_effort'];
+    }
+    if (runtime['sandbox'] !== undefined) {
+      if (typeof runtime['sandbox'] !== 'string' || !validCodexSandboxes.has(runtime['sandbox'])) {
+        throw badRequest(`Invalid Codex sandbox: ${String(runtime['sandbox'])}`);
+      }
+      patch.sandbox = runtime['sandbox'] as CodexRuntime['sandbox'];
+    }
+    if (runtime['approval_policy'] !== undefined) {
+      if (typeof runtime['approval_policy'] !== 'string' || !validCodexApprovalPolicies.has(runtime['approval_policy'])) {
+        throw badRequest(`Invalid Codex approval_policy: ${String(runtime['approval_policy'])}`);
+      }
+      patch.approval_policy = runtime['approval_policy'] as CodexRuntime['approval_policy'];
+    }
+    return { agent, patch };
+  }
+
+  const patch: Partial<GeminiRuntime> = { agent: 'gemini' };
+  if (runtime['model'] !== undefined) {
+    if (typeof runtime['model'] !== 'string') throw badRequest('Gemini runtime model must be a string');
+    patch.model = runtime['model'];
+  }
+  if (runtime['approval_policy'] !== undefined) {
+    if (typeof runtime['approval_policy'] !== 'string') throw badRequest('Gemini runtime approval_policy must be a string');
+    patch.approval_policy = runtime['approval_policy'];
+  }
+  return { agent, patch };
 }

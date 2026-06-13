@@ -178,9 +178,13 @@ Future<_HandledApprovalAction?> _answerCodexApprovalFromNotification(
   final decision = switch (response.actionId) {
     ChatCompletionNotifier._actionDecline => 'decline',
     ChatCompletionNotifier._actionAccept => 'accept',
-    ChatCompletionNotifier._actionAcceptForSession => 'acceptForSession',
+    ChatCompletionNotifier._actionAcceptForSession => 'accept',
     _ => null,
   };
+  final scope =
+      response.actionId == ChatCompletionNotifier._actionAcceptForSession
+          ? 'session'
+          : null;
   final raw = response.payload;
   if (decision == null || raw == null || raw.isEmpty) return null;
 
@@ -191,7 +195,7 @@ Future<_HandledApprovalAction?> _answerCodexApprovalFromNotification(
   final uuid = decoded['uuid'] as String;
   final requestId = decoded['request_id'] as String;
   await ChatApi(apiBase, token: token)
-      .answerCodexApproval(uuid, requestId, decision);
+      .answerCodexApproval(uuid, requestId, decision, scope: scope);
   return _HandledApprovalAction(
     requestId: requestId,
     session: decoded['session'],
@@ -361,6 +365,7 @@ class ChatCompletionNotifier {
     required String? token,
     required String uuid,
     required String requestId,
+    required String method,
     required String title,
     required String body,
     required bool appInForeground,
@@ -374,22 +379,11 @@ class ChatCompletionNotifier {
       if (token != null && token.isNotEmpty) 'token': token,
       'uuid': uuid,
       'request_id': requestId,
+      'method': method,
       'session': payload.toJson(),
     };
-    await _plugin.show(
-      id: 'approval|${payload.key}|$requestId'.hashCode & 0x7fffffff,
-      title: title,
-      body: body,
-      notificationDetails: NotificationDetails(
-        android: AndroidNotificationDetails(
-          _approvalChannel.id,
-          _approvalChannel.name,
-          channelDescription: _approvalChannel.description,
-          importance: Importance.high,
-          priority: Priority.high,
-          category: AndroidNotificationCategory.recommendation,
-          ticker: 'Codex approval required',
-          actions: const [
+    final actions = method == 'item/permissions/requestApproval'
+        ? const [
             AndroidNotificationAction(
               _actionDecline,
               '拒绝',
@@ -405,7 +399,33 @@ class ChatCompletionNotifier {
               '本会话允许',
               cancelNotification: true,
             ),
-          ],
+          ]
+        : const [
+            AndroidNotificationAction(
+              _actionDecline,
+              '拒绝',
+              cancelNotification: true,
+            ),
+            AndroidNotificationAction(
+              _actionAccept,
+              '允许',
+              cancelNotification: true,
+            ),
+          ];
+    await _plugin.show(
+      id: 'approval|${payload.key}|$requestId'.hashCode & 0x7fffffff,
+      title: title,
+      body: body,
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          _approvalChannel.id,
+          _approvalChannel.name,
+          channelDescription: _approvalChannel.description,
+          importance: Importance.high,
+          priority: Priority.high,
+          category: AndroidNotificationCategory.recommendation,
+          ticker: 'Codex approval required',
+          actions: actions,
         ),
       ),
       payload: jsonEncode(approvalPayload),

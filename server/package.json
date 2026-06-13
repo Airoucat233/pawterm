@@ -13,7 +13,6 @@
   ],
   "scripts": {
     "dev": "PAWTERM_CONFIG=$(pwd)/config.json tsx watch src/index.ts",
-    "dev:test": "PAWTERM_CONFIG=$(pwd)/config.test.json tsx src/index.ts",
     "test-server:start": "./scripts/test-server.sh start",
     "test-server:stop": "./scripts/test-server.sh stop",
     "test-server:restart": "./scripts/test-server.sh restart",

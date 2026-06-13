@@ -138,8 +138,9 @@ class ChatApi {
   Future<void> answerCodexApproval(
     String uuid,
     String requestId,
-    String decision,
-  ) async {
+    String decision, {
+    String? scope,
+  }) async {
     final resp = await http.post(
       Uri.parse('$_apiBase/chat/codex-approval'),
       headers: {'Content-Type': 'application/json', ..._auth},
@@ -147,6 +148,7 @@ class ChatApi {
         'uuid': uuid,
         'request_id': requestId,
         'decision': decision,
+        if (scope != null && scope.isNotEmpty) 'scope': scope,
       }),
     );
     if (resp.statusCode != 200) {
@@ -167,16 +169,24 @@ class ChatApi {
     }
   }
 
-  Future<void> runtime(
-      String uuid, AgentKind agent, Map<String, dynamic> runtime) async {
+  Future<Map<String, dynamic>?> runtime(String uuid, String cwd,
+      AgentKind agent, Map<String, dynamic> runtime) async {
     final resp = await http.post(
       Uri.parse('$_apiBase/chat/runtime'),
       headers: {'Content-Type': 'application/json', ..._auth},
-      body: jsonEncode({'uuid': uuid, 'agent': agent.wire, 'runtime': runtime}),
+      body: jsonEncode({
+        'uuid': uuid,
+        'cwd': cwd,
+        'agent': agent.wire,
+        'runtime': runtime,
+      }),
     );
     if (resp.statusCode != 200) {
       throw ChatApiException(resp.statusCode, resp.body);
     }
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    final next = body['runtime'];
+    return next is Map ? Map<String, dynamic>.from(next) : null;
   }
 
   /// Change model mid-run.

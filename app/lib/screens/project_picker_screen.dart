@@ -363,9 +363,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
 
   void _enterProjectWithAgent(Project project, AgentKind agent) {
     ref.read(selectedProjectProvider.notifier).state = project;
-    final runtime = ref
-        .read(projectAgentRuntimeProvider.notifier)
-        .runtimeFor(project.path, agent);
+    final runtime = _defaultRuntimeForAgent(agent, project.path);
     ref.read(currentSessionProvider.notifier).state = CurrentSession(
       cwd: project.path,
       label: project.name,
@@ -375,6 +373,18 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),
     );
+  }
+
+  Map<String, dynamic> _defaultRuntimeForAgent(AgentKind agent, String cwd) {
+    final agents = ref.read(agentsProvider).valueOrNull ?? const <AgentInfo>[];
+    for (final info in agents) {
+      if (info.kind == agent && info.defaultRuntime.isNotEmpty) {
+        return Map<String, dynamic>.from(info.defaultRuntime);
+      }
+    }
+    return ref
+        .read(projectAgentRuntimeProvider.notifier)
+        .runtimeFor(cwd, agent);
   }
 
   void _showNewChatSheet(
@@ -405,9 +415,11 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       label: '${project.name} · ${session.displayTitle}',
       resumeId: session.sessionId,
       agent: session.agent,
-      runtime: ref
-          .read(projectAgentRuntimeProvider.notifier)
-          .runtimeFor(project.path, session.agent),
+      runtime: session.runtime.isNotEmpty
+          ? session.runtime
+          : ref
+              .read(projectAgentRuntimeProvider.notifier)
+              .runtimeFor(project.path, session.agent),
     );
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),

@@ -65,6 +65,14 @@ export interface AgentsResponse {
   agents: AgentInfo[];
 }
 
+export interface SessionRuntimeRecord {
+  agent: AgentKind;
+  cwd: string;
+  sessionId: string;
+  runtime: AgentRuntime;
+  updatedAt: number;
+}
+
 export interface AgentEventMeta {
   agent?: AgentKind;
   session_ref?: AgentSessionRef;

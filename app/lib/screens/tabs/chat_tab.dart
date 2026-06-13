@@ -20,6 +20,7 @@ import '../../api/git_api.dart';
 import '../../api/ideas_api.dart';
 import '../../api/protocol.dart';
 import '../../api/session_files_api.dart';
+import '../../api/sessions_api.dart';
 import '../../api/sse_client.dart';
 import '../../api/upload_api.dart';
 import '../../i18n/locale_provider.dart';
@@ -672,7 +673,30 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
     _serverToken = config.token;
 
-    unawaited(_connectToSession(config.apiBase, session, runtime: _runtime));
+    unawaited(_connectWithServerRuntime(config.apiBase, session, _runtime));
+  }
+
+  Future<void> _connectWithServerRuntime(
+    String httpBase,
+    CurrentSession session,
+    _ChatSessionRuntime runtime,
+  ) async {
+    var nextSession = session;
+    if (session.resumeId != null) {
+      try {
+        final serverRuntime = await SessionsApi(httpBase, token: _serverToken)
+            .runtime(session.resumeId!, session.cwd, agent: session.agent);
+        if (serverRuntime.isNotEmpty) {
+          nextSession = session.copyWith(runtime: serverRuntime);
+          runtime.session = nextSession;
+          if (mounted && _isActiveRuntime(runtime)) {
+            ref.read(currentSessionProvider.notifier).state = nextSession;
+          }
+        }
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    await _connectToSession(httpBase, nextSession, runtime: runtime);
   }
 
   /// 处理会话冲突（另一个设备持有该会话）。
@@ -1100,11 +1124,24 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final next = session.copyWith(runtime: nextRuntime);
     ref.read(currentSessionProvider.notifier).state = next;
     _runtime.session = next;
-    unawaited(ref
-        .read(projectAgentRuntimeProvider.notifier)
-        .setRuntime(next.cwd, next.agent, next.runtime));
     if (_sessionId != null && _chatApi != null) {
-      unawaited(_chatApi!.runtime(_sessionId!, next.agent, next.runtime));
+      unawaited(_chatApi!
+          .runtime(_sessionId!, next.cwd, next.agent, next.runtime)
+          .then((serverRuntime) {
+        if (!mounted || serverRuntime == null) return;
+        final current = ref.read(currentSessionProvider);
+        if (current == null ||
+            current.cwd != next.cwd ||
+            current.agent != next.agent) {
+          return;
+        }
+        final updated = current.copyWith(runtime: serverRuntime);
+        ref.read(currentSessionProvider.notifier).state = updated;
+        if (_runtime.session?.cwd == updated.cwd &&
+            _runtime.session?.agent == updated.agent) {
+          _runtime.session = updated;
+        }
+      }).catchError((_) {}));
     }
   }
 
@@ -1993,6 +2030,18 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     unawaited(_persistPendingQueue());
   }
 
+  void _reorderPending(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= _pending.length) return;
+    if (newIndex > _pending.length) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (newIndex < 0 || oldIndex == newIndex) return;
+    setState(() {
+      final item = _pending.removeAt(oldIndex);
+      _pending.insert(newIndex, item);
+    });
+    unawaited(_persistPendingQueue());
+  }
+
   void _interrupt() {
     final session = _runtime.session ?? ref.read(currentSessionProvider);
     if (_interrupting) return;
@@ -2137,21 +2186,23 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   /// 把 Codex app-server approval 决策通过 REST 回给 server。
-  void _sendCodexApproval(String requestId, String decision) {
-    _sendCodexApprovalForRuntime(_runtime, requestId, decision);
+  void _sendCodexApproval(String requestId, String decision, String? scope) {
+    _sendCodexApprovalForRuntime(_runtime, requestId, decision, scope);
   }
 
   void _sendCodexApprovalForRuntime(
     _ChatSessionRuntime runtime,
     String requestId,
     String decision,
+    String? scope,
   ) {
     final uuid = runtime.sessionId;
     final api = runtime.chatApi;
     if (uuid == null || api == null) return;
     void markAnswered() {
       runtime.notifiedApprovalIds.remove(requestId);
-      runtime.codexApprovalDecisions[requestId] = decision;
+      runtime.codexApprovalDecisions[requestId] =
+          scope == 'session' ? 'accept:session' : decision;
       runtime.dismissedApprovalPopoverId = requestId;
     }
 
@@ -2163,7 +2214,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     ref
         .read(inAppChatNotificationsProvider.notifier)
         .dismissApprovalsForRequest(requestId);
-    unawaited(api.answerCodexApproval(uuid, requestId, decision).catchError(
+    unawaited(api
+        .answerCodexApproval(uuid, requestId, decision, scope: scope)
+        .catchError(
       (Object error) {
         void markError() {
           runtime.error = '$error';
@@ -2207,6 +2260,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       token: config.token,
       uuid: uuid,
       requestId: requestId,
+      method: approval.toolUse.name,
       title: title,
       body: body,
       appInForeground: _appInForeground,
@@ -2322,8 +2376,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       builder: (sheetContext) => _ApprovalBottomSheet(
         toolUse: approval.toolUse,
         result: approval.result,
-        onSubmit: (id, decision) {
-          _sendCodexApprovalForRuntime(runtime, id, decision);
+        onSubmit: (id, decision, scope) {
+          _sendCodexApprovalForRuntime(runtime, id, decision, scope);
           Navigator.of(sheetContext).pop(true);
         },
       ),
@@ -2672,6 +2726,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             onRemove: _removePending,
             onEdit: _editPending,
             onPrioritize: _prioritizePending,
+            onReorder: _reorderPending,
           ),
         if (_unrespondedUserText != null && !_busy)
           _ReEditBar(
@@ -2743,17 +2798,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  void _showSessionFiles() {
+  Future<void> _showSessionFiles() async {
     final conn = ref.read(activeConnectionProvider);
     final session = _runtime.session ?? ref.read(currentSessionProvider);
     final sessionId = _sessionId ?? session?.resumeId;
     if (conn == null || sessionId == null) return;
-    unawaited(showSessionFilesDrawer(
+    await showSessionFilesDrawer(
       context,
       api: SessionFilesApi(conn.httpBase, token: conn.token),
       filesApi: FilesApi(conn.httpBase, token: conn.token),
       sessionId: sessionId,
-    ));
+    );
   }
 }
 
@@ -2776,7 +2831,8 @@ bool _isCodexApprovalRequestName(String name) {
 class _ApprovalBottomSheet extends StatelessWidget {
   final ToolUseBlock toolUse;
   final ToolResultBlock? result;
-  final void Function(String requestId, String decision) onSubmit;
+  final void Function(String requestId, String decision, String? scope)
+      onSubmit;
 
   const _ApprovalBottomSheet({
     required this.toolUse,
@@ -3375,7 +3431,7 @@ class _Composer extends ConsumerWidget {
   final void Function(ModelOption) onSwitchModel;
   final void Function(CcPermissionMode) onSwitchPermissionMode;
   final void Function(Map<String, dynamic>) onPatchRuntime;
-  final VoidCallback onOpenSessionFiles;
+  final Future<void> Function() onOpenSessionFiles;
   final ValueChanged<String> onUseIdea;
   final ValueChanged<String> onSendIdea;
   final ChatApi? chatApi;
@@ -3518,12 +3574,15 @@ class _Composer extends ConsumerWidget {
                   GestureDetector(
                     onTap: conn == null
                         ? null
-                        : () => showInspirationDrawer(
-                              context,
-                              api: IdeasApi(conn.httpBase, token: conn.token),
-                              onUseIdea: onUseIdea,
-                              onSendIdea: connected ? onSendIdea : null,
-                            ),
+                        : () => unawaited(_withComposerOverlayFocus(
+                              focusNode,
+                              () => showInspirationDrawer(
+                                context,
+                                api: IdeasApi(conn.httpBase, token: conn.token),
+                                onUseIdea: onUseIdea,
+                                onSendIdea: connected ? onSendIdea : null,
+                              ),
+                            )),
                     behavior: HitTestBehavior.opaque,
                     child: Container(
                       width: 32,
@@ -3540,7 +3599,10 @@ class _Composer extends ConsumerWidget {
                   GestureDetector(
                     onTap: conn == null || sessionId == null
                         ? null
-                        : onOpenSessionFiles,
+                        : () => unawaited(_withComposerOverlayFocus(
+                              focusNode,
+                              onOpenSessionFiles,
+                            )),
                     behavior: HitTestBehavior.opaque,
                     child: Container(
                       width: 32,
@@ -3560,6 +3622,7 @@ class _Composer extends ConsumerWidget {
                     agent: agent,
                     model: _modelForRuntime(agent, model, runtime),
                     runtime: runtime,
+                    focusNode: focusNode,
                     chatApi: chatApi,
                     onSwitchModel: onSwitchModel,
                     onPatchRuntime: onPatchRuntime,
@@ -3568,6 +3631,7 @@ class _Composer extends ConsumerWidget {
                   _RuntimeSettingsButton(
                     agent: agent,
                     runtime: runtime,
+                    focusNode: focusNode,
                     chatApi: chatApi,
                     permissionMode: ref.watch(permissionModeProvider),
                     onSwitchPermissionMode: onSwitchPermissionMode,
@@ -3586,9 +3650,6 @@ class _Composer extends ConsumerWidget {
   ModelOption _modelForRuntime(
       AgentKind agent, ModelOption fallback, Map<String, dynamic> runtime) {
     final id = (runtime['model'] ?? '').toString().trim();
-    if (agent == AgentKind.codex && id.isEmpty) {
-      return const ModelOption('', 'Codex 配置模型', 'configured', '使用 Codex 当前配置');
-    }
     if (id.isEmpty || id == fallback.id) return fallback;
     final candidates =
         agent == AgentKind.codex ? const <ModelOption>[] : knownModels;
@@ -3599,10 +3660,28 @@ class _Composer extends ConsumerWidget {
   }
 }
 
-class _ModelPickerButton extends StatelessWidget {
+Future<T?> _withComposerOverlayFocus<T>(
+  FocusNode focusNode,
+  Future<T?> Function() open,
+) async {
+  final hadFocus = focusNode.hasFocus;
+  FocusManager.instance.primaryFocus?.unfocus();
+  final result = await open();
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (hadFocus) {
+      focusNode.requestFocus();
+    } else if (focusNode.hasFocus) {
+      focusNode.unfocus();
+    }
+  });
+  return result;
+}
+
+class _ModelPickerButton extends StatefulWidget {
   final AgentKind agent;
   final ModelOption model;
   final Map<String, dynamic> runtime;
+  final FocusNode focusNode;
   final ChatApi? chatApi;
   final void Function(ModelOption) onSwitchModel;
   final void Function(Map<String, dynamic>) onPatchRuntime;
@@ -3610,45 +3689,94 @@ class _ModelPickerButton extends StatelessWidget {
     required this.agent,
     required this.model,
     required this.runtime,
+    required this.focusNode,
     required this.chatApi,
     required this.onSwitchModel,
     required this.onPatchRuntime,
   });
 
-  Future<void> _open(BuildContext context) async {
-    FocusManager.instance.primaryFocus?.unfocus();
-    ServerModels? serverModels;
-    if (chatApi != null) {
-      try {
-        serverModels = await chatApi!.fetchModels(agent: agent);
-      } catch (_) {}
-    }
-    if (!context.mounted) return;
+  @override
+  State<_ModelPickerButton> createState() => _ModelPickerButtonState();
+}
 
-    final models = serverModels != null
-        ? serverModels.models.map(ModelOption.fromServer).toList()
-        : agent == AgentKind.codex
-            ? <ModelOption>[model]
-            : knownModels;
-    final current = _currentFromServer(model, serverModels, models);
-    final picked = await showModalBottomSheet<ModelOption>(
-      context: context,
-      requestFocus: false,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      isScrollControlled: true,
-      builder: (_) => _ModelSheet(
-        current: current,
-        models: models,
-        providerLabel: serverModels?.providerLabel,
-        reasoningEffort:
-            agent == AgentKind.codex ? _reasoningEffort(runtime) : null,
-        onPickReasoningEffort: agent == AgentKind.codex
-            ? (value) => onPatchRuntime({'reasoning_effort': value})
-            : null,
-      ),
+class _ModelPickerButtonState extends State<_ModelPickerButton> {
+  ServerModels? _serverModels;
+  bool _loadingModels = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _prefetchCodexModel();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ModelPickerButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.chatApi != widget.chatApi ||
+        oldWidget.agent != widget.agent ||
+        oldWidget.runtime['model'] != widget.runtime['model']) {
+      _prefetchCodexModel();
+    }
+  }
+
+  Future<void> _prefetchCodexModel() async {
+    if (widget.agent != AgentKind.codex || widget.chatApi == null) return;
+    if ((widget.runtime['model'] ?? '').toString().trim().isNotEmpty) return;
+    if (_loadingModels) return;
+    _loadingModels = true;
+    try {
+      final models = await widget.chatApi!.fetchModels(agent: widget.agent);
+      if (!mounted) return;
+      setState(() => _serverModels = models);
+    } catch (_) {
+      // Keep the local fallback; the full sheet will try again when opened.
+    } finally {
+      _loadingModels = false;
+    }
+  }
+
+  Future<void> _open(BuildContext context) async {
+    final picked = await _withComposerOverlayFocus<ModelOption>(
+      widget.focusNode,
+      () async {
+        ServerModels? serverModels = _serverModels;
+        if (widget.chatApi != null) {
+          try {
+            serverModels =
+                await widget.chatApi!.fetchModels(agent: widget.agent);
+            if (mounted) setState(() => _serverModels = serverModels);
+          } catch (_) {}
+        }
+        if (!context.mounted) return null;
+
+        final models = serverModels != null
+            ? serverModels.models.map(ModelOption.fromServer).toList()
+            : widget.agent == AgentKind.codex
+                ? <ModelOption>[_displayModel()]
+                : knownModels;
+        final current =
+            _currentFromServer(_displayModel(), serverModels, models);
+        return showModalBottomSheet<ModelOption>(
+          context: context,
+          requestFocus: false,
+          backgroundColor: Colors.transparent,
+          barrierColor: Colors.black.withValues(alpha: 0.35),
+          isScrollControlled: true,
+          builder: (_) => _ModelSheet(
+            current: current,
+            models: models,
+            providerLabel: serverModels?.providerLabel,
+            reasoningEffort: widget.agent == AgentKind.codex
+                ? _reasoningEffort(widget.runtime)
+                : null,
+            onPickReasoningEffort: widget.agent == AgentKind.codex
+                ? (value) => widget.onPatchRuntime({'reasoning_effort': value})
+                : null,
+          ),
+        );
+      },
     );
-    if (picked != null) onSwitchModel(picked);
+    if (picked != null) widget.onSwitchModel(picked);
   }
 
   String _reasoningEffort(Map<String, dynamic> runtime) {
@@ -3667,10 +3795,27 @@ class _ModelPickerButton extends StatelessWidget {
     return ModelOption.custom(currentId);
   }
 
+  ModelOption _displayModel() {
+    final runtimeId = (widget.runtime['model'] ?? '').toString().trim();
+    if (runtimeId.isNotEmpty) return ModelOption.custom(runtimeId);
+    if (widget.agent == AgentKind.codex) {
+      final currentId = (_serverModels?.current ?? '').trim();
+      if (currentId.isNotEmpty) {
+        for (final model
+            in _serverModels?.models ?? const <ServerModelInfo>[]) {
+          if (model.id == currentId) return ModelOption.fromServer(model);
+        }
+        return ModelOption.custom(currentId);
+      }
+    }
+    return widget.model;
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final label = model.label.trim().isNotEmpty ? model.label : model.id;
+    final current = _displayModel();
+    final label = current.label.trim().isNotEmpty ? current.label : current.id;
     return Tooltip(
       message: '选择模型',
       preferBelow: false,
@@ -3716,6 +3861,7 @@ class _ModelPickerButton extends StatelessWidget {
 class _RuntimeSettingsButton extends StatelessWidget {
   final AgentKind agent;
   final Map<String, dynamic> runtime;
+  final FocusNode focusNode;
   final ChatApi? chatApi;
   final CcPermissionMode permissionMode;
   final void Function(CcPermissionMode) onSwitchPermissionMode;
@@ -3723,6 +3869,7 @@ class _RuntimeSettingsButton extends StatelessWidget {
   const _RuntimeSettingsButton({
     required this.agent,
     required this.runtime,
+    required this.focusNode,
     required this.chatApi,
     required this.permissionMode,
     required this.onSwitchPermissionMode,
@@ -3730,20 +3877,22 @@ class _RuntimeSettingsButton extends StatelessWidget {
   });
 
   Future<void> _open(BuildContext context) async {
-    FocusManager.instance.primaryFocus?.unfocus();
-    await showModalBottomSheet<void>(
-      context: context,
-      requestFocus: false,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      isScrollControlled: true,
-      builder: (_) => _RuntimeSettingsSheet(
-        agent: agent,
-        runtime: runtime,
-        chatApi: chatApi,
-        permissionMode: permissionMode,
-        onSwitchPermissionMode: onSwitchPermissionMode,
-        onPatchRuntime: onPatchRuntime,
+    await _withComposerOverlayFocus<void>(
+      focusNode,
+      () => showModalBottomSheet<void>(
+        context: context,
+        requestFocus: false,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withValues(alpha: 0.35),
+        isScrollControlled: true,
+        builder: (_) => _RuntimeSettingsSheet(
+          agent: agent,
+          runtime: runtime,
+          chatApi: chatApi,
+          permissionMode: permissionMode,
+          onSwitchPermissionMode: onSwitchPermissionMode,
+          onPatchRuntime: onPatchRuntime,
+        ),
       ),
     );
   }
@@ -3768,7 +3917,7 @@ class _RuntimeSettingsButton extends StatelessWidget {
   }
 }
 
-enum _RuntimeSettingsPage { overview, permissions }
+enum _RuntimeSettingsPage { overview, permissions, permissionAdvanced }
 
 class _CodexPermissionMode {
   final String label;
@@ -3933,13 +4082,20 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
     final title = switch (_page) {
       _RuntimeSettingsPage.overview => rootTitle,
       _RuntimeSettingsPage.permissions => '权限设置',
+      _RuntimeSettingsPage.permissionAdvanced => '高级权限',
     };
     final icon = switch (_page) {
-      _RuntimeSettingsPage.permissions => Icons.shield_outlined,
+      _RuntimeSettingsPage.permissions ||
+      _RuntimeSettingsPage.permissionAdvanced =>
+        Icons.shield_outlined,
       _ => Icons.tune_rounded,
     };
     return PopScope(
-      canPop: true,
+      canPop: _page == _RuntimeSettingsPage.overview,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || _page == _RuntimeSettingsPage.overview) return;
+        setState(() => _page = _RuntimeSettingsPage.overview);
+      },
       child: Container(
         height: 470,
         margin: const EdgeInsets.all(8),
@@ -3999,6 +4155,8 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
                     child: switch (_page) {
                       _RuntimeSettingsPage.permissions =>
                         _runtimePermissionPage(),
+                      _RuntimeSettingsPage.permissionAdvanced =>
+                        _codexPermissionAdvancedPage(),
                       _RuntimeSettingsPage.overview => _runtimeOverviewPage(),
                     },
                   ),
@@ -4052,6 +4210,8 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
             (_runtime['approval_policy'] ?? 'on-request').toString(),
         sandbox: (_runtime['sandbox'] ?? 'workspace-write').toString(),
         onPatchRuntime: _patchRuntime,
+        onOpenAdvanced: () =>
+            setState(() => _page = _RuntimeSettingsPage.permissionAdvanced),
       );
     }
     return ListView.separated(
@@ -4079,6 +4239,15 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
           onTap: () => _setPermissionMode(mode),
         );
       },
+    );
+  }
+
+  Widget _codexPermissionAdvancedPage() {
+    return _CodexRuntimePermissionAdvancedPage(
+      key: const ValueKey('permissionAdvanced'),
+      approvalPolicy: (_runtime['approval_policy'] ?? 'on-request').toString(),
+      sandbox: (_runtime['sandbox'] ?? 'workspace-write').toString(),
+      onPatchRuntime: _patchRuntime,
     );
   }
 
@@ -4207,11 +4376,13 @@ class _CodexRuntimePermissionPage extends StatelessWidget {
   final String approvalPolicy;
   final String sandbox;
   final void Function(Map<String, dynamic>) onPatchRuntime;
+  final VoidCallback onOpenAdvanced;
   const _CodexRuntimePermissionPage({
     super.key,
     required this.approvalPolicy,
     required this.sandbox,
     required this.onPatchRuntime,
+    required this.onOpenAdvanced,
   });
 
   @override
@@ -4265,14 +4436,43 @@ class _CodexRuntimePermissionPage extends StatelessWidget {
           ),
         ],
         Divider(color: t.borderSubt, height: 20),
-        _InlineSectionLabel(label: '高级设置 / sandbox', t: t),
+        _RuntimeActionRow(
+          icon: Icons.tune_rounded,
+          title: '高级设置',
+          value: '$sandbox · $approvalPolicy',
+          onTap: onOpenAdvanced,
+        ),
+      ],
+    );
+  }
+}
+
+class _CodexRuntimePermissionAdvancedPage extends StatelessWidget {
+  final String approvalPolicy;
+  final String sandbox;
+  final void Function(Map<String, dynamic>) onPatchRuntime;
+  const _CodexRuntimePermissionAdvancedPage({
+    super.key,
+    required this.approvalPolicy,
+    required this.sandbox,
+    required this.onPatchRuntime,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return ListView(
+      key: const ValueKey('permissionAdvanced'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 12),
+      children: [
+        _InlineSectionLabel(label: 'sandbox', t: t),
         _CodexRuntimeOptionList(
           value: sandbox,
           options: _codexSandboxOptions,
           onPick: (value) => onPatchRuntime({'sandbox': value}),
         ),
         Divider(color: t.borderSubt, height: 20),
-        _InlineSectionLabel(label: '高级设置 / approval_policy', t: t),
+        _InlineSectionLabel(label: 'approval_policy', t: t),
         _CodexRuntimeOptionList(
           value: approvalPolicy,
           options: _codexApprovalPolicyOptions,
@@ -4576,6 +4776,7 @@ class _ModelSheetState extends State<_ModelSheet> {
   bool _showCustomInput = false;
   final _customController = TextEditingController();
   late String? _reasoningEffort = widget.reasoningEffort;
+  _ModelSheetPage _page = _ModelSheetPage.models;
 
   @override
   void dispose() {
@@ -4586,206 +4787,257 @@ class _ModelSheetState extends State<_ModelSheet> {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return Container(
-      margin: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: t.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: t.border),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // drag handle
-            Padding(
-              padding: const EdgeInsets.only(top: 10, bottom: 4),
-              child: Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                      color: t.border, borderRadius: BorderRadius.circular(2)),
-                ),
-              ),
-            ),
-            // header
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              child: Row(
-                children: [
-                  Icon(Icons.auto_awesome_outlined,
-                      size: 16, color: t.textMuted),
-                  const SizedBox(width: 8),
-                  Text(
-                    '选择模型',
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: t.text,
-                        letterSpacing: -0.1),
-                  ),
-                  if (widget.providerLabel != null) ...[
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: t.accent.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(6),
-                        border:
-                            Border.all(color: t.accent.withValues(alpha: 0.2)),
-                      ),
-                      child: Text(
-                        widget.providerLabel!,
-                        style: TextStyle(
-                            fontSize: 10.5,
-                            color: t.accent,
-                            fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            // model list
-            for (final m in widget.models) ...[
-              Divider(
-                  color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
-              _ModelRow(
-                model: m,
-                selected: m.id == widget.current.id,
-                onTap: () => Navigator.of(context).pop(m),
-              ),
-            ],
-            // custom input row
-            Divider(
-                color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
-            if (!_showCustomInput)
-              InkWell(
-                onTap: () => setState(() => _showCustomInput = true),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 18,
-                        height: 18,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(color: t.border, width: 1.5),
-                        ),
-                        child: Icon(Icons.add, size: 11, color: t.textDim),
-                      ),
-                      const SizedBox(width: 12),
-                      Text('自定义 Model ID',
-                          style: TextStyle(color: t.textMuted, fontSize: 14)),
-                    ],
-                  ),
-                ),
-              )
-            else
+    final title = switch (_page) {
+      _ModelSheetPage.models => '选择模型',
+      _ModelSheetPage.reasoning => '推理强度',
+    };
+    return PopScope(
+      canPop: _page == _ModelSheetPage.models,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || _page == _ModelSheetPage.models) return;
+        setState(() => _page = _ModelSheetPage.models);
+      },
+      child: Container(
+        height: 470,
+        margin: const EdgeInsets.all(8),
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: t.border),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // drag handle
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _customController,
-                        autofocus: true,
-                        style: TextStyle(
-                            fontSize: 13,
-                            color: t.text,
-                            fontFamily: 'monospace'),
-                        decoration: InputDecoration(
-                          hintText: 'e.g. anthropic.claude-sonnet-4-5-...',
-                          hintStyle: TextStyle(fontSize: 12, color: t.textDim),
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(color: t.border),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(color: t.border),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(color: t.accent),
-                          ),
-                        ),
-                        onSubmitted: (v) {
-                          final id = v.trim();
-                          if (id.isNotEmpty) {
-                            Navigator.of(context).pop(ModelOption.custom(id));
-                          }
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () {
-                        final id = _customController.text.trim();
-                        if (id.isNotEmpty) {
-                          Navigator.of(context).pop(ModelOption.custom(id));
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: t.accent,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Icon(Icons.check,
-                            size: 16, color: Colors.white),
-                      ),
-                    ),
-                  ],
+                padding: const EdgeInsets.only(top: 10, bottom: 4),
+                child: Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                        color: t.border,
+                        borderRadius: BorderRadius.circular(2)),
+                  ),
                 ),
               ),
-            if (widget.reasoningEffort != null &&
-                widget.onPickReasoningEffort != null) ...[
-              Divider(
-                  color: t.borderSubt, height: 16, indent: 16, endIndent: 16),
-              _InlineSectionLabel(label: '推理强度', t: t),
-              _CodexRuntimeOptionList(
-                value: _reasoningEffort!,
-                options: const [
-                  _RuntimeOption(
-                    value: 'low',
-                    label: 'low',
-                    description: '更快响应，适合轻量修改',
-                    icon: Icons.speed_rounded,
+              _RuntimeSheetHeader(
+                title: title,
+                icon: Icons.auto_awesome_outlined,
+                showBack: _page != _ModelSheetPage.models,
+                onBack: () => setState(() => _page = _ModelSheetPage.models),
+              ),
+              Divider(color: t.borderSubt, height: 0.5),
+              Flexible(
+                child: ClipRect(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    transitionBuilder: (child, animation) {
+                      final enteringModels =
+                          child.key == const ValueKey('modelPage');
+                      final begin = enteringModels
+                          ? const Offset(-1, 0)
+                          : const Offset(1, 0);
+                      return SlideTransition(
+                        position: Tween<Offset>(
+                          begin: begin,
+                          end: Offset.zero,
+                        ).animate(CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                        )),
+                        child: FadeTransition(opacity: animation, child: child),
+                      );
+                    },
+                    child: switch (_page) {
+                      _ModelSheetPage.models => _modelPage(t),
+                      _ModelSheetPage.reasoning => _reasoningPage(t),
+                    },
                   ),
-                  _RuntimeOption(
-                    value: 'medium',
-                    label: 'medium',
-                    description: '均衡速度和推理质量',
-                    icon: Icons.tune_rounded,
-                  ),
-                  _RuntimeOption(
-                    value: 'high',
-                    label: 'high',
-                    description: '更强推理，适合复杂代码任务',
-                    icon: Icons.psychology_alt_outlined,
-                  ),
-                ],
-                onPick: (value) {
-                  setState(() => _reasoningEffort = value);
-                  widget.onPickReasoningEffort!(value);
-                },
+                ),
               ),
             ],
-            const SizedBox(height: 6),
-          ],
+          ),
         ),
       ),
     );
   }
+
+  Widget _modelPage(AppTokens t) {
+    return ListView(
+      key: const ValueKey('modelPage'),
+      shrinkWrap: widget.reasoningEffort == null,
+      padding: const EdgeInsets.fromLTRB(0, 0, 0, 6),
+      children: [
+        if (widget.providerLabel != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: t.accent.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: t.accent.withValues(alpha: 0.2)),
+                ),
+                child: Text(
+                  widget.providerLabel!,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: t.accent,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        for (final m in widget.models) ...[
+          Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+          _ModelRow(
+            model: m,
+            selected: m.id == widget.current.id,
+            onTap: () => Navigator.of(context).pop(m),
+          ),
+        ],
+        Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
+        if (!_showCustomInput)
+          InkWell(
+            onTap: () => setState(() => _showCustomInput = true),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+              child: Row(
+                children: [
+                  Container(
+                    width: 18,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: t.border, width: 1.5),
+                    ),
+                    child: Icon(Icons.add, size: 11, color: t.textDim),
+                  ),
+                  const SizedBox(width: 12),
+                  Text('自定义 Model ID',
+                      style: TextStyle(color: t.textMuted, fontSize: 14)),
+                ],
+              ),
+            ),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _customController,
+                    autofocus: true,
+                    style: TextStyle(
+                        fontSize: 13, color: t.text, fontFamily: 'monospace'),
+                    decoration: InputDecoration(
+                      hintText: 'e.g. gpt-5.5',
+                      hintStyle: TextStyle(fontSize: 12, color: t.textDim),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: t.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: t.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: t.accent),
+                      ),
+                    ),
+                    onSubmitted: (v) {
+                      final id = v.trim();
+                      if (id.isNotEmpty) {
+                        Navigator.of(context).pop(ModelOption.custom(id));
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () {
+                    final id = _customController.text.trim();
+                    if (id.isNotEmpty) {
+                      Navigator.of(context).pop(ModelOption.custom(id));
+                    }
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: t.accent,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child:
+                        const Icon(Icons.check, size: 16, color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (widget.reasoningEffort != null &&
+            widget.onPickReasoningEffort != null) ...[
+          Divider(color: t.borderSubt, height: 16, indent: 16, endIndent: 16),
+          _RuntimeActionRow(
+            icon: Icons.psychology_alt_outlined,
+            title: '推理强度',
+            value: _reasoningEffort ?? 'medium',
+            onTap: () => setState(() => _page = _ModelSheetPage.reasoning),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _reasoningPage(AppTokens t) {
+    return ListView(
+      key: const ValueKey('reasoningPage'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 12),
+      children: [
+        _CodexRuntimeOptionList(
+          value: _reasoningEffort ?? 'medium',
+          options: const [
+            _RuntimeOption(
+              value: 'low',
+              label: 'low',
+              description: '更快响应，适合轻量修改',
+              icon: Icons.speed_rounded,
+            ),
+            _RuntimeOption(
+              value: 'medium',
+              label: 'medium',
+              description: '均衡速度和推理质量',
+              icon: Icons.tune_rounded,
+            ),
+            _RuntimeOption(
+              value: 'high',
+              label: 'high',
+              description: '更强推理，适合复杂代码任务',
+              icon: Icons.psychology_alt_outlined,
+            ),
+          ],
+          onPick: (value) {
+            setState(() => _reasoningEffort = value);
+            widget.onPickReasoningEffort!(value);
+          },
+        ),
+      ],
+    );
+  }
 }
+
+enum _ModelSheetPage { models, reasoning }
 
 class _ModelRow extends StatelessWidget {
   final ModelOption model;
@@ -5032,11 +5284,13 @@ class _PendingQueueBar extends StatelessWidget {
   final void Function(int) onRemove;
   final void Function(int) onEdit;
   final void Function(int) onPrioritize;
+  final void Function(int oldIndex, int newIndex) onReorder;
   const _PendingQueueBar({
     required this.messages,
     required this.onRemove,
     required this.onEdit,
     required this.onPrioritize,
+    required this.onReorder,
   });
 
   @override
@@ -5065,24 +5319,45 @@ class _PendingQueueBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  '长按可优先发送',
+                  '拖动排序 · 长按优先',
                   style: TextStyle(
                       fontSize: 10, color: t.textDim.withValues(alpha: 0.6)),
                 ),
               ],
             ),
           ),
-          for (int i = 0; i < messages.length; i++)
-            Padding(
+          ReorderableListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            proxyDecorator: (child, index, animation) {
+              return Material(
+                color: Colors.transparent,
+                child: ScaleTransition(
+                  scale: Tween<double>(begin: 1, end: 1.02).animate(
+                    CurvedAnimation(
+                      parent: animation,
+                      curve: Curves.easeOutCubic,
+                    ),
+                  ),
+                  child: child,
+                ),
+              );
+            },
+            itemCount: messages.length,
+            onReorder: onReorder,
+            itemBuilder: (context, i) => Padding(
+              key: ValueKey('pending_${i}_${messages[i].hashCode}'),
               padding: const EdgeInsets.only(bottom: 6),
               child: _PendingQueueItem(
-                key: ValueKey('pending_$i'),
+                index: i,
                 text: messages[i],
                 onRemove: () => onRemove(i),
                 onEdit: () => onEdit(i),
                 onPrioritize: () => onPrioritize(i),
               ),
             ),
+          ),
         ],
       ),
     );
@@ -5091,12 +5366,13 @@ class _PendingQueueBar extends StatelessWidget {
 
 /// 单条队列消息 item：支持长按抖动 → 优先发送。
 class _PendingQueueItem extends StatefulWidget {
+  final int index;
   final String text;
   final VoidCallback onRemove;
   final VoidCallback onEdit;
   final VoidCallback onPrioritize;
   const _PendingQueueItem({
-    super.key,
+    required this.index,
     required this.text,
     required this.onRemove,
     required this.onEdit,
@@ -5155,6 +5431,22 @@ class _PendingQueueItemState extends State<_PendingQueueItem>
           padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
           child: Row(
             children: [
+              ReorderableDragStartListener(
+                index: widget.index,
+                child: Tooltip(
+                  message: '拖动排序',
+                  child: SizedBox(
+                    width: 28,
+                    height: 32,
+                    child: Icon(
+                      Icons.drag_indicator_rounded,
+                      size: 18,
+                      color: t.textDim,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 2),
               Expanded(
                 child: Text(
                   widget.text,

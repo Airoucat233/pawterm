@@ -6,7 +6,8 @@ import type { FastifyInstance } from 'fastify';
 import { isPathAllowed } from './config.js';
 import { AgentRegistry, defaultAgentRegistry } from './agents/registry.js';
 import { ClaudeSessions } from './agents/claude/sessions.js';
-import { parseAgentQuery } from './agents/http-helpers.js';
+import { parseAgentQuery, parseRuntimePatchForAgent } from './agents/http-helpers.js';
+import { getSessionRuntime, setSessionRuntime } from './session-runtime-store.js';
 
 function requirePath(cwd: string | undefined): string {
   if (!cwd) throw new Error('missing cwd');
@@ -55,10 +56,18 @@ export async function registerSessionsApi(app: FastifyInstance, deps?: {
       return pages
         .flat()
         .sort((a, b) => (b.last_modified ?? 0) - (a.last_modified ?? 0))
-        .slice(offset, offset + limit);
+        .slice(offset, offset + limit)
+        .map((session) => ({
+          ...session,
+          runtime: getSessionRuntime(session.agent, session.cwd ?? cwd, session.session_id).runtime,
+        }));
     }
 
-    return registry.resolve(agent).listSessions({ cwd, limit, offset, includeSubdirs });
+    const sessions = await registry.resolve(agent).listSessions({ cwd, limit, offset, includeSubdirs });
+    return sessions.map((session) => ({
+      ...session,
+      runtime: getSessionRuntime(session.agent, session.cwd ?? cwd, session.session_id).runtime,
+    }));
   });
 
   app.get<{ Params: { id: string }; Querystring: { cwd: string } }>(
@@ -73,6 +82,32 @@ export async function registerSessionsApi(app: FastifyInstance, deps?: {
       return info;
     },
   );
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { cwd: string; agent?: string };
+  }>('/sessions/:id/runtime', async (req) => {
+    const cwd = requirePath(req.query.cwd);
+    const agent = parseAgentQuery(req.query.agent);
+    if (agent === 'all') throw new Error('agent=all is not valid for runtime');
+    return getSessionRuntime(agent, cwd, req.params.id);
+  });
+
+  app.post<{
+    Params: { id: string };
+    Querystring: { cwd: string; agent?: string };
+    Body: { runtime?: unknown };
+  }>('/sessions/:id/runtime', async (req, reply) => {
+    const cwd = requirePath(req.query.cwd);
+    let parsed: ReturnType<typeof parseRuntimePatchForAgent>;
+    try {
+      parsed = parseRuntimePatchForAgent(req.query.agent, req.body?.runtime);
+    } catch (err) {
+      reply.code((err as { statusCode?: number }).statusCode ?? 400);
+      return { error: (err as Error).message };
+    }
+    return setSessionRuntime(parsed.agent, cwd, req.params.id, parsed.patch);
+  });
 
   /**
    * Paginated session messages — reverse-infinite-scroll friendly.
