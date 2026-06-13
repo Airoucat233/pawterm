@@ -177,7 +177,7 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
 
   private createNotificationStream(client: CodexJsonRpcClient, threadId: string): {
     events: AsyncIterable<unknown>;
-    answerApproval: (requestId: string, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel') => void;
+    answerApproval: (requestId: string, decision: 'accept' | 'decline' | 'cancel', scope?: 'turn' | 'session') => void;
     close: () => void;
   } {
     const queue: unknown[] = [];
@@ -240,14 +240,14 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
       }
     }
 
-    const answerApproval = (requestId: string, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel') => {
+    const answerApproval = (requestId: string, decision: 'accept' | 'decline' | 'cancel', scope?: 'turn' | 'session') => {
       const request = pendingApprovals.get(requestId);
       if (!request) throw new Error(`No pending Codex approval request: ${requestId}`);
       pendingApprovals.delete(requestId);
-      client.respond(request.id, approvalResponse(request, decision));
+      client.respond(request.id, approvalResponse(request, decision, scope));
       queue.push({
         method: 'serverRequest/resolved',
-        params: { threadId, requestId, decision },
+        params: { threadId, requestId, decision, ...(scope ? { scope } : {}) },
       });
       wake?.();
       wake = null;
@@ -265,14 +265,15 @@ function isApprovalRequest(method: string): boolean {
 
 function approvalResponse(
   request: CodexServerRequest,
-  decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+  decision: 'accept' | 'decline' | 'cancel',
+  scope?: 'turn' | 'session',
 ): unknown {
   if (request.method === 'item/permissions/requestApproval') {
-    if (decision === 'accept' || decision === 'acceptForSession') {
+    if (decision === 'accept') {
       const permissions = (request.params as { permissions?: unknown } | undefined)?.permissions;
       return {
         permissions: normalizeGrantedPermissions(permissions),
-        scope: decision === 'acceptForSession' ? 'session' : 'turn',
+        scope: scope === 'session' ? 'session' : 'turn',
         strictAutoReview: false,
       };
     }

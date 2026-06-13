@@ -1,6 +1,6 @@
 /** REST schema for session management endpoints. */
 
-import type { AgentKind } from './protocol.js';
+import type { AgentKind, AgentRuntime } from './protocol.js';
 
 export interface Project {
   name: string;
@@ -17,6 +17,7 @@ export interface SessionSummary {
   cwd?: string | null;
   num_messages?: number | null;
   total_cost_usd?: number | null;
+  runtime?: AgentRuntime;
   /**
    * 当前持有该 session 的设备 id。
    *   null / undefined  → 空闲

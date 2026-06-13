@@ -10,11 +10,12 @@ Future<void> showSessionFilesDrawer(
   required SessionFilesApi api,
   required FilesApi filesApi,
   required String sessionId,
-}) {
-  return showModalBottomSheet<void>(
+}) async {
+  await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    requestFocus: false,
     backgroundColor: Colors.transparent,
     builder: (_) => _SessionFilesDrawer(
       api: api,

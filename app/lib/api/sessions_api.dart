@@ -14,6 +14,7 @@ class SessionSummary {
   final String? cwd;
   final int? numMessages;
   final double? totalCostUsd;
+  final Map<String, dynamic> runtime;
 
   /// 当前持有该 session 的设备 id。
   ///   null      → 空闲
@@ -31,6 +32,7 @@ class SessionSummary {
     this.cwd,
     this.numMessages,
     this.totalCostUsd,
+    this.runtime = const {},
     this.holderDeviceId,
   });
 
@@ -48,6 +50,7 @@ class SessionSummary {
       cwd: json['cwd'] as String?,
       numMessages: (json['num_messages'] as num?)?.toInt(),
       totalCostUsd: (json['total_cost_usd'] as num?)?.toDouble(),
+      runtime: Map<String, dynamic>.from(json['runtime'] ?? const {}),
       holderDeviceId: json['holder_device_id'] as String?,
     );
   }
@@ -109,5 +112,40 @@ class SessionsApi {
     final resp = await http.delete(_u('/sessions/$sessionId', {'cwd': cwd}),
         headers: _auth);
     if (resp.statusCode != 200) throw Exception(resp.body);
+  }
+
+  Future<Map<String, dynamic>> runtime(
+    String sessionId,
+    String cwd, {
+    required AgentKind agent,
+  }) async {
+    final resp = await http.get(
+      _u('/sessions/$sessionId/runtime', {'cwd': cwd, 'agent': agent.wire}),
+      headers: _auth,
+    );
+    if (resp.statusCode != 200) {
+      throw Exception('session_runtime HTTP ${resp.statusCode}: ${resp.body}');
+    }
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    return Map<String, dynamic>.from(body['runtime'] ?? const {});
+  }
+
+  Future<Map<String, dynamic>> setRuntime(
+    String sessionId,
+    String cwd, {
+    required AgentKind agent,
+    required Map<String, dynamic> runtime,
+  }) async {
+    final resp = await http.post(
+      _u('/sessions/$sessionId/runtime', {'cwd': cwd, 'agent': agent.wire}),
+      headers: {'Content-Type': 'application/json', ..._auth},
+      body: jsonEncode({'runtime': runtime}),
+    );
+    if (resp.statusCode != 200) {
+      throw Exception(
+          'set_session_runtime HTTP ${resp.statusCode}: ${resp.body}');
+    }
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    return Map<String, dynamic>.from(body['runtime'] ?? const {});
   }
 }

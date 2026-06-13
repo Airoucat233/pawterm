@@ -7,6 +7,7 @@ import type { AgentProvider } from '../agents/types.js';
 import { registerSessionsApi } from '../sessions-api.js';
 
 vi.mock('../config.js', () => ({
+  configPath: `/tmp/pawterm-sessions-api-test-${process.pid}-${Date.now()}/config.json`,
   isPathAllowed: vi.fn(() => true),
 }));
 

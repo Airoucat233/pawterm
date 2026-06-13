@@ -29,6 +29,8 @@ pnpm install              # 安装 TS 端依赖
 pnpm dev                  # 同时跑 server + web
 pnpm dev:server           # 只跑 server（端口 8765，监听 config.json）
 pnpm dev:web              # 只跑 web
+pnpm test:server status   # 查看测试 server 状态
+pnpm test:server restart  # 重启测试 server（给未重打包的 App 连接）
 pnpm build                # 全量 build
 pnpm typecheck            # 全量 tsc --noEmit
 ```
@@ -51,6 +53,8 @@ flutter run               # 调试 Android，默认 flavor=prod；dev 用 --flav
 ```
 
 本仓库提交的 `app/pubspec.lock` 必须保持 hosted registry 为 `https://pub.dev`。如果本机 shell 配了 `PUB_HOSTED_URL=https://pub.flutter-io.cn` 等镜像，裸跑 `flutter pub get` 会污染 lock；因此 App 端解析依赖时必须显式写 `PUB_HOSTED_URL=https://pub.dev flutter pub get`，或使用仓库脚本中已内置的同等环境覆盖。
+
+仅在会解析/更新依赖的命令上显式指定 `PUB_HOSTED_URL=https://pub.dev`，例如 `flutter pub get`。`flutter analyze` 不会改写 `pubspec.lock` 的 hosted registry，必须直接运行 `flutter analyze`；不要给 `flutter analyze` 前置 `PUB_HOSTED_URL=...`，否则 Codex 审批规则无法命中已授权的 `flutter analyze` 前缀，会导致每次分析都重复弹审批。
 
 ---
 
@@ -231,11 +235,20 @@ Server 没有独立 dev 安装身份，预发布会覆盖同一个 `pawterm-serv
 
 ---
 
-## 测试 server（端口 8766）
+## 测试 server
 
-`server/scripts/test-server.sh start|stop|restart|status|logs` 启一个**脱离 shell** 的常驻 server（nohup + disown），跑 `server/config.test.json`。专给**未重打包的 app** 用，**不要随意重启**——客户端连着的会断流。
+优先在仓库根目录使用 `pnpm test:server <command>` 管理测试 server：
 
-主开发用 `pnpm dev:server`（8765，监听源码热重载）；测试服用 8766（不热重载，避免连接断）。两套 config、两套 SDK session map，互不影响。
+```bash
+pnpm test:server status
+pnpm test:server restart
+pnpm test:server logs
+pnpm test:server stop
+```
+
+底层脚本是 `server/scripts/test-server.sh start|stop|restart|status|logs`，会启动一个**脱离 shell** 的常驻 server（nohup + disown），跑 `server/config.json`，端口 8765。专给**未重打包的 app** 用，**不要随意重启**——客户端连着的会断流。
+
+主开发用 `pnpm dev:server`（监听 `server/config.json`，源码热重载）；测试服用 `pnpm test:server ...`（同样监听 `server/config.json` / 8765，但不热重载，进程脱离 shell）。具体状态先看 `pnpm test:server status`。
 
 ---
 

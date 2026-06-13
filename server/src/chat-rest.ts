@@ -14,11 +14,13 @@ import { defaultAgentRegistry } from './agents/registry.js';
 import { parseRuntimeFromChatBody, parseRuntimePatchForAgent } from './agents/http-helpers.js';
 import { codexThreadItemToWire } from './agents/codex/serialize.js';
 import type { AgentRun } from './agents/types.js';
+import { getSessionRuntime, setSessionRuntime } from './session-runtime-store.js';
 
 interface RunEntry {
   agent: AgentKind;
   uuid: string;
   sessionId: string;
+  cwd: string;
   session?: ChatSession;
   run?: AgentRun;
   buffer: EventBuffer;
@@ -333,7 +335,13 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       const deviceId = body.device_id ?? 'unknown';
       let runtime: AgentRuntime;
       try {
-        runtime = parseRuntimeFromChatBody(body);
+        const requestedRuntime = parseRuntimeFromChatBody(body);
+        const storedRuntime = getSessionRuntime(requestedRuntime.agent, cwd, uuid).runtime;
+        runtime = {
+          ...storedRuntime,
+          ...requestedRuntime,
+          agent: requestedRuntime.agent,
+        } as AgentRuntime;
       } catch (err) {
         reply.code(400);
         return { error: (err as Error).message };
@@ -384,6 +392,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           agent: runtime.agent,
           uuid,
           sessionId: uuid,
+          cwd,
           session,
           buffer: new EventBuffer(2000),
           askRegistry,
@@ -392,6 +401,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           holderDeviceId: deviceId,
         };
         activeRuns.set(key, entry);
+        setSessionRuntime(runtime.agent, cwd, uuid, runtime);
         req.log.info({ uuid, agent: runtime.agent, cwd, resume: !!sessionInfo }, 'run: created');
 
         session.pushUserMessage(body.text);
@@ -408,6 +418,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         deviceId,
       });
       const actualSessionId = run.sessionId ?? providerSessionId;
+      setSessionRuntime(runtime.agent, cwd, actualSessionId, runtime);
       const actualKey = runKey(runtime.agent, actualSessionId);
       if (actualKey !== key && activeRuns.has(actualKey)) {
         const existing = activeRuns.get(actualKey)!;
@@ -422,6 +433,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
         agent: runtime.agent,
         uuid: actualSessionId,
         sessionId: actualSessionId,
+        cwd,
         run,
         buffer: new EventBuffer(2000),
         askRegistry: new AskUserQuestionRegistry(),
@@ -550,11 +562,13 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  app.post<{ Body: { uuid?: string; agent?: AgentKind; runtime?: Partial<AgentRuntime> } }>(
+  app.post<{ Body: { uuid?: string; cwd?: string; agent?: AgentKind; runtime?: Partial<AgentRuntime> } }>(
     '/chat/runtime',
     async (req, reply) => {
       const uuid = req.body?.uuid;
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
+      const bodyCwd = req.body?.cwd ? resolve(req.body.cwd) : undefined;
+      if (bodyCwd && !isPathAllowed(bodyCwd)) { reply.code(403); return { error: `Project not allowed: ${bodyCwd}` }; }
       let parsed: ReturnType<typeof parseRuntimePatchForAgent>;
       try {
         parsed = parseRuntimePatchForAgent(req.body?.agent, req.body?.runtime);
@@ -564,17 +578,22 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       }
       const { agent, patch: runtime } = parsed;
       const entry = activeRuns.get(runKey(agent, uuid));
-      if (!entry) { reply.code(404); return { error: 'no active run' }; }
+      const cwd = bodyCwd ?? entry?.cwd;
+      if (cwd) setSessionRuntime(agent, cwd, uuid, runtime);
+      if (!entry) {
+        if (cwd) return { ok: true, runtime: getSessionRuntime(agent, cwd, uuid).runtime };
+        reply.code(404); return { error: 'no active run' };
+      }
       if (entry.run?.setRuntime) {
         await entry.run.setRuntime(runtime);
-        return { ok: true };
+        return { ok: true, runtime: cwd ? getSessionRuntime(agent, cwd, uuid).runtime : runtime };
       }
       if (!entry.session) { reply.code(400); return { error: 'runtime switch is not supported for this run' }; }
       if ('model' in runtime && runtime.model) await entry.session.setModel(runtime.model);
       if ('permission_mode' in runtime && runtime.permission_mode) {
         await entry.session.setPermissionMode(runtime.permission_mode);
       }
-      return { ok: true };
+      return { ok: true, runtime: cwd ? getSessionRuntime(agent, cwd, uuid).runtime : runtime };
     },
   );
 
@@ -609,20 +628,24 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
   );
 
   /** POST /chat/codex-approval — answer a pending Codex app-server approval request. */
-  app.post<{ Body: { uuid?: string; request_id?: string; decision?: 'accept' | 'acceptForSession' | 'decline' | 'cancel' } }>(
+  app.post<{ Body: { uuid?: string; request_id?: string; decision?: 'accept' | 'decline' | 'cancel'; scope?: 'turn' | 'session' } }>(
     '/chat/codex-approval',
     async (req, reply) => {
-      const { uuid, request_id: requestId, decision } = req.body ?? {};
+      const { uuid, request_id: requestId, decision, scope } = req.body ?? {};
       if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
       if (!requestId) { reply.code(400); return { error: 'request_id required' }; }
-      if (!decision || !['accept', 'acceptForSession', 'decline', 'cancel'].includes(decision)) {
+      if (!decision || !['accept', 'decline', 'cancel'].includes(decision)) {
         reply.code(400);
         return { error: 'valid decision required' };
+      }
+      if (scope !== undefined && !['turn', 'session'].includes(scope)) {
+        reply.code(400);
+        return { error: 'valid scope required' };
       }
       const entry = activeRuns.get(runKey('codex', uuid));
       if (!entry) { reply.code(404); return { error: 'no active codex run' }; }
       if (!entry.run?.answerApproval) { reply.code(400); return { error: 'codex approvals are not available for this run' }; }
-      await entry.run.answerApproval(requestId, decision);
+      await entry.run.answerApproval(requestId, decision, scope);
       return { ok: true };
     },
   );

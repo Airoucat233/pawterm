@@ -10,6 +10,7 @@ import '../api/protocol.dart';
 import '../theme.dart';
 import 'ask_user_question.dart';
 import 'codex_approval_card.dart';
+import 'top_toast.dart';
 import 'tool_call_card.dart';
 
 class MessageView extends StatelessWidget {
@@ -31,7 +32,8 @@ class MessageView extends StatelessWidget {
   )? onAnswerQuestion;
 
   /// 提交 Codex app-server approval 决策的回调。
-  final void Function(String requestId, String decision)? onAnswerCodexApproval;
+  final void Function(String requestId, String decision, String? scope)?
+      onAnswerCodexApproval;
   final Map<String, String>? codexApprovalDecisions;
 
   /// 原始 SSE event data（仅 debug 打包时传入，release 为 null）。
@@ -509,8 +511,10 @@ class _FilePathInlineBuilder extends MarkdownElementBuilder {
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   Clipboard.setData(ClipboardData(text: path));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('已复制路径')),
+                  showTopToast(
+                    context,
+                    '已复制路径',
+                    icon: Icons.copy_rounded,
                   );
                 },
               ),
