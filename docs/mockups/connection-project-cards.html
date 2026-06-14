@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PawTerm connection and project cards</title>
+  <style>
+    :root {
+      --bg: #0b1210;
+      --surface: #141b18;
+      --surface-hi: #1a221e;
+      --line: #26312c;
+      --line-soft: #1e2622;
+      --text: #e6e6e6;
+      --muted: #9ba39e;
+      --dim: #6b746f;
+      --accent: #10b981;
+      --accent-soft: rgba(16, 185, 129, .13);
+      --blue: #3b82f6;
+      --violet: #a78bfa;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --shadow: 0 18px 60px rgba(0, 0, 0, .28);
+      --r: 8px;
+      color-scheme: dark;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 12% 8%, rgba(16, 185, 129, .12), transparent 34%),
+        radial-gradient(circle at 84% 20%, rgba(59, 130, 246, .10), transparent 30%),
+        linear-gradient(180deg, #08100d, var(--bg) 42%, #070b0a);
+      color: var(--text);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      padding: 28px 18px 42px;
+    }
+
+    .top {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+
+    .top p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .legend span {
+      padding: 5px 8px;
+      border: 1px solid var(--line-soft);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .025);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .theme-block + .theme-block { margin-top: 28px; }
+
+    .theme-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 22px 0 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .theme-title strong {
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 720;
+    }
+
+    .concept {
+      min-width: 0;
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+      background: rgba(20, 27, 24, .68);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .concept.light {
+      --bg: #f8faf9;
+      --surface: #ffffff;
+      --surface-hi: #f2f6f4;
+      --line: #dde5e1;
+      --line-soft: #eaf0ec;
+      --text: #1a1f1c;
+      --muted: #565f5a;
+      --dim: #8e948f;
+      --accent: #059669;
+      --accent-soft: rgba(5, 150, 105, .10);
+      --blue: #2563eb;
+      --violet: #7c3aed;
+      --yellow: #ca8a04;
+      --red: #dc2626;
+      --shadow: 0 18px 46px rgba(25, 45, 36, .11);
+      background: #fff;
+    }
+
+    .concept-head {
+      padding: 15px 16px 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: linear-gradient(180deg, rgba(255,255,255,.035), transparent);
+    }
+
+    .concept-kicker {
+      color: var(--accent);
+      font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .concept-title {
+      margin-top: 6px;
+      font-size: 15px;
+      font-weight: 720;
+    }
+
+    .concept-desc {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .phone {
+      width: 100%;
+      max-width: 390px;
+      margin: 0 auto;
+      padding: 14px;
+      background: var(--bg);
+      min-height: 780px;
+    }
+
+    .screen-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 2px 12px;
+    }
+
+    .screen-title strong {
+      font-size: 18px;
+      font-weight: 720;
+    }
+
+    .icon-btn {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      border: 1px solid rgba(16, 185, 129, .24);
+      color: var(--accent);
+      background: var(--accent-soft);
+      font-size: 18px;
+    }
+
+    .section {
+      margin: 4px 0 10px;
+      color: var(--dim);
+      font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .stack { display: grid; gap: 10px; }
+    .mt { margin-top: 22px; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 22px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, .045);
+      font-size: 10.5px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .pill.green {
+      color: var(--accent);
+      background: rgba(16, 185, 129, .12);
+    }
+
+    .pill.yellow {
+      color: var(--yellow);
+      background: rgba(234, 179, 8, .12);
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .path {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--dim);
+      font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--line-soft);
+      margin: 16px 0;
+    }
+
+    /* A */
+    .a-card {
+      position: relative;
+      padding: 13px 13px 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--r);
+      background: linear-gradient(180deg, var(--surface), rgba(20, 27, 24, .78));
+      overflow: hidden;
+    }
+
+    .a-card.active::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 10px;
+      bottom: 10px;
+      width: 3px;
+      border-radius: 0 999px 999px 0;
+      background: var(--accent);
+    }
+
+    .a-row {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .device-icon, .project-icon {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: var(--accent);
+      background: rgba(16, 185, 129, .10);
+      border: 1px solid rgba(16, 185, 129, .16);
+      font-weight: 760;
+    }
+
+    .project-icon { color: var(--blue); background: rgba(59, 130, 246, .11); border-color: rgba(59, 130, 246, .16); }
+
+    .title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13.5px;
+      font-weight: 720;
+    }
+
+    .sub {
+      margin-top: 4px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    .tag-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .action-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .tiny-btn {
+      min-height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 5px 9px;
+      border-radius: 7px;
+      color: var(--text);
+      background: rgba(255, 255, 255, .055);
+      font-size: 11px;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+
+    .tiny-btn.primary {
+      color: white;
+      background: var(--accent);
+    }
+
+    .tiny-btn.icon {
+      width: 28px;
+      padding: 0;
+      color: var(--muted);
+    }
+
+    .tiny-btn.ghost {
+      color: var(--muted);
+      background: transparent;
+    }
+
+    .concept.light .tiny-btn {
+      background: rgba(26, 31, 28, .055);
+    }
+
+    .concept.light .tiny-btn.primary {
+      color: white;
+      background: var(--accent);
+    }
+
+    .concept.light .a-card {
+      background: linear-gradient(180deg, #ffffff, #f9fbfa);
+    }
+
+    .concept.light .metric,
+    .concept.light .c-icon {
+      background: rgba(26,31,28,.045);
+    }
+
+    .concept.light .b-url {
+      background: rgba(26,31,28,.055);
+    }
+
+    .concept.light .list-shell {
+      background: rgba(255,255,255,.82);
+    }
+
+    .agent-segment {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px;
+      padding: 4px;
+      border-radius: 8px;
+      background: rgba(255,255,255,.04);
+    }
+
+    .concept.light .agent-segment {
+      background: rgba(26,31,28,.045);
+    }
+
+    .agent-segment span {
+      min-width: 0;
+      min-height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 10.5px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .agent-segment span.active {
+      color: var(--text);
+      background: var(--surface);
+      box-shadow: 0 1px 0 rgba(255,255,255,.05) inset;
+    }
+
+    .session-tree {
+      margin: 10px 0 0 19px;
+      padding-left: 14px;
+      border-left: 1px solid var(--line);
+      display: grid;
+      gap: 8px;
+    }
+
+    .session-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    /* B */
+    .b-card {
+      padding: 14px;
+      border-radius: var(--r);
+      background:
+        linear-gradient(135deg, rgba(16,185,129,.11), transparent 38%),
+        var(--surface);
+      border: 1px solid rgba(255,255,255,.055);
+    }
+
+    .b-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .b-url {
+      margin: 12px 0;
+      padding: 10px 11px;
+      border-radius: 7px;
+      background: rgba(0,0,0,.22);
+      color: var(--text);
+      font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 9px 8px;
+      border-radius: 7px;
+      background: rgba(255,255,255,.035);
+    }
+
+    .metric span {
+      display: block;
+      color: var(--dim);
+      font-size: 9.5px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    .attempt {
+      margin-top: 9px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    .spinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid rgba(16,185,129,.22);
+      border-top-color: var(--accent);
+    }
+
+    .workspace-card {
+      padding: 13px;
+      border-radius: var(--r);
+      background: var(--surface);
+      border: 1px solid var(--line-soft);
+    }
+
+    .workspace-foot {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    /* C */
+    .list-shell {
+      border: 1px solid var(--line-soft);
+      border-radius: var(--r);
+      overflow: hidden;
+      background: rgba(20,27,24,.72);
+    }
+
+    .c-row {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .c-row:last-child { border-bottom: 0; }
+
+    .c-icon {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      background: rgba(255,255,255,.045);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    .chev { color: var(--dim); font-size: 18px; }
+
+    .c-row.active {
+      background: rgba(16,185,129,.065);
+    }
+
+    .c-row.active .c-icon {
+      color: var(--accent);
+      background: rgba(16,185,129,.12);
+    }
+
+    .child {
+      padding-left: 52px;
+      min-height: 42px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    .child .title { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+      .concept { max-width: 430px; margin: 0 auto; width: 100%; }
+      .top { display: block; }
+      .legend { justify-content: flex-start; margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="top">
+      <div>
+        <h1>PawTerm 连接页 / 项目页卡片方向</h1>
+        <p>三版都保留连接、编辑、更多、项目新增、Agent 选择和会话操作。暗色 / 浅色同时展示，重点看信息层级和交互气质。</p>
+      </div>
+      <div class="legend">
+        <span>390px mobile</span>
+        <span>connection + project</span>
+        <span>dark + light</span>
+      </div>
+    </div>
+
+    <section class="theme-block">
+      <div class="theme-title"><strong>Dark theme</strong><span>保留当前暗色气质</span></div>
+      <div class="grid">
+        <section class="concept">
+          <div class="concept-head">
+            <div class="concept-kicker">Option A</div>
+            <div class="concept-title">紧凑运维卡</div>
+            <div class="concept-desc">高频使用优先，卡片紧、标签清楚，当前项用左侧细条表达。</div>
+          </div>
+          <div class="phone">
+            <div class="screen-title"><strong>Connections</strong><div class="icon-btn">+</div></div>
+            <div class="section">Recent</div>
+            <div class="stack">
+              <div class="a-card active">
+                <div class="a-row">
+                  <div class="device-icon">MB</div>
+                  <div>
+                    <div class="title">Airoucat MacBook</div>
+                    <div class="sub">192.168.3.42:18765 · PawTerm 0.6.8-pre</div>
+                  </div>
+                  <span class="pill green"><span class="dot"></span>Active</span>
+                </div>
+                <div class="tag-row">
+                  <span class="pill">LAN</span><span class="pill">paired</span><span class="pill">last 2m</span>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">Open</span><span class="tiny-btn">Edit</span><span class="tiny-btn icon">...</span>
+                </div>
+              </div>
+              <div class="a-card">
+                <div class="a-row">
+                  <div class="device-icon">ST</div>
+                  <div>
+                    <div class="title">Studio Tailscale</div>
+                    <div class="sub">100.87.41.6:18765 · last online yesterday</div>
+                  </div>
+                  <span class="pill">idle</span>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn">Connect</span><span class="tiny-btn">Edit</span><span class="tiny-btn icon">...</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="screen-title"><strong>Projects</strong><div class="icon-btn">+</div></div>
+            <div class="stack">
+              <div class="a-card active">
+                <div class="a-row">
+                  <div class="project-icon">CC</div>
+                  <div>
+                    <div class="title">claude-companion</div>
+                    <div class="path">~/workspace/shulex/claude-companion</div>
+                  </div>
+                  <span class="pill green">Codex</span>
+                </div>
+                <div class="agent-segment"><span class="active">Codex</span><span>Claude Code</span><span>Gemini</span></div>
+                <div class="session-tree">
+                  <div class="session-row"><span>优化 Mac 更新菜单</span><span>08:12</span></div>
+                  <div class="session-row"><span>通知分支开发</span><span>昨日</span></div>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">New session</span><span class="tiny-btn">History</span><span class="tiny-btn icon">...</span>
+                </div>
+              </div>
+              <div class="a-card">
+                <div class="a-row">
+                  <div class="project-icon">SL</div>
+                  <div>
+                    <div class="title">shulex-gpt-digital</div>
+                    <div class="path">~/workspace/shulex/shulex-gpt-digital</div>
+                  </div>
+                  <span class="pill">Claude</span>
+                </div>
+                <div class="agent-segment"><span>Codex</span><span class="active">Claude Code</span><span>Gemini</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="concept">
+          <div class="concept-head">
+            <div class="concept-kicker">Option B</div>
+            <div class="concept-title">状态仪表卡</div>
+            <div class="concept-desc">更强调连接健康、自动尝试和版本状态，适合解释“为什么正在连”。</div>
+          </div>
+          <div class="phone">
+            <div class="screen-title"><strong>Connections</strong><div class="icon-btn">+</div></div>
+            <div class="stack">
+              <div class="b-card">
+                <div class="b-top">
+                  <div>
+                    <div class="title">Airoucat MacBook</div>
+                    <div class="sub">Local service · launchd</div>
+                  </div>
+                  <span class="pill green"><span class="dot"></span>Connected</span>
+                </div>
+                <div class="b-url">http://192.168.3.42:18765</div>
+                <div class="metrics">
+                  <div class="metric"><span>Latency</span><strong>18ms</strong></div>
+                  <div class="metric"><span>Version</span><strong>0.6.8-pre</strong></div>
+                  <div class="metric"><span>Devices</span><strong>3 paired</strong></div>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">Open</span><span class="tiny-btn">Pairing</span><span class="tiny-btn">Edit</span>
+                </div>
+              </div>
+              <div class="b-card">
+                <div class="b-top">
+                  <div>
+                    <div class="title">Studio Tailscale</div>
+                    <div class="sub">Trying saved addresses</div>
+                  </div>
+                  <span class="pill yellow">Retrying</span>
+                </div>
+                <div class="b-url">http://100.87.41.6:18765</div>
+                <div class="attempt"><span class="spinner"></span><span>Failed 192.168.1.8, trying next host</span></div>
+                <div class="action-row">
+                  <span class="tiny-btn">Retry now</span><span class="tiny-btn">Edit hosts</span><span class="tiny-btn icon">...</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="screen-title"><strong>Projects</strong><div class="icon-btn">+</div></div>
+            <div class="stack">
+              <div class="workspace-card">
+                <div class="b-top">
+                  <div>
+                    <div class="title">claude-companion</div>
+                    <div class="path">~/workspace/shulex/claude-companion</div>
+                  </div>
+                  <span class="pill green">Active</span>
+                </div>
+                <div class="agent-segment"><span class="active">Codex</span><span>Claude Code</span><span>Gemini</span></div>
+                <div class="workspace-foot">
+                  <span>Latest: 修复密码配对状态</span>
+                  <span>2 sessions</span>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">Continue</span><span class="tiny-btn">New</span><span class="tiny-btn">History</span>
+                </div>
+              </div>
+              <div class="workspace-card">
+                <div class="b-top">
+                  <div>
+                    <div class="title">solvea</div>
+                    <div class="path">~/workspace/shulex/solvea</div>
+                  </div>
+                  <span class="pill">Gemini</span>
+                </div>
+                <div class="agent-segment"><span>Codex</span><span>Claude Code</span><span class="active">Gemini</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="concept">
+          <div class="concept-head">
+            <div class="concept-kicker">Option C</div>
+            <div class="concept-title">极简列表卡</div>
+            <div class="concept-desc">最克制，像系统设置页。页面很轻，适合列表很多的场景。</div>
+          </div>
+          <div class="phone">
+            <div class="screen-title"><strong>Connections</strong><div class="icon-btn">+</div></div>
+            <div class="section">Saved</div>
+            <div class="list-shell">
+              <div class="c-row active">
+                <div class="c-icon">●</div>
+                <div>
+                  <div class="title">Airoucat MacBook</div>
+                  <div class="sub">192.168.3.42:18765 · connected · Open</div>
+                </div>
+                <div class="chev">›</div>
+              </div>
+              <div class="c-row">
+                <div class="c-icon">ST</div>
+                <div>
+                  <div class="title">Studio Tailscale</div>
+                  <div class="sub">100.87.41.6:18765 · Edit / More</div>
+                </div>
+                <div class="chev">›</div>
+              </div>
+              <div class="c-row">
+                <div class="c-icon">+</div>
+                <div>
+                  <div class="title">Add connection</div>
+                  <div class="sub">LAN scan, QR, or manual URL</div>
+                </div>
+                <div class="chev">›</div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="screen-title"><strong>Projects</strong><div class="icon-btn">+</div></div>
+            <div class="list-shell">
+              <div class="c-row active">
+                <div class="c-icon">CC</div>
+                <div>
+                  <div class="title">claude-companion</div>
+                  <div class="path">Codex · ~/workspace/shulex/claude-companion</div>
+                </div>
+                <div class="chev">⌄</div>
+              </div>
+              <div class="c-row child">
+                <div class="title">New session · Codex / Claude Code / Gemini</div>
+                <div>+</div>
+              </div>
+              <div class="c-row child">
+                <div class="title">优化连接页卡片</div>
+                <div>now</div>
+              </div>
+              <div class="c-row child">
+                <div class="title">Mac 更新菜单</div>
+                <div>08:12</div>
+              </div>
+              <div class="c-row">
+                <div class="c-icon">SL</div>
+                <div>
+                  <div class="title">shulex-gpt-digital</div>
+                  <div class="path">Claude Code · ~/workspace/shulex/shulex-gpt-digital</div>
+                </div>
+                <div class="chev">›</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="theme-block">
+      <div class="theme-title"><strong>Light theme</strong><span>同操作映射，浅色 token 版本</span></div>
+      <div class="grid">
+        <section class="concept light">
+          <div class="concept-head">
+            <div class="concept-kicker">Option A</div>
+            <div class="concept-title">紧凑运维卡</div>
+            <div class="concept-desc">浅色下保留细边框和左侧状态条，信息密度不降低。</div>
+          </div>
+          <div class="phone">
+            <div class="screen-title"><strong>Connections</strong><div class="icon-btn">+</div></div>
+            <div class="section">Recent</div>
+            <div class="stack">
+              <div class="a-card active">
+                <div class="a-row">
+                  <div class="device-icon">MB</div>
+                  <div>
+                    <div class="title">Airoucat MacBook</div>
+                    <div class="sub">192.168.3.42:18765 · PawTerm 0.6.8-pre</div>
+                  </div>
+                  <span class="pill green"><span class="dot"></span>Active</span>
+                </div>
+                <div class="tag-row">
+                  <span class="pill">LAN</span><span class="pill">paired</span><span class="pill">last 2m</span>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">Open</span><span class="tiny-btn">Edit</span><span class="tiny-btn icon">...</span>
+                </div>
+              </div>
+              <div class="a-card">
+                <div class="a-row">
+                  <div class="device-icon">ST</div>
+                  <div>
+                    <div class="title">Studio Tailscale</div>
+                    <div class="sub">100.87.41.6:18765 · last online yesterday</div>
+                  </div>
+                  <span class="pill">idle</span>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn">Connect</span><span class="tiny-btn">Edit</span><span class="tiny-btn icon">...</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="screen-title"><strong>Projects</strong><div class="icon-btn">+</div></div>
+            <div class="stack">
+              <div class="a-card active">
+                <div class="a-row">
+                  <div class="project-icon">CC</div>
+                  <div>
+                    <div class="title">claude-companion</div>
+                    <div class="path">~/workspace/shulex/claude-companion</div>
+                  </div>
+                  <span class="pill green">Codex</span>
+                </div>
+                <div class="agent-segment"><span class="active">Codex</span><span>Claude Code</span><span>Gemini</span></div>
+                <div class="session-tree">
+                  <div class="session-row"><span>优化 Mac 更新菜单</span><span>08:12</span></div>
+                  <div class="session-row"><span>通知分支开发</span><span>昨日</span></div>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">New session</span><span class="tiny-btn">History</span><span class="tiny-btn icon">...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="concept light">
+          <div class="concept-head">
+            <div class="concept-kicker">Option B</div>
+            <div class="concept-title">状态仪表卡</div>
+            <div class="concept-desc">浅色下让状态信息更像控制台摘要，适合连接 loading 页延展。</div>
+          </div>
+          <div class="phone">
+            <div class="screen-title"><strong>Connections</strong><div class="icon-btn">+</div></div>
+            <div class="stack">
+              <div class="b-card">
+                <div class="b-top">
+                  <div>
+                    <div class="title">Airoucat MacBook</div>
+                    <div class="sub">Local service · launchd</div>
+                  </div>
+                  <span class="pill green"><span class="dot"></span>Connected</span>
+                </div>
+                <div class="b-url">http://192.168.3.42:18765</div>
+                <div class="metrics">
+                  <div class="metric"><span>Latency</span><strong>18ms</strong></div>
+                  <div class="metric"><span>Version</span><strong>0.6.8-pre</strong></div>
+                  <div class="metric"><span>Devices</span><strong>3 paired</strong></div>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">Open</span><span class="tiny-btn">Pairing</span><span class="tiny-btn">Edit</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="screen-title"><strong>Projects</strong><div class="icon-btn">+</div></div>
+            <div class="stack">
+              <div class="workspace-card">
+                <div class="b-top">
+                  <div>
+                    <div class="title">claude-companion</div>
+                    <div class="path">~/workspace/shulex/claude-companion</div>
+                  </div>
+                  <span class="pill green">Active</span>
+                </div>
+                <div class="agent-segment"><span class="active">Codex</span><span>Claude Code</span><span>Gemini</span></div>
+                <div class="workspace-foot">
+                  <span>Latest: 修复密码配对状态</span>
+                  <span>2 sessions</span>
+                </div>
+                <div class="action-row">
+                  <span class="tiny-btn primary">Continue</span><span class="tiny-btn">New</span><span class="tiny-btn">History</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="concept light">
+          <div class="concept-head">
+            <div class="concept-kicker">Option C</div>
+            <div class="concept-title">极简列表卡</div>
+            <div class="concept-desc">浅色列表适合项目多的时候，操作靠行内文案和右侧进入。</div>
+          </div>
+          <div class="phone">
+            <div class="screen-title"><strong>Connections</strong><div class="icon-btn">+</div></div>
+            <div class="section">Saved</div>
+            <div class="list-shell">
+              <div class="c-row active">
+                <div class="c-icon">●</div>
+                <div>
+                  <div class="title">Airoucat MacBook</div>
+                  <div class="sub">192.168.3.42:18765 · connected · Open</div>
+                </div>
+                <div class="chev">›</div>
+              </div>
+              <div class="c-row">
+                <div class="c-icon">+</div>
+                <div>
+                  <div class="title">Add connection</div>
+                  <div class="sub">LAN scan, QR, or manual URL</div>
+                </div>
+                <div class="chev">›</div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="screen-title"><strong>Projects</strong><div class="icon-btn">+</div></div>
+            <div class="list-shell">
+              <div class="c-row active">
+                <div class="c-icon">CC</div>
+                <div>
+                  <div class="title">claude-companion</div>
+                  <div class="path">Codex · ~/workspace/shulex/claude-companion</div>
+                </div>
+                <div class="chev">⌄</div>
+              </div>
+              <div class="c-row child">
+                <div class="title">New session · Codex / Claude Code / Gemini</div>
+                <div>+</div>
+              </div>
+              <div class="c-row child">
+                <div class="title">优化连接页卡片</div>
+                <div>now</div>
+              </div>
+              <div class="c-row">
+                <div class="c-icon">SL</div>
+                <div>
+                  <div class="title">shulex-gpt-digital</div>
+                  <div class="path">Claude Code · ~/workspace/shulex/shulex-gpt-digital</div>
+                </div>
+                <div class="chev">›</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

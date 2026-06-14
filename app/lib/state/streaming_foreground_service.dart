@@ -100,6 +100,12 @@ class StreamingForegroundService {
     await _sync();
   }
 
+  Future<void> clear() async {
+    _active.clear();
+    _activity.clear();
+    await _sync();
+  }
+
   Future<void> _sync() async {
     if (!Platform.isAndroid) return;
     await init();

@@ -8,7 +8,8 @@ import * as pty from 'node-pty';
 
 import type { ShellClientMessage, ShellServerMessage } from '@pawterm/shared';
 
-import { isPathAllowed, settings } from './config.js';
+import { isPathAllowed, readAdminPasswordState, settings } from './config.js';
+import { verifyAdminPassword } from './admin-password.js';
 
 /**
  * Pick a usable login shell. Order:
@@ -253,9 +254,12 @@ export function handleShellSocket(socket: WebSocket, _req: FastifyRequest): void
           send({ type: 'error', message: 'Already initialized; open a new socket to re-init' });
           return;
         }
-        const isValidToken = msg.token === settings.adminToken ||
-          (!!settings.password && msg.token === settings.password) ||
-          settings.pairedDevices.some((d) => d.deviceToken === msg.token);
+        const token = msg.token ?? '';
+        const passwordState = readAdminPasswordState();
+        const isValidToken = token === settings.adminToken ||
+          verifyAdminPassword(token, passwordState.adminPasswordHash) ||
+          (!!passwordState.password && token === passwordState.password) ||
+          settings.pairedDevices.some((d) => d.deviceToken === token);
         if (!isValidToken) {
           send({ type: 'error', message: 'unauthorized' });
           try { socket.close(4001, 'unauthorized'); } catch { /* ignore */ }

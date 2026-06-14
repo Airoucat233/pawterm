@@ -21,6 +21,7 @@ class Connection {
   final String? serverId; // stable server identity; null = manually added
   final List<String> recentHosts; // past IPs for cross-network reconnect
   final List<String> recentUrls; // past full base URLs for reconnect
+  final List<String> pinnedUrls; // stable addresses kept across pruning
   final DateTime? lastConnected;
   final DateTime? lastSeen;
 
@@ -33,6 +34,7 @@ class Connection {
     this.serverId,
     this.recentHosts = const [],
     this.recentUrls = const [],
+    this.pinnedUrls = const [],
     this.lastConnected,
     this.lastSeen,
   });
@@ -57,6 +59,7 @@ class Connection {
     String? serverId,
     List<String>? recentHosts,
     List<String>? recentUrls,
+    List<String>? pinnedUrls,
     DateTime? lastConnected,
     DateTime? lastSeen,
   }) =>
@@ -69,6 +72,7 @@ class Connection {
         serverId: serverId ?? this.serverId,
         recentHosts: recentHosts ?? this.recentHosts,
         recentUrls: recentUrls ?? this.recentUrls,
+        pinnedUrls: pinnedUrls ?? this.pinnedUrls,
         lastConnected: lastConnected ?? this.lastConnected,
         lastSeen: lastSeen ?? this.lastSeen,
       );
@@ -82,6 +86,7 @@ class Connection {
         if (serverId != null) 'serverId': serverId,
         'recentHosts': recentHosts,
         'recentUrls': recentUrls,
+        'pinnedUrls': pinnedUrls,
         'lastConnected': lastConnected?.toIso8601String(),
         'lastSeen': lastSeen?.toIso8601String(),
       };
@@ -90,12 +95,14 @@ class Connection {
     final url = j['url'] as String;
     final recentHosts = ((j['recentHosts'] as List?) ?? []).cast<String>();
     final rawRecentUrls = ((j['recentUrls'] as List?) ?? []).cast<String>();
+    final pinnedUrls = ((j['pinnedUrls'] as List?) ?? []).cast<String>();
     final uri = Uri.tryParse(url);
     final legacyUrls = rawRecentUrls.isNotEmpty || uri == null
         ? const <String>[]
         : [
             for (final host in recentHosts) '${uri.scheme}://$host:${uri.port}',
           ];
+    final recentUrls = rawRecentUrls.isNotEmpty ? rawRecentUrls : legacyUrls;
     return Connection(
       id: j['id'] as String,
       name: j['name'] as String,
@@ -104,7 +111,8 @@ class Connection {
       token: j['token'] as String?,
       serverId: j['serverId'] as String?,
       recentHosts: recentHosts,
-      recentUrls: rawRecentUrls.isNotEmpty ? rawRecentUrls : legacyUrls,
+      recentUrls: _normalizeUrlList(recentUrls),
+      pinnedUrls: _normalizeUrlList(pinnedUrls),
       lastConnected: j['lastConnected'] != null
           ? DateTime.tryParse(j['lastConnected'] as String)
           : null,
@@ -112,6 +120,16 @@ class Connection {
           ? DateTime.tryParse(j['lastSeen'] as String)
           : null,
     );
+  }
+
+  static List<String> _normalizeUrlList(Iterable<String> urls) {
+    final seen = <String>{};
+    return [
+      for (final url in urls)
+        if (url.trim().isNotEmpty)
+          if (seen.add(url.trim().replaceFirst(RegExp(r'/$'), '')))
+            url.trim().replaceFirst(RegExp(r'/$'), ''),
+    ];
   }
 }
 
@@ -124,6 +142,8 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
       'connections_v2'; // new key — clean break from v1 + paired_servers
   static const _deviceIdKey = 'device_id';
   static const _uuid = Uuid();
+  static const int maxRecentUrls = 3;
+  static const int maxPinnedUrls = 5;
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -185,10 +205,14 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
                   ].take(5).toList()
                 : c.recentHosts,
             recentUrls: newUrl != c.url
-                ? [
-                    c.url,
-                    ...c.recentUrls.where((u) => u != newUrl && u != c.url),
-                  ].take(8).toList()
+                ? _pruneRecentUrls(
+                    [
+                      c.url,
+                      ...c.recentUrls,
+                    ],
+                    currentUrl: newUrl,
+                    pinnedUrls: c.pinnedUrls,
+                  )
                 : c.recentUrls,
           )
         else
@@ -197,6 +221,96 @@ class ConnectionsNotifier extends StateNotifier<List<Connection>> {
     await _save();
     return updated;
   }
+
+  Future<void> pinUrl(String id, String url) async {
+    final normalized = _normalizeUrl(url);
+    if (normalized.isEmpty) return;
+    state = [
+      for (final c in state)
+        if (c.id == id)
+          c.copyWith(
+            pinnedUrls: _prunePinnedUrls([normalized, ...c.pinnedUrls]),
+            recentUrls: c.recentUrls
+                .where((u) => _normalizeUrl(u) != normalized)
+                .toList(),
+          )
+        else
+          c,
+    ];
+    await _save();
+  }
+
+  Future<void> unpinUrl(String id, String url) async {
+    final normalized = _normalizeUrl(url);
+    state = [
+      for (final c in state)
+        c.id == id
+            ? c.copyWith(
+                pinnedUrls: c.pinnedUrls
+                    .where((u) => _normalizeUrl(u) != normalized)
+                    .toList(),
+              )
+            : c,
+    ];
+    await _save();
+  }
+
+  Future<void> removeRecentUrl(String id, String url) async {
+    final normalized = _normalizeUrl(url);
+    state = [
+      for (final c in state)
+        c.id == id
+            ? c.copyWith(
+                recentUrls: c.recentUrls
+                    .where((u) => _normalizeUrl(u) != normalized)
+                    .toList(),
+              )
+            : c,
+    ];
+    await _save();
+  }
+
+  Future<void> clearRecentUrls(String id) async {
+    state = [
+      for (final c in state) c.id == id ? c.copyWith(recentUrls: const []) : c,
+    ];
+    await _save();
+  }
+
+  static List<String> _pruneRecentUrls(
+    Iterable<String> urls, {
+    required String currentUrl,
+    required List<String> pinnedUrls,
+  }) {
+    final current = _normalizeUrl(currentUrl);
+    final pinned =
+        pinnedUrls.map(_normalizeUrl).where((u) => u.isNotEmpty).toSet();
+    final seen = <String>{};
+    final result = <String>[];
+    for (final raw in urls) {
+      final url = _normalizeUrl(raw);
+      if (url.isEmpty || url == current || pinned.contains(url)) continue;
+      if (!seen.add(url)) continue;
+      result.add(url);
+      if (result.length >= maxRecentUrls) break;
+    }
+    return result;
+  }
+
+  static List<String> _prunePinnedUrls(Iterable<String> urls) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final raw in urls) {
+      final url = _normalizeUrl(raw);
+      if (url.isEmpty || !seen.add(url)) continue;
+      result.add(url);
+      if (result.length >= maxPinnedUrls) break;
+    }
+    return result;
+  }
+
+  static String _normalizeUrl(String url) =>
+      url.trim().replaceFirst(RegExp(r'/$'), '');
 
   // ─── Static helpers (formerly on PairedServersNotifier) ───────────────────
 

@@ -13,8 +13,10 @@ import '../api/sessions_api.dart';
 import '../main.dart' show routeObserver;
 import '../state/agents_store.dart';
 import '../state/chat_completion_notifier.dart';
+import '../state/open_chat_windows.dart';
 import '../state/projects_store.dart';
 import '../state/server_config.dart';
+import '../state/streaming_foreground_service.dart';
 import '../theme.dart';
 import '../widgets/agent_badge.dart';
 import '../widgets/agent_picker_sheet.dart';
@@ -49,12 +51,19 @@ class _ConnectionAttemptResult {
   final _ConnectionAttempt attempt;
   final String message;
   final int? statusCode;
+  final bool ok;
 
   const _ConnectionAttemptResult({
     required this.attempt,
     required this.message,
     this.statusCode,
-  });
+  }) : ok = false;
+
+  const _ConnectionAttemptResult.ok({
+    required this.attempt,
+  })  : message = '已连接',
+        statusCode = null,
+        ok = true;
 }
 
 class _ProbeResult {
@@ -76,9 +85,11 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   _PhaseStatus _phase = _PhaseStatus.connecting;
   String? _connectError;
   bool _needsRepair = false;
+  bool _allowExitPop = false;
   List<_ConnectionAttempt> _attempts = const [];
   _ConnectionAttempt? _currentAttempt;
   final List<_ConnectionAttemptResult> _failedAttempts = [];
+  _ConnectionAttemptResult? _successfulAttempt;
 
   @override
   void initState() {
@@ -128,6 +139,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       _attempts = attempts;
       _currentAttempt = attempts.isNotEmpty ? attempts.first : null;
       _failedAttempts.clear();
+      _successfulAttempt = null;
     });
 
     final start = DateTime.now();
@@ -138,9 +150,16 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       final result = await _probeAttempt(attempt);
       if (!mounted) return;
       if (result.ok) {
+        setState(() {
+          _successfulAttempt = _ConnectionAttemptResult.ok(attempt: attempt);
+          _currentAttempt = null;
+        });
         final elapsed = DateTime.now().difference(start);
-        if (elapsed < const Duration(milliseconds: 500)) {
-          await Future.delayed(const Duration(milliseconds: 500) - elapsed);
+        const minVisible = Duration(milliseconds: 650);
+        if (elapsed < minVisible) {
+          await Future.delayed(minVisible - elapsed);
+        } else {
+          await Future.delayed(const Duration(milliseconds: 180));
         }
         if (!mounted) return;
 
@@ -157,6 +176,28 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
                 .firstOrNull ??
             connected.copyWith(lastConnected: DateTime.now());
         ref.read(activeConnectionProvider.notifier).state = connected;
+        await ref
+            .read(openChatWindowsProvider.notifier)
+            .loadForConnection(connected.id);
+        if (!mounted) return;
+        final restoredSession =
+            ref.read(openChatWindowsProvider).current?.session;
+        if (restoredSession != null) {
+          ref.read(currentSessionProvider.notifier).state = restoredSession;
+          ref.read(selectedProjectProvider.notifier).state = Project(
+            name: _projectNameFromSession(restoredSession),
+            path: restoredSession.cwd,
+          );
+          setState(() {
+            _phase = _PhaseStatus.ready;
+            _needsRepair = false;
+            _connectError = null;
+          });
+          Navigator.of(context).push(
+            CupertinoPageRoute(builder: (_) => const MainShell()),
+          );
+          return;
+        }
         setState(() {
           _phase = _PhaseStatus.ready;
           _needsRepair = false;
@@ -180,6 +221,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       _phase = _PhaseStatus.failed;
       _needsRepair = hasAuthFailure;
       _currentAttempt = null;
+      _successfulAttempt = null;
     });
   }
 
@@ -242,11 +284,12 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     for (final conn in ordered) {
       final urls = <String>[
         _normalizeUrl(conn.url),
-        for (final host in conn.recentHosts)
-          _urlWithHost(conn.url, host, fallbackPort: conn.port),
+        ...conn.pinnedUrls.map(_normalizeUrl),
+        ...conn.recentUrls.map(_normalizeUrl),
       ];
       for (final url in urls) {
         final normalized = _normalizeUrl(url);
+        if (normalized.isEmpty) continue;
         final key = '${conn.id}|$normalized';
         if (!seen.add(key)) continue;
         attempts.add(_ConnectionAttempt(
@@ -259,14 +302,11 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     return attempts;
   }
 
-  static String _urlWithHost(String baseUrl, String host,
-      {required int fallbackPort}) {
-    final uri = Uri.tryParse(baseUrl);
-    if (uri == null) return 'http://$host:$fallbackPort';
-    return uri
-        .replace(host: host, port: uri.hasPort ? uri.port : fallbackPort)
-        .toString()
-        .replaceFirst(RegExp(r'/$'), '');
+  static String _projectNameFromSession(CurrentSession session) {
+    final path = session.cwd.trim().replaceAll('\\', '/');
+    final parts = path.split('/').where((part) => part.isNotEmpty).toList();
+    if (parts.isNotEmpty) return parts.last;
+    return session.label.trim().isNotEmpty ? session.label : '项目';
   }
 
   static String _normalizeUrl(String url) =>
@@ -277,16 +317,24 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     final conn = ref.watch(activeConnectionProvider)!;
     final t = AppTokens.of(context);
 
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 280),
-          switchInCurve: Curves.easeOut,
-          switchOutCurve: Curves.easeIn,
-          child: _phase == _PhaseStatus.ready
-              ? _readyView(context, conn, t)
-              : _connectingView(context, conn, t),
+    return PopScope(
+      canPop: _allowExitPop || _phase != _PhaseStatus.ready,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _phase == _PhaseStatus.ready) {
+          _confirmExitConnection();
+        }
+      },
+      child: Scaffold(
+        body: SafeArea(
+          bottom: false,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            switchInCurve: Curves.easeOut,
+            switchOutCurve: Curves.easeIn,
+            child: _phase == _PhaseStatus.ready
+                ? _readyView(context, conn, t)
+                : _connectingView(context, conn, t),
+          ),
         ),
       ),
     );
@@ -299,6 +347,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       currentAttempt: _currentAttempt,
       totalAttempts: _attempts.length,
       failedAttempts: List.unmodifiable(_failedAttempts),
+      successfulAttempt: _successfulAttempt,
       error: _phase == _PhaseStatus.failed ? _connectError : null,
       needsRepair: _needsRepair,
       onBack: () => Navigator.of(context).pop(),
@@ -316,6 +365,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       children: [
         _TopBar(
           conn: conn,
+          onExitConnection: _confirmExitConnection,
           onRefresh: () {
             ref.invalidate(projectsProvider);
             for (final p in _expanded) {
@@ -345,7 +395,6 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
               }),
               onNewSession: _enterProject,
               onPickSession: _enterProjectWithSession,
-              onPickAgent: (p) => _showAgentPicker(context, p),
               onAdd: () => _showAddSheet(context),
               onDelete: _confirmAndDelete,
             ),
@@ -353,6 +402,57 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
         ),
       ],
     );
+  }
+
+  Future<void> _confirmExitConnection() async {
+    final conn = ref.read(activeConnectionProvider);
+    if (conn == null) {
+      _popProjectPicker();
+      return;
+    }
+    final t = AppTokens.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: t.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('退出连接', style: TextStyle(color: t.text, fontSize: 16)),
+        content: Text(
+          '退出后会断开当前连接并停止后台通知状态。已打开的会话会保留，下次进入这台连接时继续显示。',
+          style: TextStyle(color: t.textMuted, fontSize: 13, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('取消', style: TextStyle(color: t.textMuted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: t.error),
+            child: const Text('退出'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _exitConnection(conn);
+  }
+
+  Future<void> _exitConnection(Connection conn) async {
+    ref.read(currentSessionProvider.notifier).state = null;
+    ref.read(selectedProjectProvider.notifier).state = null;
+    ref.read(activeConnectionProvider.notifier).state = null;
+    ref.read(openChatWindowsProvider.notifier).clearMemory();
+    ref.read(inAppChatNotificationsProvider.notifier).clear();
+    await ChatCompletionNotifier.instance.clearSessionNotifications();
+    await StreamingForegroundService.instance.clear();
+    if (mounted) _popProjectPicker();
+  }
+
+  void _popProjectPicker([Object? result]) {
+    if (!mounted) return;
+    setState(() => _allowExitPop = true);
+    Navigator.of(context).pop(result);
   }
 
   void _enterProject(Project project) {
@@ -587,6 +687,7 @@ class _ConnectingView extends StatefulWidget {
   final _ConnectionAttempt? currentAttempt;
   final int totalAttempts;
   final List<_ConnectionAttemptResult> failedAttempts;
+  final _ConnectionAttemptResult? successfulAttempt;
   final String? error;
   final bool needsRepair;
   final VoidCallback onBack;
@@ -598,6 +699,7 @@ class _ConnectingView extends StatefulWidget {
     required this.currentAttempt,
     required this.totalAttempts,
     required this.failedAttempts,
+    required this.successfulAttempt,
     required this.error,
     this.needsRepair = false,
     required this.onBack,
@@ -769,13 +871,14 @@ class _ConnectingViewState extends State<_ConnectingView>
                       style: TextStyle(fontSize: 11, color: t.textDim),
                     ),
                   ],
-                  if (widget.failedAttempts.isNotEmpty) ...[
+                  if (widget.failedAttempts.isNotEmpty ||
+                      widget.successfulAttempt != null ||
+                      current != null) ...[
                     const SizedBox(height: 18),
-                    _FailedAttemptsList(
-                      attempts: widget.failedAttempts.take(4).toList(),
-                      remaining: widget.failedAttempts.length > 4
-                          ? widget.failedAttempts.length - 4
-                          : 0,
+                    _ConnectionAttemptsList(
+                      failedAttempts: widget.failedAttempts,
+                      successfulAttempt: widget.successfulAttempt,
+                      currentAttempt: isError ? null : current,
                     ),
                   ],
                   if (isError) ...[
@@ -851,18 +954,27 @@ class _ConnectingViewState extends State<_ConnectingView>
   }
 }
 
-class _FailedAttemptsList extends StatelessWidget {
-  final List<_ConnectionAttemptResult> attempts;
-  final int remaining;
+class _ConnectionAttemptsList extends StatelessWidget {
+  final List<_ConnectionAttemptResult> failedAttempts;
+  final _ConnectionAttemptResult? successfulAttempt;
+  final _ConnectionAttempt? currentAttempt;
 
-  const _FailedAttemptsList({
-    required this.attempts,
-    required this.remaining,
+  const _ConnectionAttemptsList({
+    required this.failedAttempts,
+    required this.successfulAttempt,
+    required this.currentAttempt,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
+    final rows = <Widget>[
+      ...failedAttempts.take(4).map((item) => _AttemptRow(result: item)),
+      if (currentAttempt != null) _AttemptRow(current: currentAttempt),
+      if (successfulAttempt != null) _AttemptRow(result: successfulAttempt),
+    ];
+    final hiddenFailures =
+        failedAttempts.length > 4 ? failedAttempts.length - 4 : 0;
     return Container(
       width: double.infinity,
       constraints: const BoxConstraints(maxWidth: 340),
@@ -874,41 +986,76 @@ class _FailedAttemptsList extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          for (final item in attempts)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 3),
-              child: Row(
-                children: [
-                  Icon(Icons.close_rounded, size: 14, color: t.textDim),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      item.attempt.displayUrl,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                        color: t.textMuted,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    item.message,
-                    style: TextStyle(fontSize: 10.5, color: t.textDim),
-                  ),
-                ],
-              ),
-            ),
-          if (remaining > 0)
+          for (final row in rows) row,
+          if (hiddenFailures > 0)
             Padding(
               padding: const EdgeInsets.only(top: 3),
               child: Text(
-                '还有 $remaining 个地址已跳过',
+                '还有 $hiddenFailures 个地址已失败',
                 style: TextStyle(fontSize: 10.5, color: t.textDim),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AttemptRow extends StatelessWidget {
+  final _ConnectionAttemptResult? result;
+  final _ConnectionAttempt? current;
+
+  const _AttemptRow({this.result, this.current});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final attempt = result?.attempt ?? current!;
+    final isCurrent = current != null;
+    final isOk = result?.ok == true;
+    final color = isCurrent
+        ? t.accent
+        : isOk
+            ? const Color(0xFF16A34A)
+            : t.error;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3.5),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 15,
+            height: 15,
+            child: isCurrent
+                ? CircularProgressIndicator(strokeWidth: 1.8, color: color)
+                : Icon(
+                    isOk ? Icons.check_rounded : Icons.close_rounded,
+                    size: 15,
+                    color: color,
+                  ),
+          ),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              attempt.displayUrl,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: isCurrent ? 11.5 : 11,
+                fontFamily: 'monospace',
+                color: isCurrent ? t.text : t.textMuted,
+                fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            isCurrent ? '尝试中' : result!.message,
+            style: TextStyle(
+              fontSize: 10.5,
+              color: color,
+              fontWeight: isCurrent || isOk ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
         ],
       ),
     );
@@ -956,10 +1103,15 @@ class _RingPainter extends CustomPainter {
 
 class _TopBar extends StatelessWidget {
   final Connection conn;
+  final VoidCallback onExitConnection;
   final VoidCallback onRefresh;
   final VoidCallback onAdd;
-  const _TopBar(
-      {required this.conn, required this.onRefresh, required this.onAdd});
+  const _TopBar({
+    required this.conn,
+    required this.onExitConnection,
+    required this.onRefresh,
+    required this.onAdd,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -970,7 +1122,7 @@ class _TopBar extends StatelessWidget {
         children: [
           // Back button: emoji + back arrow
           InkWell(
-            onTap: () => Navigator.of(context).pop(),
+            onTap: onExitConnection,
             borderRadius: BorderRadius.circular(10),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -1043,7 +1195,6 @@ class _ProjectList extends ConsumerWidget {
   final void Function(String path) onToggle;
   final void Function(Project) onNewSession;
   final void Function(Project, SessionSummary) onPickSession;
-  final void Function(Project) onPickAgent;
   final VoidCallback onAdd;
   final void Function(Project) onDelete;
 
@@ -1053,7 +1204,6 @@ class _ProjectList extends ConsumerWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
-    required this.onPickAgent,
     required this.onAdd,
     required this.onDelete,
   });
@@ -1084,7 +1234,6 @@ class _ProjectList extends ConsumerWidget {
             onToggle: () => onToggle(p.path),
             onNewSession: () => onNewSession(p),
             onPickSession: (s) => onPickSession(p, s),
-            onPickAgent: () => onPickAgent(p),
             onDelete: () => onDelete(p),
           ),
         const SizedBox(height: 8),
@@ -1103,7 +1252,6 @@ class _SlidableProjectCard extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback onNewSession;
   final void Function(SessionSummary) onPickSession;
-  final VoidCallback onPickAgent;
   final VoidCallback onDelete;
 
   const _SlidableProjectCard({
@@ -1113,7 +1261,6 @@ class _SlidableProjectCard extends StatelessWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
-    required this.onPickAgent,
     required this.onDelete,
   });
 
@@ -1125,7 +1272,6 @@ class _SlidableProjectCard extends StatelessWidget {
       onToggle: onToggle,
       onNewSession: onNewSession,
       onPickSession: onPickSession,
-      onPickAgent: onPickAgent,
       onDelete: onDelete,
     );
     if (isExpanded) return card;
@@ -1159,7 +1305,6 @@ class _ProjectCard extends ConsumerStatefulWidget {
   final VoidCallback onToggle;
   final VoidCallback onNewSession;
   final void Function(SessionSummary) onPickSession;
-  final VoidCallback onPickAgent;
   final VoidCallback onDelete;
 
   const _ProjectCard({
@@ -1168,7 +1313,6 @@ class _ProjectCard extends ConsumerStatefulWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
-    required this.onPickAgent,
     required this.onDelete,
   });
 
@@ -1190,185 +1334,200 @@ class _ProjectCardState extends ConsumerState<_ProjectCard> {
         isExpanded ? ref.watch(sessionsProvider(project.path)) : null;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: t.surface,
+        color: isExpanded ? Color.lerp(t.surface, t.accent, 0.035) : t.surface,
         border: Border.all(
           color: isExpanded ? t.accent.withValues(alpha: 0.28) : t.border,
         ),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(8),
       ),
       clipBehavior: Clip.hardEdge,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          InkWell(
-            onTap: widget.onToggle,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: isExpanded ? t.accentSubt : t.surfaceHi,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: isExpanded
-                            ? t.accent.withValues(alpha: 0.2)
-                            : t.border,
-                      ),
-                    ),
-                    child: Center(
-                      child: Icon(
-                        isExpanded ? Icons.folder_open : Icons.folder_outlined,
-                        size: 20,
-                        color: isExpanded ? t.accent : t.textMuted,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const SizedBox(height: 2),
-                        Text(
-                          project.name,
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: isExpanded ? t.accent : t.text,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          _humanPath(project.path),
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontFamily: 'monospace',
-                            color: t.textDim,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  // 一个表达力清晰的"折叠/展开"指示：旋转的 chevron。
-                  // 三个点菜单只在展开状态露出，避免视觉拥挤。
-                  AnimatedRotation(
-                    duration: const Duration(milliseconds: 180),
-                    turns: isExpanded ? 0.5 : 0,
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child:
-                          Icon(Icons.expand_more, size: 20, color: t.textMuted),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (isExpanded) ...[
-            Divider(
-                color: t.borderSubt, height: 0.5, indent: 14, endIndent: 14),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(14, 12, 14, 0),
-              child: _SectionLabel('当前 Agent'),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-              child: _AgentProjectCard(
-                agent: defaultAgent,
-                onTap: widget.onPickAgent,
-              ),
-            ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(14, 10, 14, 0),
-              child: _SectionLabel('会话'),
-            ),
-            if (sessionsAsync != null)
-              sessionsAsync.when(
-                loading: () => const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Center(
-                    child: SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
+          if (isExpanded)
+            Positioned(
+              left: 0,
+              top: 10,
+              bottom: 10,
+              child: Container(
+                width: 3,
+                decoration: BoxDecoration(
+                  color: t.accent,
+                  borderRadius: const BorderRadius.horizontal(
+                    right: Radius.circular(999),
                   ),
                 ),
-                error: (e, _) => Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    '载入失败：$e',
-                    style: TextStyle(fontSize: 11, color: t.error),
-                  ),
-                ),
-                data: (sessions) {
-                  final filtered = sessions.where((s) {
-                    return switch (_filter) {
-                      _SessionFilter.all => true,
-                      _SessionFilter.claude => s.agent == AgentKind.claude,
-                      _SessionFilter.codex => s.agent == AgentKind.codex,
-                    };
-                  }).toList();
-                  return sessions.isEmpty
-                      ? Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
-                          child: Text(
-                            '暂无历史会话',
-                            style: TextStyle(fontSize: 12, color: t.textDim),
+              ),
+            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              InkWell(
+                onTap: widget.onToggle,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 13, 13, 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: isExpanded ? t.accentSubt : t.surfaceHi,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: isExpanded
+                                ? t.accent.withValues(alpha: 0.18)
+                                : t.borderSubt,
+                            width: 0.5,
                           ),
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                        ),
+                        child: Center(
+                          child: Icon(
+                            isExpanded
+                                ? Icons.folder_open
+                                : Icons.folder_outlined,
+                            size: 19,
+                            color: isExpanded ? t.accent : t.textMuted,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
-                              child: _SessionFilterBar(
-                                selected: _filter,
-                                onChanged: (next) =>
-                                    setState(() => _filter = next),
+                            const SizedBox(height: 1),
+                            Text(
+                              project.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w700,
+                                color: t.text,
                               ),
                             ),
-                            _SessionListViewport(
-                              sessions: filtered,
-                              emptyText: '这个 Agent 暂无历史会话',
-                              onPickSession: widget.onPickSession,
+                            const SizedBox(height: 4),
+                            Text(
+                              _humanPath(project.path),
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                                color: t.textDim,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ],
-                        );
-                },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      AgentBadge(agent: defaultAgent, compact: true),
+                      const SizedBox(width: 4),
+                      AnimatedRotation(
+                        duration: const Duration(milliseconds: 180),
+                        turns: isExpanded ? 0.5 : 0,
+                        child:
+                            Icon(Icons.expand_more, size: 20, color: t.textDim),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 6, 14, 14),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _ActionChip(
-                      icon: Icons.add_comment_outlined,
-                      label: '新会话',
-                      primary: true,
-                      onTap: widget.onNewSession,
+              if (isExpanded) ...[
+                Divider(
+                    color: t.borderSubt,
+                    height: 0.5,
+                    indent: 14,
+                    endIndent: 14),
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(14, 12, 14, 0),
+                  child: _SectionLabel('会话'),
+                ),
+                if (sessionsAsync != null)
+                  sessionsAsync.when(
+                    loading: () => const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Center(
+                        child: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
                     ),
+                    error: (e, _) => Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        '载入失败：$e',
+                        style: TextStyle(fontSize: 11, color: t.error),
+                      ),
+                    ),
+                    data: (sessions) {
+                      final filtered = sessions.where((s) {
+                        return switch (_filter) {
+                          _SessionFilter.all => true,
+                          _SessionFilter.claude => s.agent == AgentKind.claude,
+                          _SessionFilter.codex => s.agent == AgentKind.codex,
+                        };
+                      }).toList();
+                      return sessions.isEmpty
+                          ? Padding(
+                              padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
+                              child: Text(
+                                '暂无历史会话',
+                                style:
+                                    TextStyle(fontSize: 12, color: t.textDim),
+                              ),
+                            )
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(14, 10, 14, 4),
+                                  child: _SessionFilterBar(
+                                    selected: _filter,
+                                    onChanged: (next) =>
+                                        setState(() => _filter = next),
+                                  ),
+                                ),
+                                _SessionListViewport(
+                                  sessions: filtered,
+                                  emptyText: '这个 Agent 暂无历史会话',
+                                  onPickSession: widget.onPickSession,
+                                ),
+                              ],
+                            );
+                    },
                   ),
-                  const SizedBox(width: 8),
-                  _IconAction(
-                    icon: Icons.delete_outline,
-                    color: t.error,
-                    tooltip: '从列表移除',
-                    onTap: widget.onDelete,
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 14),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _ActionChip(
+                          icon: Icons.add_comment_outlined,
+                          label: '新会话',
+                          primary: true,
+                          onTap: widget.onNewSession,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _IconAction(
+                        icon: Icons.delete_outline,
+                        color: t.error,
+                        tooltip: '从列表移除',
+                        onTap: widget.onDelete,
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            ),
-          ],
+                ),
+              ],
+            ],
+          ),
         ],
       ),
     );
@@ -1688,72 +1847,6 @@ class _FilterSegment extends StatelessWidget {
       ),
     );
   }
-}
-
-class _AgentProjectCard extends StatelessWidget {
-  final AgentKind agent;
-  final VoidCallback onTap;
-
-  const _AgentProjectCard({required this.agent, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    final desc = switch (agent) {
-      AgentKind.claude => 'Sonnet · acceptEdits · Claude 权限模式',
-      AgentKind.codex => 'GPT · workspace-write · 高风险命令前询问',
-      AgentKind.gemini => 'Provider 预留 · 后续可接入 Gemini CLI',
-    };
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-        decoration: BoxDecoration(
-          color: t.surfaceHi,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: t.borderSubt, width: 0.5),
-        ),
-        child: Row(
-          children: [
-            AgentBadge(agent: agent),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _agentLabel(agent),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: t.text,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    desc,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: t.textMuted, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right, size: 18, color: t.textDim),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _agentLabel(AgentKind agent) => switch (agent) {
-        AgentKind.claude => 'Claude Code',
-        AgentKind.codex => 'Codex',
-        AgentKind.gemini => 'Gemini CLI',
-      };
 }
 
 class _NewChatSheet extends StatelessWidget {

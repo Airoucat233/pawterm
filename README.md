@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh
 
 Or download [`install.sh`](install.sh), inspect it, then `bash install.sh`.
 
-The installer checks Node 20+ and the `claude` CLI, installs `pawterm-server` from npm, registers it as a background service, starts it, and waits for `/health` to become ready.
+The installer checks Node 20+ and reports detected `claude` / `codex` CLI versions. Missing agent CLIs are warnings, not install blockers. It installs `pawterm-server` from npm, registers it as a background service, starts it, and waits for `/health` to become ready.
 
 | Platform | Service manager |
 |----------|-----------------|
@@ -36,7 +36,7 @@ After installation, open the local Web Admin with:
 pawterm-server admin
 ```
 
-Run `pawterm-server help` for service commands: `start` / `stop` / `restart` / `update` / `logs` / `status`.
+Run `pawterm-server help` for service commands: `start` / `stop` / `restart` / `update` / `update --prerelease` / `logs` / `status`.
 
 ### Optional Mac App
 
@@ -58,6 +58,12 @@ Use the prerelease channel when you want the newest test build:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Airoucat233/pawterm/main/install.sh |
   VERSION=prerelease bash
+```
+
+For an already installed server:
+
+```bash
+pawterm-server update --prerelease
 ```
 
 To install the prerelease server and also install the matching prerelease Mac App on first setup:

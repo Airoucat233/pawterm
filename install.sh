@@ -169,15 +169,16 @@ ensure_agent_cli() {
     ok "claude CLI found: $(claude --version 2>/dev/null || true)"
   else
     warn "claude CLI not found."
-    printf "\n"
-    printf "  PawTerm bridges your phone to Claude Code, so the claude CLI must\n"
-    printf "  be installed and logged in before the server is useful.\n"
-    printf "\n"
+    printf "  Claude sessions will be unavailable until Claude Code is installed and logged in:\n"
     printf "    ${YELLOW}npm install -g @anthropic-ai/claude-code${RESET}\n"
     printf "    ${YELLOW}claude login${RESET}\n"
-    printf "\n"
-    printf "  Then re-run this installer.\n\n"
-    exit 1
+  fi
+
+  if command -v codex >/dev/null 2>&1; then
+    ok "codex CLI found: $(codex --version 2>/dev/null || true)"
+  else
+    warn "codex CLI not found."
+    printf "  Codex sessions will be unavailable until Codex CLI is installed and logged in.\n"
   fi
 }
 
@@ -288,6 +289,7 @@ install_mac_app() {
   info "Installing to $APP_DEST …"
   mv "$APP_SRC" "$APP_DEST"
   xattr -d com.apple.quarantine "$APP_DEST" 2>/dev/null || true
+  INSTALLED_MAC_APP_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$APP_DEST/Contents/Info.plist" 2>/dev/null || true)"
   rm -rf "$TMP_DIR"
   ok "$APP_NAME installed"
 
@@ -304,7 +306,10 @@ install_mac_app() {
 
   info "Launching $APP_NAME …"
   open "$APP_DEST"
-  INSTALLED_MAC_APP_VERSION="${APP_RELEASE_TAG:-$(echo "$ZIP_NAME" | sed 's/PawTerm-\(.*\)-mac\.zip/\1/')}"
+  if [ -z "$INSTALLED_MAC_APP_VERSION" ]; then
+    INSTALLED_MAC_APP_VERSION="$(echo "$ZIP_NAME" | sed 's/PawTerm-\(.*\)-mac\.zip/\1/')"
+  fi
+  INSTALLED_MAC_APP_RELEASE_TAG="$APP_RELEASE_TAG"
   INSTALLED_MAC_APP_RELEASE_URL="$APP_RELEASE_URL"
 }
 
@@ -352,6 +357,7 @@ ok "Service started"
 wait_for_server
 
 INSTALLED_MAC_APP_VERSION=""
+INSTALLED_MAC_APP_RELEASE_TAG=""
 INSTALLED_MAC_APP_RELEASE_URL=""
 if [ "$OS" = "Darwin" ] && should_install_mac_app; then
   install_mac_app
@@ -366,7 +372,11 @@ printf "\n"
 printf "  Installed:\n"
 printf "    pawterm-server  ${GREEN}%s${RESET}\n" "$SERVER_VER"
 if [ -n "$INSTALLED_MAC_APP_VERSION" ]; then
-  printf "    PawTerm.app     ${GREEN}%s${RESET}\n" "$INSTALLED_MAC_APP_VERSION"
+  if [ -n "$INSTALLED_MAC_APP_RELEASE_TAG" ]; then
+    printf "    PawTerm.app     ${GREEN}%s${RESET}  ${GREY}(%s)${RESET}\n" "$INSTALLED_MAC_APP_VERSION" "$INSTALLED_MAC_APP_RELEASE_TAG"
+  else
+    printf "    PawTerm.app     ${GREEN}%s${RESET}\n" "$INSTALLED_MAC_APP_VERSION"
+  fi
 elif [ "$OS" = "Darwin" ]; then
   printf "    PawTerm.app     ${GREY}skipped${RESET}\n"
 fi

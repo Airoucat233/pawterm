@@ -36,8 +36,7 @@ Prerelease server builds use the same global package identity and replace the
 installed server:
 
 ```bash
-npm install -g pawterm-server@prerelease
-pawterm-server restart
+pawterm-server update --prerelease
 ```
 
 The npm package includes the built Web Admin bundle under `dist-web/`.
@@ -50,6 +49,7 @@ The npm package includes the built Web Admin bundle under `dist-web/`.
 | `stop` | Stop the service |
 | `restart` | Restart the service |
 | `update` | Update to latest version and restart |
+| `update --prerelease` | Update to prerelease version and restart |
 | `status` | Show whether the service is running |
 | `logs [n]` | Tail service logs, default last 50 lines |
 | `admin` | Open Web Admin with a short-lived login code |

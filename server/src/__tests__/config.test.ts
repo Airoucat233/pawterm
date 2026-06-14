@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -147,5 +147,55 @@ describe('config — serverId persistence', () => {
     const { serverId: id2 } = simulateLoad(test2.configPath);
 
     expect(id1).not.toBe(id2);
+  });
+});
+
+describe('config — admin password refresh', () => {
+  const testDirs: string[] = [];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+    for (const dir of testDirs) {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    }
+    testDirs.length = 0;
+  });
+
+  function newTestDir() {
+    const result = makeTestDir();
+    testDirs.push(result.dir);
+    return result;
+  }
+
+  it('reads password changes written by another process after startup', async () => {
+    const { configPath } = newTestDir();
+    writeConfig(configPath, {
+      host: '0.0.0.0',
+      port: 18765,
+      token: 'sk-test',
+      server_id: randomUUID(),
+    });
+    vi.stubEnv('PAWTERM_CONFIG', configPath);
+
+    const config = await import('../config.js');
+    expect(config.settings.adminPasswordHash).toBeUndefined();
+    expect(config.readAdminPasswordState().adminPasswordHash).toBeUndefined();
+
+    const { hashAdminPassword } = await import('../admin-password.js');
+    const hash = hashAdminPassword('abc12345');
+    writeConfig(configPath, {
+      host: '0.0.0.0',
+      port: 18765,
+      token: 'sk-test',
+      server_id: randomUUID(),
+      admin_password_hash: hash,
+      admin_password_set_at: 123,
+    });
+
+    const state = config.readAdminPasswordState();
+    expect(state.adminPasswordHash).toBe(hash);
+    expect(state.adminPasswordSetAt).toBe(123);
+    expect(config.settings.adminPasswordHash).toBe(hash);
   });
 });

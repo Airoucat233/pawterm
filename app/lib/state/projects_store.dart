@@ -117,6 +117,24 @@ class CurrentSession {
         agent: agent ?? this.agent,
         runtime: runtime ?? this.runtime,
       );
+
+  Map<String, dynamic> toJson() => {
+        'cwd': cwd,
+        if (resumeId != null) 'resumeId': resumeId,
+        'label': label,
+        'readOnly': readOnly,
+        'agent': agent.wire,
+        'runtime': runtime,
+      };
+
+  factory CurrentSession.fromJson(Map<String, dynamic> json) => CurrentSession(
+        cwd: json['cwd'] as String? ?? '',
+        resumeId: json['resumeId'] as String?,
+        label: json['label'] as String? ?? '',
+        readOnly: json['readOnly'] as bool? ?? false,
+        agent: AgentKind.fromWire(json['agent'] as String?),
+        runtime: Map<String, dynamic>.from(json['runtime'] ?? const {}),
+      );
 }
 
 final currentSessionProvider = StateProvider<CurrentSession?>((ref) => null);

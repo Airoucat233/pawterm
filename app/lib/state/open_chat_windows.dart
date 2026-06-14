@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/agents_api.dart';
 import 'projects_store.dart';
@@ -23,6 +26,16 @@ class OpenChatWindow {
       OpenChatWindow(
         session: session ?? this.session,
         status: status ?? this.status,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'session': session.toJson(),
+      };
+
+  factory OpenChatWindow.fromJson(Map<String, dynamic> json) => OpenChatWindow(
+        session: CurrentSession.fromJson(
+          Map<String, dynamic>.from(json['session'] ?? const {}),
+        ),
       );
 }
 
@@ -63,6 +76,10 @@ String sessionKeyFor(AgentKind agent, String cwd, String? resumeId) =>
 class OpenChatWindowsNotifier extends StateNotifier<OpenChatWindowsState> {
   OpenChatWindowsNotifier() : super(const OpenChatWindowsState());
 
+  static const _keyPrefix = 'open_chat_windows_v1';
+  String? _connectionId;
+  bool _loaded = false;
+
   void open(CurrentSession session) {
     final key = sessionKey(session);
     final next = <OpenChatWindow>[];
@@ -88,11 +105,13 @@ class OpenChatWindowsNotifier extends StateNotifier<OpenChatWindowsState> {
     }
     if (!changed) return;
     state = OpenChatWindowsState(windows: next, currentKey: key);
+    _save();
   }
 
   void select(String key) {
     if (state.windows.any((window) => window.key == key)) {
       state = state.copyWith(currentKey: key);
+      _save();
     }
   }
 
@@ -103,6 +122,7 @@ class OpenChatWindowsNotifier extends StateNotifier<OpenChatWindowsState> {
       currentKey = next.isEmpty ? null : next.last.key;
     }
     state = OpenChatWindowsState(windows: next, currentKey: currentKey);
+    _save();
   }
 
   void setStatus(String key, OpenChatWindowStatus status) {
@@ -118,8 +138,74 @@ class OpenChatWindowsNotifier extends StateNotifier<OpenChatWindowsState> {
         else
           window,
     ];
-    if (changed) state = state.copyWith(windows: next);
+    if (changed) {
+      state = state.copyWith(windows: next);
+      _save();
+    }
   }
+
+  Future<void> loadForConnection(String connectionId) async {
+    if (_connectionId == connectionId && _loaded) return;
+    _connectionId = connectionId;
+    _loaded = true;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_storageKey(connectionId));
+    if (raw == null || raw.isEmpty) {
+      state = const OpenChatWindowsState();
+      return;
+    }
+    try {
+      final json = jsonDecode(raw) as Map<String, dynamic>;
+      final windows = ((json['windows'] as List?) ?? const [])
+          .map((item) => OpenChatWindow.fromJson(
+                Map<String, dynamic>.from(item as Map),
+              ))
+          .toList();
+      final currentKey = json['currentKey'] as String?;
+      final effectiveKey = windows.any((window) => window.key == currentKey)
+          ? currentKey
+          : windows.isEmpty
+              ? null
+              : windows.last.key;
+      state = OpenChatWindowsState(
+        windows: windows,
+        currentKey: effectiveKey,
+      );
+    } catch (_) {
+      state = const OpenChatWindowsState();
+    }
+  }
+
+  Future<void> clearForConnection(String connectionId) async {
+    if (_connectionId == connectionId) {
+      state = const OpenChatWindowsState();
+      _loaded = false;
+      _connectionId = null;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_storageKey(connectionId));
+  }
+
+  void clearMemory() {
+    state = const OpenChatWindowsState();
+    _loaded = false;
+    _connectionId = null;
+  }
+
+  Future<void> _save() async {
+    final connectionId = _connectionId;
+    if (connectionId == null || !_loaded) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _storageKey(connectionId),
+      jsonEncode({
+        'currentKey': state.currentKey,
+        'windows': state.windows.map((window) => window.toJson()).toList(),
+      }),
+    );
+  }
+
+  static String _storageKey(String connectionId) => '$_keyPrefix|$connectionId';
 }
 
 final openChatWindowsProvider =

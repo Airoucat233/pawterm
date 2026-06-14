@@ -73,6 +73,44 @@ function tryExec(cmd: string): void {
   try { execSync(cmd, { stdio: 'ignore' }); } catch { /* ignore */ }
 }
 
+function updateChannelFromArgs(args: string[]): 'latest' | 'prerelease' {
+  let channel: 'latest' | 'prerelease' = process.env.VERSION === 'prerelease' ? 'prerelease' : 'latest';
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--prerelease' || arg === '--pre') {
+      channel = 'prerelease';
+      continue;
+    }
+    if (arg === '--latest') {
+      channel = 'latest';
+      continue;
+    }
+    if (arg === '--version' || arg === '--channel') {
+      const value = args[i + 1];
+      if (value !== 'latest' && value !== 'prerelease') {
+        console.error(`✗ ${arg} requires latest or prerelease`);
+        process.exit(1);
+      }
+      channel = value as 'latest' | 'prerelease';
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--version=') || arg.startsWith('--channel=')) {
+      const value = arg.slice(arg.indexOf('=') + 1);
+      if (value !== 'latest' && value !== 'prerelease') {
+        console.error(`✗ Unsupported update channel: ${value}`);
+        process.exit(1);
+      }
+      channel = value as 'latest' | 'prerelease';
+      continue;
+    }
+    console.error(`✗ Unknown update option: ${arg}`);
+    console.error('  Supported options: --latest, --prerelease, --version latest|prerelease');
+    process.exit(1);
+  }
+  return channel;
+}
+
 function darwinLaunchctlStatus(): { running: boolean; output: string } {
   const uid = process.getuid?.();
   if (typeof uid === 'number') {
@@ -257,6 +295,8 @@ Usage: pawterm-server [command]
   restart            Restart the background service
   status             Show service status
   update             Update to the latest version and restart
+  update --prerelease
+                     Update to the prerelease version and restart
   logs [n]           Tail service logs (default: last 50 lines)
   --version, -v      Print version
   help               Show this help
@@ -265,8 +305,10 @@ Usage: pawterm-server [command]
   }
 
   if (cmd === 'update') {
-    console.log('Updating pawterm-server...');
-    exec('npm install -g pawterm-server');
+    const channel = updateChannelFromArgs(args);
+    const pkg = channel === 'prerelease' ? 'pawterm-server@prerelease' : 'pawterm-server@latest';
+    console.log(`Updating ${pkg}...`);
+    exec(`npm install -g ${pkg}`);
     if (p === 'darwin' && existsSync(PLIST_PATH)) {
       tryExec(`launchctl unload "${PLIST_PATH}"`);
       exec(`launchctl load "${PLIST_PATH}"`);

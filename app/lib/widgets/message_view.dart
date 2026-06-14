@@ -311,6 +311,12 @@ class MessageView extends StatelessWidget {
                   onSave: onSaveFilePath,
                 ),
               },
+        onTapLink: onOpenFilePath == null
+            ? null
+            : (text, href, title) {
+                final path = _localFilePathFromMarkdownHref(href);
+                if (path != null) onOpenFilePath!(path);
+              },
         styleSheet: MarkdownStyleSheet(
           p: TextStyle(color: t.text, fontSize: 13, height: 1.6),
           code: TextStyle(
@@ -551,6 +557,18 @@ String? _singleAbsoluteFilePath(String raw) {
   final match = _absoluteFilePathPattern.firstMatch(text);
   final path = match?.group(0);
   return path == text ? path : null;
+}
+
+String? _localFilePathFromMarkdownHref(String? href) {
+  if (href == null || href.trim().isEmpty) return null;
+  final value = href.trim();
+  if (value.startsWith('/')) return Uri.decodeFull(value);
+
+  final uri = Uri.tryParse(value);
+  if (uri == null || uri.scheme != 'file') return null;
+  final path = uri.path;
+  if (!path.startsWith('/')) return null;
+  return Uri.decodeFull(path);
 }
 
 bool _isCodexApprovalRequest(String name) {
