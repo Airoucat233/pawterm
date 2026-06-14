@@ -85,6 +85,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   _PhaseStatus _phase = _PhaseStatus.connecting;
   String? _connectError;
   bool _needsRepair = false;
+  bool _allowExitPop = false;
   List<_ConnectionAttempt> _attempts = const [];
   _ConnectionAttempt? _currentAttempt;
   final List<_ConnectionAttemptResult> _failedAttempts = [];
@@ -316,16 +317,24 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     final conn = ref.watch(activeConnectionProvider)!;
     final t = AppTokens.of(context);
 
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 280),
-          switchInCurve: Curves.easeOut,
-          switchOutCurve: Curves.easeIn,
-          child: _phase == _PhaseStatus.ready
-              ? _readyView(context, conn, t)
-              : _connectingView(context, conn, t),
+    return PopScope(
+      canPop: _allowExitPop || _phase != _PhaseStatus.ready,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _phase == _PhaseStatus.ready) {
+          _confirmExitConnection();
+        }
+      },
+      child: Scaffold(
+        body: SafeArea(
+          bottom: false,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            switchInCurve: Curves.easeOut,
+            switchOutCurve: Curves.easeIn,
+            child: _phase == _PhaseStatus.ready
+                ? _readyView(context, conn, t)
+                : _connectingView(context, conn, t),
+          ),
         ),
       ),
     );
@@ -386,7 +395,6 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
               }),
               onNewSession: _enterProject,
               onPickSession: _enterProjectWithSession,
-              onPickAgent: (p) => _showAgentPicker(context, p),
               onAdd: () => _showAddSheet(context),
               onDelete: _confirmAndDelete,
             ),
@@ -399,7 +407,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
   Future<void> _confirmExitConnection() async {
     final conn = ref.read(activeConnectionProvider);
     if (conn == null) {
-      Navigator.of(context).pop();
+      _popProjectPicker();
       return;
     }
     final t = AppTokens.of(context);
@@ -410,7 +418,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text('退出连接', style: TextStyle(color: t.text, fontSize: 16)),
         content: Text(
-          '退出后会清理这台连接在手机本地打开的会话和后台通知状态。服务端历史不会删除。',
+          '退出后会断开当前连接并停止后台通知状态。已打开的会话会保留，下次进入这台连接时继续显示。',
           style: TextStyle(color: t.textMuted, fontSize: 13, height: 1.5),
         ),
         actions: [
@@ -434,13 +442,17 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
     ref.read(currentSessionProvider.notifier).state = null;
     ref.read(selectedProjectProvider.notifier).state = null;
     ref.read(activeConnectionProvider.notifier).state = null;
-    await ref
-        .read(openChatWindowsProvider.notifier)
-        .clearForConnection(conn.id);
+    ref.read(openChatWindowsProvider.notifier).clearMemory();
     ref.read(inAppChatNotificationsProvider.notifier).clear();
     await ChatCompletionNotifier.instance.clearSessionNotifications();
     await StreamingForegroundService.instance.clear();
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) _popProjectPicker();
+  }
+
+  void _popProjectPicker([Object? result]) {
+    if (!mounted) return;
+    setState(() => _allowExitPop = true);
+    Navigator.of(context).pop(result);
   }
 
   void _enterProject(Project project) {
@@ -1183,7 +1195,6 @@ class _ProjectList extends ConsumerWidget {
   final void Function(String path) onToggle;
   final void Function(Project) onNewSession;
   final void Function(Project, SessionSummary) onPickSession;
-  final void Function(Project) onPickAgent;
   final VoidCallback onAdd;
   final void Function(Project) onDelete;
 
@@ -1193,7 +1204,6 @@ class _ProjectList extends ConsumerWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
-    required this.onPickAgent,
     required this.onAdd,
     required this.onDelete,
   });
@@ -1224,7 +1234,6 @@ class _ProjectList extends ConsumerWidget {
             onToggle: () => onToggle(p.path),
             onNewSession: () => onNewSession(p),
             onPickSession: (s) => onPickSession(p, s),
-            onPickAgent: () => onPickAgent(p),
             onDelete: () => onDelete(p),
           ),
         const SizedBox(height: 8),
@@ -1243,7 +1252,6 @@ class _SlidableProjectCard extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback onNewSession;
   final void Function(SessionSummary) onPickSession;
-  final VoidCallback onPickAgent;
   final VoidCallback onDelete;
 
   const _SlidableProjectCard({
@@ -1253,7 +1261,6 @@ class _SlidableProjectCard extends StatelessWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
-    required this.onPickAgent,
     required this.onDelete,
   });
 
@@ -1265,7 +1272,6 @@ class _SlidableProjectCard extends StatelessWidget {
       onToggle: onToggle,
       onNewSession: onNewSession,
       onPickSession: onPickSession,
-      onPickAgent: onPickAgent,
       onDelete: onDelete,
     );
     if (isExpanded) return card;
@@ -1299,7 +1305,6 @@ class _ProjectCard extends ConsumerStatefulWidget {
   final VoidCallback onToggle;
   final VoidCallback onNewSession;
   final void Function(SessionSummary) onPickSession;
-  final VoidCallback onPickAgent;
   final VoidCallback onDelete;
 
   const _ProjectCard({
@@ -1308,7 +1313,6 @@ class _ProjectCard extends ConsumerStatefulWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onPickSession,
-    required this.onPickAgent,
     required this.onDelete,
   });
 
@@ -1432,13 +1436,6 @@ class _ProjectCardState extends ConsumerState<_ProjectCard> {
                   ),
                 ),
               ),
-              Padding(
-                padding: EdgeInsets.fromLTRB(14, 0, 13, isExpanded ? 10 : 12),
-                child: _AgentSegmentCard(
-                  selected: defaultAgent,
-                  onTap: widget.onPickAgent,
-                ),
-              ),
               if (isExpanded) ...[
                 Divider(
                     color: t.borderSubt,
@@ -1538,86 +1535,6 @@ class _ProjectCardState extends ConsumerState<_ProjectCard> {
 
   String _humanPath(String path) =>
       path.replaceFirst(RegExp(r'^/Users/[^/]+'), '~');
-}
-
-class _AgentSegmentCard extends StatelessWidget {
-  final AgentKind selected;
-  final VoidCallback onTap;
-
-  const _AgentSegmentCard({
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        height: 34,
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: t.surfaceHi.withValues(alpha: 0.72),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: t.borderSubt, width: 0.5),
-        ),
-        child: Row(
-          children: [
-            _AgentSegment(
-              label: 'Codex',
-              selected: selected == AgentKind.codex,
-            ),
-            _AgentSegment(
-              label: 'Claude Code',
-              selected: selected == AgentKind.claude,
-            ),
-            _AgentSegment(
-              label: 'Gemini',
-              selected: selected == AgentKind.gemini,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AgentSegment extends StatelessWidget {
-  final String label;
-  final bool selected;
-
-  const _AgentSegment({
-    required this.label,
-    required this.selected,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Expanded(
-      child: Container(
-        height: 26,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? t.surface : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-          border: selected ? Border.all(color: t.borderSubt, width: 0.5) : null,
-        ),
-        child: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: selected ? t.text : t.textMuted,
-            fontSize: 10.5,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _SessionRow extends ConsumerWidget {
