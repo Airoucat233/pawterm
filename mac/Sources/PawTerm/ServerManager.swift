@@ -294,7 +294,59 @@ class ServerManager: ObservableObject {
         }
     }
 
-    func updateServer() async { await installServer() }
+    func updateServer() async {
+        installLog = []
+        status = .installing("Updating pawterm-server…")
+
+        guard let serverURL = findExecutable("pawterm-server") else {
+            await installServer()
+            return
+        }
+
+        let proc = Process()
+        proc.executableURL = serverURL
+        proc.arguments = [
+            "update",
+            serverUpdateChannel == .prerelease ? "--prerelease" : "--latest",
+        ]
+        proc.environment = enrichedEnvironment()
+
+        let outPipe = Pipe(), errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+
+        do { try proc.run() } catch {
+            status = .error("Failed to launch pawterm-server update: \(error.localizedDescription)")
+            return
+        }
+
+        Task { [weak self] in
+            for try await line in outPipe.fileHandleForReading.bytes.lines {
+                self?.installLog.append(line)
+                self?.status = .installing(line)
+            }
+        }
+        var stderrLines: [String] = []
+        Task.detached {
+            for try await line in errPipe.fileHandleForReading.bytes.lines { stderrLines.append(line) }
+        }
+
+        proc.waitUntilExit()
+        if proc.terminationStatus == 0 {
+            installLog.append("Done. Server updated.")
+            status = .running
+            await poll()
+        } else {
+            let stderr = stderrLines.joined(separator: "\n")
+            if stderr.contains("EACCES") || stderr.contains("permission") {
+                status = .error("需要权限：终端运行 sudo pawterm-server update")
+            } else if stderr.contains("ENOTFOUND") || stderr.contains("timeout") {
+                status = .error("网络错误，请检查网络后重试")
+            } else {
+                status = .error("Update failed: \(stderrLines.last ?? "exit \(proc.terminationStatus)")")
+            }
+        }
+    }
 
     // MARK: - Update Check
 
