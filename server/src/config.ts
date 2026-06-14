@@ -84,6 +84,12 @@ export interface ServerSettings {
   password?: string;
 }
 
+export interface AdminPasswordState {
+  adminPasswordHash?: string;
+  adminPasswordSetAt?: number;
+  password?: string;
+}
+
 function expandHome(p: string): string {
   if (p.startsWith('~/')) return resolve(homedir(), p.slice(2));
   if (p === '~') return homedir();
@@ -248,6 +254,32 @@ export async function setPassword(password: string): Promise<void> {
   (settings as any).adminPasswordHash = hash;
   (settings as any).adminPasswordSetAt = setAt;
   (settings as any).password = undefined;
+}
+
+export function readAdminPasswordState(): AdminPasswordState {
+  let state: AdminPasswordState = {
+    adminPasswordHash: settings.adminPasswordHash,
+    adminPasswordSetAt: settings.adminPasswordSetAt,
+    password: settings.password,
+  };
+
+  if (existsSync(configPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(configPath, 'utf-8')) as RawServerConfig;
+      state = {
+        adminPasswordHash: typeof raw.admin_password_hash === 'string' ? raw.admin_password_hash : undefined,
+        adminPasswordSetAt: typeof raw.admin_password_set_at === 'number' ? raw.admin_password_set_at : undefined,
+        password: typeof raw.password === 'string' ? raw.password : undefined,
+      };
+    } catch {
+      // Keep the in-memory state if the config file is temporarily unreadable.
+    }
+  }
+
+  (settings as any).adminPasswordHash = state.adminPasswordHash;
+  (settings as any).adminPasswordSetAt = state.adminPasswordSetAt;
+  (settings as any).password = state.password;
+  return state;
 }
 
 export async function clearPassword(): Promise<void> {

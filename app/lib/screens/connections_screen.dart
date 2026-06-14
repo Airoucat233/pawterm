@@ -285,67 +285,122 @@ class _ConnCard extends ConsumerWidget {
       onTap: () => _connect(context, ref),
       onLongPress: () => _showActions(context, ref),
       child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
+        margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(
           color: isActive ? Color.lerp(t.surface, t.accent, 0.04) : t.surface,
           border: Border.all(
             color: isActive ? t.accent.withValues(alpha: 0.3) : t.border,
           ),
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(8),
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              _Avatar(emoji: entry.emoji, isActive: isActive),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      entry.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: t.text,
-                      ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: [
+            if (isActive)
+              Positioned(
+                left: 0,
+                top: 10,
+                bottom: 10,
+                child: Container(
+                  width: 3,
+                  decoration: BoxDecoration(
+                    color: t.accent,
+                    borderRadius: const BorderRadius.horizontal(
+                      right: Radius.circular(999),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      entry.url.replaceFirst(RegExp(r'^https?://'), ''),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontFamily: 'monospace',
-                        color: t.textMuted,
-                      ),
-                    ),
-                    const SizedBox(height: 5),
-                    Row(
-                      children: [
-                        if (isActive)
-                          _Tag(label: s.connectionsTagConnected, accent: true)
-                        else if (entry.lastConnected != null)
-                          _Tag(
-                              label: s.connectionsTagLastUsedTpl.replaceAll(
-                                  '{ago}', _ago(entry.lastConnected!, s))),
-                        if (entry.pinnedUrls.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          _Tag(label: '钉住 ${entry.pinnedUrls.length}'),
-                        ],
-                      ],
-                    ),
-                  ],
+                  ),
                 ),
               ),
-              const SizedBox(width: 8),
-              Icon(Icons.chevron_right, size: 18, color: t.textDim),
-            ],
-          ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 13, 13, 12),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      _Avatar(emoji: entry.emoji, isActive: isActive),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              entry.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w700,
+                                color: t.text,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              entry.url.replaceFirst(RegExp(r'^https?://'), ''),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontFamily: 'monospace',
+                                color: t.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      if (isActive)
+                        _Tag(label: s.connectionsTagConnected, accent: true)
+                      else if (entry.lastConnected != null)
+                        _Tag(
+                            label: s.connectionsTagLastUsedTpl.replaceAll(
+                                '{ago}', _ago(entry.lastConnected!, s)))
+                      else
+                        const _Tag(label: 'idle'),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      const _Tag(label: 'LAN'),
+                      if (entry.token != null && entry.token!.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        const _Tag(label: 'paired'),
+                      ],
+                      if (entry.pinnedUrls.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        _Tag(label: '钉住 ${entry.pinnedUrls.length}'),
+                      ],
+                      const Spacer(),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _MiniConnAction(
+                        label: isActive ? '打开' : '连接',
+                        icon: isActive
+                            ? Icons.open_in_new_rounded
+                            : Icons.power_settings_new_rounded,
+                        primary: true,
+                        onTap: () => _connect(context, ref),
+                      ),
+                      const SizedBox(width: 8),
+                      _MiniConnAction(
+                        label: '编辑',
+                        icon: Icons.edit_outlined,
+                        onTap: () => _edit(context),
+                      ),
+                      const SizedBox(width: 8),
+                      _MiniConnAction.icon(
+                        icon: Icons.more_horiz_rounded,
+                        onTap: () => _showActions(context, ref),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -365,6 +420,15 @@ class _ConnCard extends ConsumerWidget {
         builder: (_) => AddConnectionSheet(editing: entry),
       );
     }
+  }
+
+  void _edit(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AddConnectionSheet(editing: entry),
+    );
   }
 
   void _showActions(BuildContext context, WidgetRef ref) {
@@ -850,6 +914,64 @@ class _AddressActions extends StatelessWidget {
   }
 }
 
+class _MiniConnAction extends StatelessWidget {
+  final String? label;
+  final IconData icon;
+  final bool primary;
+  final VoidCallback onTap;
+
+  const _MiniConnAction({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    this.primary = false,
+  });
+
+  const _MiniConnAction.icon({
+    required this.icon,
+    required this.onTap,
+  })  : label = null,
+        primary = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final foreground = primary ? Colors.white : t.textMuted;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        height: 28,
+        constraints: BoxConstraints(minWidth: label == null ? 28 : 0),
+        padding: EdgeInsets.symmetric(horizontal: label == null ? 0 : 9),
+        decoration: BoxDecoration(
+          color: primary ? t.accent : t.surfaceHi.withValues(alpha: 0.72),
+          borderRadius: BorderRadius.circular(7),
+          border: primary ? null : Border.all(color: t.borderSubt, width: 0.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 14, color: foreground),
+            if (label != null) ...[
+              const SizedBox(width: 5),
+              Text(
+                label!,
+                style: TextStyle(
+                  color: foreground,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _Avatar extends StatelessWidget {
   final String emoji;
   final bool isActive;
@@ -865,7 +987,8 @@ class _Avatar extends StatelessWidget {
           height: 44,
           decoration: BoxDecoration(
             color: t.accentSubt,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: t.accent.withValues(alpha: 0.16)),
           ),
           child:
               Center(child: Text(emoji, style: const TextStyle(fontSize: 20))),

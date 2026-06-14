@@ -2664,7 +2664,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                               child = _UserMessage(
                                   text: m.text, timestamp: m.timestamp);
                             } else if (m is StreamingAssistant) {
-                              child = _StreamingMessage(buffer: m);
+                              child = _StreamingMessage(
+                                buffer: m,
+                                onOpenFilePath: _openRemoteFilePreview,
+                              );
                             } else {
                               child = MessageView(
                                 message: m,
@@ -5582,7 +5585,12 @@ class _ReEditBar extends StatelessWidget {
 
 class _StreamingMessage extends StatelessWidget {
   final StreamingAssistant buffer;
-  const _StreamingMessage({required this.buffer});
+  final void Function(String path)? onOpenFilePath;
+
+  const _StreamingMessage({
+    required this.buffer,
+    this.onOpenFilePath,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -5618,6 +5626,12 @@ class _StreamingMessage extends StatelessWidget {
                 MarkdownBody(
                   data: text,
                   selectable: true,
+                  onTapLink: onOpenFilePath == null
+                      ? null
+                      : (label, href, title) {
+                          final path = _localFilePathFromMarkdownHref(href);
+                          if (path != null) onOpenFilePath!(path);
+                        },
                   styleSheet: streamingMarkdownStyle(t),
                 ),
                 if (approxTokens > 0)
@@ -5681,6 +5695,18 @@ class _PulsingDotState extends State<_PulsingDot>
       ),
     );
   }
+}
+
+String? _localFilePathFromMarkdownHref(String? href) {
+  if (href == null || href.trim().isEmpty) return null;
+  final value = href.trim();
+  if (value.startsWith('/')) return Uri.decodeFull(value);
+
+  final uri = Uri.tryParse(value);
+  if (uri == null || uri.scheme != 'file') return null;
+  final path = uri.path;
+  if (!path.startsWith('/')) return null;
+  return Uri.decodeFull(path);
 }
 
 /// 流式 / 最终消息共用的 markdown 样式表。

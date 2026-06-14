@@ -20,7 +20,7 @@ import { verifyAdminPassword } from './admin-password.js';
 import { parseAgentQuery } from './agents/http-helpers.js';
 import { defaultAgentRegistry } from './agents/registry.js';
 import { registerChatRest } from './chat-rest.js';
-import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, isFirstRun, persistPairedDevices, persistAdminAccessTokens } from './config.js';
+import { settings, addProject, removeProject, isPathAllowed, ProjectExistsError, configPath, setPassword, clearPassword, readAdminPasswordState, isFirstRun, persistPairedDevices, persistAdminAccessTokens } from './config.js';
 import { adminEventBus } from './event-bus.js';
 import { buildLoggerOptions, SILENT_PATHS } from './logger.js';
 import { startMdns } from './mdns.js';
@@ -197,8 +197,9 @@ async function runPasswordCommand(): Promise<void> {
     process.exit(0);
   }
   if (action === 'show') {
-    if (settings.adminPasswordHash || settings.password) {
-      console.log(`Password : set (${settings.adminPasswordHash ? 'hashed' : 'legacy plaintext'})`);
+    const passwordState = readAdminPasswordState();
+    if (passwordState.adminPasswordHash || passwordState.password) {
+      console.log(`Password : set (${passwordState.adminPasswordHash ? 'hashed' : 'legacy plaintext'})`);
     } else {
       console.log('No password set. Auth uses the random token only.');
     }
@@ -359,11 +360,12 @@ async function main(): Promise<void> {
     const auth = req.headers['authorization'];
     const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
 
+    const passwordState = token ? readAdminPasswordState() : {};
     const isPasswordAdmin =
       !!token &&
       (
-        verifyAdminPassword(token, settings.adminPasswordHash) ||
-        (!!settings.password && token === settings.password)
+        verifyAdminPassword(token, passwordState.adminPasswordHash) ||
+        (!!passwordState.password && token === passwordState.password)
       );
     const isRootAdmin = token === settings.adminToken || isPasswordAdmin;
     const isAdmin = isRootAdmin || (!!token && adminAccessManager.isAdminAccessToken(token));
@@ -862,13 +864,14 @@ async function main(): Promise<void> {
         reply.code(400);
         return { ok: false, error: 'missing fields' };
       }
-      if (!settings.adminPasswordHash && !settings.password) {
+      const passwordState = readAdminPasswordState();
+      if (!passwordState.adminPasswordHash && !passwordState.password) {
         reply.code(403);
         return { ok: false, error: 'password_not_set' };
       }
       const passwordOk =
-        verifyAdminPassword(password, settings.adminPasswordHash) ||
-        (!!settings.password && password === settings.password);
+        verifyAdminPassword(password, passwordState.adminPasswordHash) ||
+        (!!passwordState.password && password === passwordState.password);
       const clientIp = req.ip ?? '0.0.0.0';
       const result = await pairingManager.tryRedeemPassword(
         passwordOk,
