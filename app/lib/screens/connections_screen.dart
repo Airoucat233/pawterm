@@ -333,6 +333,10 @@ class _ConnCard extends ConsumerWidget {
                           _Tag(
                               label: s.connectionsTagLastUsedTpl.replaceAll(
                                   '{ago}', _ago(entry.lastConnected!, s))),
+                        if (entry.pinnedUrls.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          _Tag(label: '钉住 ${entry.pinnedUrls.length}'),
+                        ],
                       ],
                     ),
                   ],
@@ -400,6 +404,24 @@ class _ConnCard extends ConsumerWidget {
                 );
               },
             ),
+            Divider(color: t.borderSubt, height: 1),
+            ListTile(
+              leading: Icon(Icons.push_pin_outlined, color: t.textMuted),
+              title:
+                  Text('地址管理', style: TextStyle(color: t.text, fontSize: 15)),
+              subtitle: Text('钉住固定地址，清理 Wi-Fi 临时地址',
+                  style: TextStyle(color: t.textMuted, fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  backgroundColor: Colors.transparent,
+                  builder: (_) =>
+                      _AddressManagementSheet(connectionId: entry.id),
+                );
+              },
+            ),
             if (entry.token != null && entry.token!.isNotEmpty) ...[
               Divider(color: t.borderSubt, height: 1),
               ListTile(
@@ -451,6 +473,380 @@ class _ConnCard extends ConsumerWidget {
       return s.timeDaysAgoTpl.replaceAll('{n}', '${diff.inDays}');
     }
     return s.timeWeeksAgoTpl.replaceAll('{n}', '${(diff.inDays / 7).floor()}');
+  }
+}
+
+class _AddressManagementSheet extends ConsumerWidget {
+  final String connectionId;
+
+  const _AddressManagementSheet({required this.connectionId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = AppTokens.of(context);
+    final conn = ref
+        .watch(connectionsProvider)
+        .where((c) => c.id == connectionId)
+        .firstOrNull;
+    if (conn == null) {
+      return const SizedBox.shrink();
+    }
+    final current = _normalizeUrl(conn.url);
+    final pinned = _normalizedUnique(conn.pinnedUrls);
+    final recent = _normalizedUnique(conn.recentUrls)
+        .where((url) => url != current && !pinned.contains(url))
+        .toList();
+
+    return Container(
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.78),
+      margin: const EdgeInsets.all(8),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: t.border),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 10),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: t.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 12, 12),
+              child: Row(
+                children: [
+                  Container(
+                    width: 34,
+                    height: 34,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: t.accentSubt,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.push_pin_outlined,
+                        size: 18, color: t.accent),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '地址管理',
+                          style: TextStyle(
+                            color: t.text,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          conn.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: t.textMuted, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon:
+                        Icon(Icons.close_rounded, size: 20, color: t.textMuted),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Divider(color: t.borderSubt, height: 0.5),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
+                children: [
+                  const _AddressSectionLabel('当前地址'),
+                  _AddressRow(
+                    url: current,
+                    label: '正在使用',
+                    icon: Icons.radio_button_checked_rounded,
+                    iconColor: const Color(0xFF16A34A),
+                    trailing: IconButton(
+                      tooltip: pinned.contains(current) ? '取消钉住' : '钉住',
+                      icon: Icon(
+                        pinned.contains(current)
+                            ? Icons.push_pin_rounded
+                            : Icons.push_pin_outlined,
+                        size: 18,
+                        color: pinned.contains(current) ? t.accent : t.textDim,
+                      ),
+                      onPressed: () => pinned.contains(current)
+                          ? _unpin(context, ref, conn, current)
+                          : _pin(context, ref, conn, current),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const _AddressSectionLabel('钉住地址'),
+                  if (pinned.isEmpty)
+                    const _AddressEmptyHint('把 Tailscale IP 或固定域名钉住，自动重连会优先尝试。')
+                  else
+                    for (final url in pinned)
+                      _AddressRow(
+                        url: url,
+                        label: url == current ? '当前使用中' : '固定保留',
+                        icon: Icons.push_pin_rounded,
+                        iconColor: t.accent,
+                        trailing: _AddressActions(
+                          canSetCurrent: url != current,
+                          onSetCurrent: () =>
+                              _setCurrent(context, ref, conn, url),
+                          onDelete: () => _unpin(context, ref, conn, url),
+                          deleteTooltip: '取消钉住',
+                        ),
+                      ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      const Expanded(child: _AddressSectionLabel('最近地址')),
+                      if (recent.isNotEmpty)
+                        TextButton(
+                          onPressed: () async {
+                            await ref
+                                .read(connectionsProvider.notifier)
+                                .clearRecentUrls(conn.id);
+                            _syncActive(ref, conn.id);
+                          },
+                          child:
+                              Text('清空', style: TextStyle(color: t.textMuted)),
+                        ),
+                    ],
+                  ),
+                  if (recent.isEmpty)
+                    const _AddressEmptyHint('Wi-Fi 变化产生的临时地址会自动限制为最近 3 条。')
+                  else
+                    for (final url in recent)
+                      _AddressRow(
+                        url: url,
+                        label: '临时地址',
+                        icon: Icons.history_rounded,
+                        iconColor: t.textDim,
+                        trailing: _AddressActions(
+                          canSetCurrent: true,
+                          onSetCurrent: () =>
+                              _setCurrent(context, ref, conn, url),
+                          onPin: () => _pin(context, ref, conn, url),
+                          onDelete: () =>
+                              _removeRecent(context, ref, conn, url),
+                        ),
+                      ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _setCurrent(
+      BuildContext context, WidgetRef ref, Connection conn, String url) async {
+    final updated =
+        await ref.read(connectionsProvider.notifier).updateUrl(conn.id, url);
+    if (updated != null && ref.read(activeConnectionProvider)?.id == conn.id) {
+      ref.read(activeConnectionProvider.notifier).state = updated;
+    }
+  }
+
+  Future<void> _pin(
+      BuildContext context, WidgetRef ref, Connection conn, String url) async {
+    await ref.read(connectionsProvider.notifier).pinUrl(conn.id, url);
+    _syncActive(ref, conn.id);
+  }
+
+  Future<void> _unpin(
+      BuildContext context, WidgetRef ref, Connection conn, String url) async {
+    await ref.read(connectionsProvider.notifier).unpinUrl(conn.id, url);
+    _syncActive(ref, conn.id);
+  }
+
+  Future<void> _removeRecent(
+      BuildContext context, WidgetRef ref, Connection conn, String url) async {
+    await ref.read(connectionsProvider.notifier).removeRecentUrl(conn.id, url);
+    _syncActive(ref, conn.id);
+  }
+
+  static void _syncActive(WidgetRef ref, String id) {
+    if (ref.read(activeConnectionProvider)?.id != id) return;
+    final fresh =
+        ref.read(connectionsProvider).where((c) => c.id == id).firstOrNull;
+    if (fresh != null) {
+      ref.read(activeConnectionProvider.notifier).state = fresh;
+    }
+  }
+
+  static List<String> _normalizedUnique(Iterable<String> urls) {
+    final seen = <String>{};
+    return [
+      for (final url in urls)
+        if (_normalizeUrl(url).isNotEmpty && seen.add(_normalizeUrl(url)))
+          _normalizeUrl(url),
+    ];
+  }
+
+  static String _normalizeUrl(String url) =>
+      url.trim().replaceFirst(RegExp(r'/$'), '');
+}
+
+class _AddressSectionLabel extends StatelessWidget {
+  final String label;
+
+  const _AddressSectionLabel(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, bottom: 8),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          color: t.textDim,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+}
+
+class _AddressEmptyHint extends StatelessWidget {
+  final String text;
+
+  const _AddressEmptyHint(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: t.borderSubt),
+      ),
+      child: Text(text, style: TextStyle(color: t.textMuted, fontSize: 12)),
+    );
+  }
+}
+
+class _AddressRow extends StatelessWidget {
+  final String url;
+  final String label;
+  final IconData icon;
+  final Color iconColor;
+  final Widget trailing;
+
+  const _AddressRow({
+    required this.url,
+    required this.label,
+    required this.icon,
+    required this.iconColor,
+    required this.trailing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+      decoration: BoxDecoration(
+        color: t.surfaceHi.withValues(alpha: 0.74),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: t.borderSubt),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 17, color: iconColor),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  url.replaceFirst(RegExp(r'^https?://'), ''),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: t.text,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(label, style: TextStyle(color: t.textDim, fontSize: 11)),
+              ],
+            ),
+          ),
+          trailing,
+        ],
+      ),
+    );
+  }
+}
+
+class _AddressActions extends StatelessWidget {
+  final bool canSetCurrent;
+  final VoidCallback onSetCurrent;
+  final VoidCallback? onPin;
+  final VoidCallback onDelete;
+  final String deleteTooltip;
+
+  const _AddressActions({
+    required this.canSetCurrent,
+    required this.onSetCurrent,
+    this.onPin,
+    required this.onDelete,
+    this.deleteTooltip = '删除',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (canSetCurrent)
+          IconButton(
+            tooltip: '设为当前',
+            icon: Icon(Icons.check_circle_outline_rounded,
+                size: 18, color: t.accent),
+            onPressed: onSetCurrent,
+          ),
+        if (onPin != null)
+          IconButton(
+            tooltip: '钉住',
+            icon: Icon(Icons.push_pin_outlined, size: 18, color: t.textMuted),
+            onPressed: onPin,
+          ),
+        IconButton(
+          tooltip: deleteTooltip,
+          icon: Icon(Icons.delete_outline_rounded, size: 18, color: t.error),
+          onPressed: onDelete,
+        ),
+      ],
+    );
   }
 }
 

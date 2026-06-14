@@ -116,6 +116,10 @@ class InAppChatNotificationsNotifier
         .where((item) => !item.id.endsWith('|$requestId'))
         .toList(growable: false);
   }
+
+  void clear() {
+    state = const [];
+  }
 }
 
 class ChatCompletionPayload {

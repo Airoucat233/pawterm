@@ -23,6 +23,7 @@ class ConnectionResolver {
   Future<ConnectionResolveResult?> resolve(Connection conn) async {
     final candidates = <String>[
       conn.url,
+      ...conn.pinnedUrls.where((u) => u != conn.url),
       ...conn.recentUrls.where((u) => u != conn.url),
     ];
 

@@ -211,6 +211,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   DateTime? _suppressAutoScrollUntil;
   DateTime? _lastAutoScrollAt;
   int _settleScrollRequestId = 0;
+  bool _scrollingToUserMessage = false;
 
   // 键盘弹出跟随：记录上一帧键盘高度，用于判断键盘是否正在弹出。
   double _prevKeyboardHeight = 0;
@@ -367,18 +368,36 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   Future<void> _scrollToPreviousUserMessage() async {
-    if (!_scrollController.hasClients || _messages.isEmpty) return;
-    final firstVisible = _firstVisibleMessageIndex();
-    final start = min(firstVisible - 1, _messages.length - 1);
-    int? targetIndex;
-    for (var i = start; i >= 0; i--) {
-      final message = _messages[i];
-      if (!_isMainUserMessage(message)) continue;
-      targetIndex = i;
-      break;
+    if (_scrollingToUserMessage ||
+        !_scrollController.hasClients ||
+        _messages.isEmpty) {
+      return;
     }
-    if (targetIndex == null) return;
-    await _scrollToMessageIndex(targetIndex);
+    _settleScrollRequestId++;
+    _suppressAutoScrollUntil =
+        DateTime.now().add(const Duration(milliseconds: 1500));
+    if (_stickToBottom && mounted) {
+      setState(() => _stickToBottom = false);
+    }
+
+    _scrollingToUserMessage = true;
+    try {
+      final firstVisible = _firstVisibleMessageIndex();
+      final start = min(firstVisible - 1, _messages.length - 1);
+      int? targetIndex;
+      for (var i = start; i >= 0; i--) {
+        final message = _messages[i];
+        if (!_isMainUserMessage(message)) continue;
+        targetIndex = i;
+        break;
+      }
+      if (targetIndex == null) return;
+      await _scrollToMessageIndex(targetIndex);
+    } finally {
+      _scrollingToUserMessage = false;
+      _suppressAutoScrollUntil =
+          DateTime.now().add(const Duration(milliseconds: 700));
+    }
   }
 
   Future<void> _scrollToMessageIndex(int targetIndex) async {
@@ -1780,7 +1799,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     } else {
       // force=false：流式 delta 自动跟随，用 animateTo 保持流畅。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scrollController.hasClients) return;
+        if (!_scrollController.hasClients || _scrollingToUserMessage) return;
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
           duration: const Duration(milliseconds: 150),
@@ -2467,6 +2486,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   /// 弹文件选择器，把每个选中的文件都登记为 uploading 状态并启动并发上传。
   Future<void> _pickAndUploadAttachments() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final result = await FilePicker.platform.pickFiles(allowMultiple: true);
     if (result == null) return;
     final session = ref.read(currentSessionProvider);
@@ -3664,13 +3684,10 @@ Future<T?> _withComposerOverlayFocus<T>(
   FocusNode focusNode,
   Future<T?> Function() open,
 ) async {
-  final hadFocus = focusNode.hasFocus;
   FocusManager.instance.primaryFocus?.unfocus();
   final result = await open();
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (hadFocus) {
-      focusNode.requestFocus();
-    } else if (focusNode.hasFocus) {
+    if (focusNode.hasFocus) {
       focusNode.unfocus();
     }
   });
@@ -3769,6 +3786,8 @@ class _ModelPickerButtonState extends State<_ModelPickerButton> {
             reasoningEffort: widget.agent == AgentKind.codex
                 ? _reasoningEffort(widget.runtime)
                 : null,
+            onPickModelInline:
+                widget.agent == AgentKind.codex ? widget.onSwitchModel : null,
             onPickReasoningEffort: widget.agent == AgentKind.codex
                 ? (value) => widget.onPatchRuntime({'reasoning_effort': value})
                 : null,
@@ -4090,80 +4109,73 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
         Icons.shield_outlined,
       _ => Icons.tune_rounded,
     };
-    return PopScope(
-      canPop: _page == _RuntimeSettingsPage.overview,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop || _page == _RuntimeSettingsPage.overview) return;
-        setState(() => _page = _RuntimeSettingsPage.overview);
-      },
-      child: Container(
-        height: 470,
-        margin: const EdgeInsets.all(8),
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: t.border),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 10, bottom: 4),
-                child: Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: t.border,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
+    return Container(
+      height: 470,
+      margin: const EdgeInsets.all(8),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: t.border),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 4),
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: t.border,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
-              _RuntimeSheetHeader(
-                title: title,
-                icon: icon,
-                showBack: _page != _RuntimeSettingsPage.overview,
-                onBack: () =>
-                    setState(() => _page = _RuntimeSettingsPage.overview),
-              ),
-              Divider(color: t.borderSubt, height: 0.5),
-              Expanded(
-                child: ClipRect(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    transitionBuilder: (child, animation) {
-                      final enteringOverview =
-                          child.key == const ValueKey('overview');
-                      final begin = enteringOverview
-                          ? const Offset(-1, 0)
-                          : const Offset(1, 0);
-                      return SlideTransition(
-                        position: Tween<Offset>(
-                          begin: begin,
-                          end: Offset.zero,
-                        ).animate(CurvedAnimation(
-                          parent: animation,
-                          curve: Curves.easeOutCubic,
-                        )),
-                        child: FadeTransition(opacity: animation, child: child),
-                      );
-                    },
-                    child: switch (_page) {
-                      _RuntimeSettingsPage.permissions =>
-                        _runtimePermissionPage(),
-                      _RuntimeSettingsPage.permissionAdvanced =>
-                        _codexPermissionAdvancedPage(),
-                      _RuntimeSettingsPage.overview => _runtimeOverviewPage(),
-                    },
-                  ),
+            ),
+            _RuntimeSheetHeader(
+              title: title,
+              icon: icon,
+              showBack: _page != _RuntimeSettingsPage.overview,
+              onBack: () =>
+                  setState(() => _page = _RuntimeSettingsPage.overview),
+            ),
+            Divider(color: t.borderSubt, height: 0.5),
+            Expanded(
+              child: ClipRect(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  transitionBuilder: (child, animation) {
+                    final enteringOverview =
+                        child.key == const ValueKey('overview');
+                    final begin = enteringOverview
+                        ? const Offset(-1, 0)
+                        : const Offset(1, 0);
+                    return SlideTransition(
+                      position: Tween<Offset>(
+                        begin: begin,
+                        end: Offset.zero,
+                      ).animate(CurvedAnimation(
+                        parent: animation,
+                        curve: Curves.easeOutCubic,
+                      )),
+                      child: FadeTransition(opacity: animation, child: child),
+                    );
+                  },
+                  child: switch (_page) {
+                    _RuntimeSettingsPage.permissions =>
+                      _runtimePermissionPage(),
+                    _RuntimeSettingsPage.permissionAdvanced =>
+                      _codexPermissionAdvancedPage(),
+                    _RuntimeSettingsPage.overview => _runtimeOverviewPage(),
+                  },
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -4759,12 +4771,14 @@ class _ModelSheet extends StatefulWidget {
   final List<ModelOption> models;
   final String? providerLabel;
   final String? reasoningEffort;
+  final ValueChanged<ModelOption>? onPickModelInline;
   final ValueChanged<String>? onPickReasoningEffort;
   const _ModelSheet({
     required this.current,
     required this.models,
     this.providerLabel,
     this.reasoningEffort,
+    this.onPickModelInline,
     this.onPickReasoningEffort,
   });
 
@@ -4775,6 +4789,7 @@ class _ModelSheet extends StatefulWidget {
 class _ModelSheetState extends State<_ModelSheet> {
   bool _showCustomInput = false;
   final _customController = TextEditingController();
+  late ModelOption _current = widget.current;
   late String? _reasoningEffort = widget.reasoningEffort;
   _ModelSheetPage _page = _ModelSheetPage.models;
 
@@ -4784,6 +4799,34 @@ class _ModelSheetState extends State<_ModelSheet> {
     super.dispose();
   }
 
+  bool _isReasoningModel(ModelOption model) {
+    if (widget.reasoningEffort == null ||
+        widget.onPickReasoningEffort == null) {
+      return false;
+    }
+    final id = model.id.toLowerCase();
+    final description = model.description.toLowerCase();
+    return model.tier == 'powerful' ||
+        id.contains('reasoning') ||
+        id.startsWith('o3') ||
+        id.startsWith('o4') ||
+        id == 'gpt-5.5' ||
+        description.contains('reasoning') ||
+        description.contains('深度推理');
+  }
+
+  void _pickModel(ModelOption model) {
+    if (_isReasoningModel(model)) {
+      widget.onPickModelInline?.call(model);
+      setState(() {
+        _current = model;
+        _page = _ModelSheetPage.reasoning;
+      });
+      return;
+    }
+    Navigator.of(context).pop(model);
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
@@ -4791,76 +4834,70 @@ class _ModelSheetState extends State<_ModelSheet> {
       _ModelSheetPage.models => '选择模型',
       _ModelSheetPage.reasoning => '推理强度',
     };
-    return PopScope(
-      canPop: _page == _ModelSheetPage.models,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop || _page == _ModelSheetPage.models) return;
-        setState(() => _page = _ModelSheetPage.models);
-      },
-      child: Container(
-        height: 470,
-        margin: const EdgeInsets.all(8),
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: t.surface,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: t.border),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // drag handle
-              Padding(
-                padding: const EdgeInsets.only(top: 10, bottom: 4),
-                child: Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                        color: t.border,
-                        borderRadius: BorderRadius.circular(2)),
+    return Container(
+      height: 470,
+      margin: const EdgeInsets.all(8),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: t.border),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // drag handle
+            Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 4),
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: t.border,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
-              _RuntimeSheetHeader(
-                title: title,
-                icon: Icons.auto_awesome_outlined,
-                showBack: _page != _ModelSheetPage.models,
-                onBack: () => setState(() => _page = _ModelSheetPage.models),
-              ),
-              Divider(color: t.borderSubt, height: 0.5),
-              Flexible(
-                child: ClipRect(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    transitionBuilder: (child, animation) {
-                      final enteringModels =
-                          child.key == const ValueKey('modelPage');
-                      final begin = enteringModels
-                          ? const Offset(-1, 0)
-                          : const Offset(1, 0);
-                      return SlideTransition(
-                        position: Tween<Offset>(
-                          begin: begin,
-                          end: Offset.zero,
-                        ).animate(CurvedAnimation(
-                          parent: animation,
-                          curve: Curves.easeOutCubic,
-                        )),
-                        child: FadeTransition(opacity: animation, child: child),
-                      );
-                    },
-                    child: switch (_page) {
-                      _ModelSheetPage.models => _modelPage(t),
-                      _ModelSheetPage.reasoning => _reasoningPage(t),
-                    },
-                  ),
+            ),
+            _RuntimeSheetHeader(
+              title: title,
+              icon: Icons.auto_awesome_outlined,
+              showBack: _page != _ModelSheetPage.models,
+              onBack: () => setState(() => _page = _ModelSheetPage.models),
+            ),
+            Divider(color: t.borderSubt, height: 0.5),
+            Flexible(
+              child: ClipRect(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  transitionBuilder: (child, animation) {
+                    final enteringModels =
+                        child.key == const ValueKey('modelPage');
+                    final begin = enteringModels
+                        ? const Offset(-1, 0)
+                        : const Offset(1, 0);
+                    return SlideTransition(
+                      position: Tween<Offset>(
+                        begin: begin,
+                        end: Offset.zero,
+                      ).animate(CurvedAnimation(
+                        parent: animation,
+                        curve: Curves.easeOutCubic,
+                      )),
+                      child: FadeTransition(opacity: animation, child: child),
+                    );
+                  },
+                  child: switch (_page) {
+                    _ModelSheetPage.models => _modelPage(t),
+                    _ModelSheetPage.reasoning => _reasoningPage(t),
+                  },
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -4869,7 +4906,7 @@ class _ModelSheetState extends State<_ModelSheet> {
   Widget _modelPage(AppTokens t) {
     return ListView(
       key: const ValueKey('modelPage'),
-      shrinkWrap: widget.reasoningEffort == null,
+      shrinkWrap: true,
       padding: const EdgeInsets.fromLTRB(0, 0, 0, 6),
       children: [
         if (widget.providerLabel != null)
@@ -4899,8 +4936,8 @@ class _ModelSheetState extends State<_ModelSheet> {
           Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
           _ModelRow(
             model: m,
-            selected: m.id == widget.current.id,
-            onTap: () => Navigator.of(context).pop(m),
+            selected: m.id == _current.id,
+            onTap: () => _pickModel(m),
           ),
         ],
         Divider(color: t.borderSubt, height: 0.5, indent: 16, endIndent: 16),
@@ -4986,16 +5023,6 @@ class _ModelSheetState extends State<_ModelSheet> {
               ],
             ),
           ),
-        if (widget.reasoningEffort != null &&
-            widget.onPickReasoningEffort != null) ...[
-          Divider(color: t.borderSubt, height: 16, indent: 16, endIndent: 16),
-          _RuntimeActionRow(
-            icon: Icons.psychology_alt_outlined,
-            title: '推理强度',
-            value: _reasoningEffort ?? 'medium',
-            onTap: () => setState(() => _page = _ModelSheetPage.reasoning),
-          ),
-        ],
       ],
     );
   }
@@ -5030,6 +5057,7 @@ class _ModelSheetState extends State<_ModelSheet> {
           onPick: (value) {
             setState(() => _reasoningEffort = value);
             widget.onPickReasoningEffort!(value);
+            Navigator.of(context).pop();
           },
         ),
       ],
