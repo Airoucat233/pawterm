@@ -371,13 +371,17 @@ class _InAppChatNotificationHost extends ConsumerWidget {
         key: ValueKey(item.id),
         item: item,
         onTap: () {
-          ref.read(currentSessionProvider.notifier).state = CurrentSession(
+          final session = CurrentSession(
             cwd: item.payload.cwd,
             label: item.payload.label,
             resumeId: item.payload.resumeId,
             agent: item.payload.agent,
             runtime: item.payload.runtime.isEmpty ? null : item.payload.runtime,
           );
+          final windows = ref.read(openChatWindowsProvider.notifier);
+          windows.open(session);
+          windows.select(sessionKey(session));
+          ref.read(currentSessionProvider.notifier).state = session;
           ref.read(chatNotificationNavigationProvider.notifier).state++;
           if (!item.persistent) {
             ref.read(inAppChatNotificationsProvider.notifier).dismiss(item.id);
@@ -1992,12 +1996,15 @@ class _OpenChatWindowRow extends StatelessWidget {
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              session.label,
+                              _sessionTitle(session),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
                                 color: t.text,
                                 fontSize: 13,
+                                fontFamily: session.resumeId == null
+                                    ? null
+                                    : 'monospace',
                                 fontWeight: selected
                                     ? FontWeight.w700
                                     : FontWeight.w600,
@@ -2041,6 +2048,12 @@ class _OpenChatWindowRow extends StatelessWidget {
       AgentKind.codex => 'Codex',
       AgentKind.gemini => 'Gemini',
     };
+  }
+
+  String _sessionTitle(CurrentSession session) {
+    final id = session.resumeId;
+    if (id == null || id.isEmpty) return '新对话';
+    return id.length <= 8 ? id : id.substring(0, 8);
   }
 
   String _compactPath(String path) {

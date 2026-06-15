@@ -107,6 +107,7 @@ class _ChatSessionRuntime {
   bool hasMoreHistory = false;
   bool loadingOlder = false;
   bool loadingHistory = false;
+  bool reconnecting = false;
   final List<String> pending = [];
   String? pendingKey;
   bool queuePausedOnUnknown = false;
@@ -167,7 +168,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   String? get _serverToken => _runtime.serverToken;
   set _serverToken(String? value) => _runtime.serverToken = value;
   String get _deviceId => _runtime.deviceId;
-  set _deviceId(String value) => _runtime.deviceId = value;
   String? get _sessionId => _runtime.sessionId;
   set _sessionId(String? value) => _runtime.sessionId = value;
   List<IncomingMessage> get _messages => _runtime.messages;
@@ -230,6 +230,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// 用来区分"连接中"vs"加载历史中"，避免显示"开始对话"占位。
   bool get _loadingHistory => _runtime.loadingHistory;
   set _loadingHistory(bool value) => _runtime.loadingHistory = value;
+  bool get _reconnecting => _runtime.reconnecting;
+  set _reconnecting(bool value) => _runtime.reconnecting = value;
 
   /// 流式中用户继续提交的消息，按 FIFO 排队。
   /// busy 解除（result 到达）后自动出队、依次发送。
@@ -288,6 +290,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   bool _isActiveRuntime(_ChatSessionRuntime runtime) =>
       identical(_selectedRuntime ?? _runtime, runtime);
+
+  bool _isCurrentSessionRuntime(_ChatSessionRuntime runtime) {
+    if (!_isActiveRuntime(runtime)) return false;
+    final current = ref.read(currentSessionProvider);
+    final session = runtime.session;
+    if (current == null || session == null) return false;
+    final runtimeKey = _sessionKeyFor(
+      session.agent,
+      session.cwd,
+      runtime.sessionId ?? session.resumeId,
+    );
+    return _sessionKey(current) == runtimeKey;
+  }
 
   T _withRuntime<T>(_ChatSessionRuntime runtime, T Function() body) {
     final previous = _runtime;
@@ -563,11 +578,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  bool _isOwnActiveRun(TurnStatus status) {
+  bool _isOwnActiveRun(TurnStatus status, {_ChatSessionRuntime? runtime}) {
+    final target = runtime ?? _runtime;
     if (status.state == TurnState.live) return true;
     if (status.state != TurnState.running) return false;
     final holder = status.holderDeviceId;
-    return holder == null || holder == _deviceId;
+    return holder == null || holder == target.deviceId;
   }
 
   /// 键盘弹出时，消息列表"追着"跟上去：延迟 80ms 再做动画，
@@ -600,15 +616,25 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   String _pendingPrefsKey(String sessionKey) =>
       'chat_pending_queue_v1|$sessionKey';
 
-  Future<void> _loadPendingQueue(String sessionKey) async {
+  Future<void> _loadPendingQueue(
+    String sessionKey, {
+    _ChatSessionRuntime? runtime,
+  }) async {
+    final target = runtime ?? _runtime;
     final prefs = await SharedPreferences.getInstance();
     final items = prefs.getStringList(_pendingPrefsKey(sessionKey)) ?? const [];
-    if (!mounted || _pendingKey != sessionKey) return;
-    setState(() {
-      _pending
+    if (!mounted || target.pendingKey != sessionKey) return;
+    void apply() {
+      target.pending
         ..clear()
         ..addAll(items.where((item) => item.trim().isNotEmpty));
-    });
+    }
+
+    if (_isActiveRuntime(target)) {
+      setState(apply);
+    } else {
+      apply();
+    }
   }
 
   Future<void> _persistPendingQueue() async {
@@ -682,6 +708,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _hasMoreHistory = false;
       _loadingOlder = false;
       _loadingHistory = false;
+      _reconnecting = false;
     });
     ref.read(todoListProvider.notifier).clear();
 
@@ -940,82 +967,97 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     CurrentSession session, {
     required _ChatSessionRuntime runtime,
   }) async {
-    final previousRuntime = _runtime;
-    _runtime = runtime;
+    final uuid = session.resumeId ?? const Uuid().v4();
+    final pendingKey = _sessionKeyFor(session.agent, session.cwd, uuid);
+    runtime.sessionId = uuid;
+    runtime.pendingKey = pendingKey;
+    unawaited(_persistUuid(uuid));
+
+    await _loadPendingQueue(pendingKey, runtime: runtime);
+    final deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
+    if (!mounted || !identical(runtime.session, session)) return;
+
+    runtime.deviceId = deviceId;
+    final api = ChatApi(httpBase, token: runtime.serverToken);
+    runtime.chatApi = api;
+
+    // 先加载历史（与状态查询并行）。已缓存过消息的 runtime 切回来时不重复拉取，
+    // 避免 idle 会话切换时列表闪烁和卡顿。
+    if (session.resumeId != null && runtime.messages.isEmpty) {
+      _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
+          runtime: runtime);
+    }
+
+    TurnStatus turnStatus;
     try {
-      final uuid = session.resumeId ?? const Uuid().v4();
-      _sessionId = uuid;
-      unawaited(_persistUuid(uuid));
-      final pendingKey = _sessionKeyFor(session.agent, session.cwd, uuid);
-      _pendingKey = pendingKey;
-      await _loadPendingQueue(pendingKey);
-      _runtime = runtime;
-      _deviceId = await ConnectionsNotifier.getOrCreateDeviceId();
-      _runtime = runtime;
+      turnStatus = await api.status(uuid, agent: session.agent);
+    } catch (_) {
+      turnStatus = TurnStatus(TurnState.unknown);
+    }
 
-      final api = ChatApi(httpBase, token: _serverToken);
-      _chatApi = api;
+    if (!mounted || !identical(runtime.session, session)) return;
 
-      // 先加载历史（与状态查询并行）。已缓存过消息的 runtime 切回来时不重复拉取，
-      // 避免 idle 会话切换时列表闪烁和卡顿。
-      if (session.resumeId != null && _messages.isEmpty) {
-        _loadHistory(httpBase, session.cwd, session.resumeId!, session.agent,
-            runtime: runtime);
+    if (turnStatus.state == TurnState.running &&
+        !_isOwnActiveRun(turnStatus, runtime: runtime)) {
+      final holderDeviceId = turnStatus.holderDeviceId;
+      if (_isActiveRuntime(runtime)) {
+        setState(() => _withRuntime(runtime, () => _attempting = false));
+      } else {
+        runtime.attempting = false;
       }
+      if (holderDeviceId != null) {
+        unawaited(
+            _handleConflict(httpBase, session, uuid, holderDeviceId, runtime));
+      } else {
+        // Defensive fallback for malformed status responses.
+        void applyFallback() {
+          runtime.connected = true;
+          runtime.error = null;
+        }
 
-      TurnStatus turnStatus;
-      try {
-        turnStatus = await api.status(uuid, agent: session.agent);
-      } catch (_) {
-        turnStatus = TurnStatus(TurnState.unknown);
-      }
-
-      if (!mounted) return;
-      _runtime = runtime;
-
-      if (turnStatus.state == TurnState.running &&
-          !_isOwnActiveRun(turnStatus)) {
-        final holderDeviceId = turnStatus.holderDeviceId;
-        setState(() => _attempting = false);
-        if (holderDeviceId != null) {
-          unawaited(_handleConflict(
-              httpBase, session, uuid, holderDeviceId, runtime));
+        if (_isActiveRuntime(runtime)) {
+          setState(applyFallback);
         } else {
-          // Defensive fallback for malformed status responses.
-          setState(() {
-            _connected = true;
-            _error = null;
-          });
+          applyFallback();
         }
-        return;
+      }
+      return;
+    }
+
+    void applyConnected() {
+      runtime.attempting = false;
+      runtime.connected = true;
+      runtime.error = null;
+      if (_isOwnActiveRun(turnStatus, runtime: runtime)) {
+        runtime.busy = true;
+        runtime.queuePausedOnUnknown = false;
+        runtime.busyStartedAt ??= DateTime.now();
+        runtime.mode = CcStreamMode.responding;
+      }
+    }
+
+    if (_isActiveRuntime(runtime)) {
+      setState(applyConnected);
+    } else {
+      applyConnected();
+    }
+
+    if (_isOwnActiveRun(turnStatus, runtime: runtime)) {
+      _subscribeSse(httpBase, uuid, session.agent, runtime: runtime);
+    } else if (turnStatus.state == TurnState.done) {
+      runtime.queuePausedOnUnknown = false;
+      _scheduleDrainQueue(runtime);
+    } else if (turnStatus.state == TurnState.unknown &&
+        runtime.pending.isNotEmpty) {
+      void applyUnknown() {
+        runtime.queuePausedOnUnknown = true;
+        runtime.error = 'stream state unknown; queue paused';
       }
 
-      setState(() {
-        _attempting = false;
-        _connected = true;
-        _error = null;
-        if (_isOwnActiveRun(turnStatus)) {
-          _busy = true;
-          _queuePausedOnUnknown = false;
-          _busyStartedAt ??= DateTime.now();
-          _mode = CcStreamMode.responding;
-        }
-      });
-
-      if (_isOwnActiveRun(turnStatus)) {
-        _subscribeSse(httpBase, uuid, session.agent, runtime: runtime);
-      } else if (turnStatus.state == TurnState.done) {
-        _queuePausedOnUnknown = false;
-        _scheduleDrainQueue(runtime);
-      } else if (turnStatus.state == TurnState.unknown && _pending.isNotEmpty) {
-        setState(() {
-          _queuePausedOnUnknown = true;
-          _error = 'stream state unknown; queue paused';
-        });
-      }
-    } finally {
-      if (!_isActiveRuntime(runtime)) {
-        _runtime = _selectedRuntime ?? previousRuntime;
+      if (_isActiveRuntime(runtime)) {
+        setState(applyUnknown);
+      } else {
+        applyUnknown();
       }
     }
   }
@@ -1192,6 +1234,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       final remaining = minShowUntil.difference(DateTime.now());
       if (remaining > Duration.zero) await Future.delayed(remaining);
       if (!mounted) return;
+      final targetSession = target.session;
+      final targetSessionId = target.sessionId ?? targetSession?.resumeId;
+      if (targetSession?.cwd != cwd ||
+          targetSession?.agent != agent ||
+          targetSessionId != sessionId) {
+        return;
+      }
       if (page != null) {
         if (_isActiveRuntime(target)) {
           setState(() => _withRuntime(target, () {
@@ -1364,38 +1413,56 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _manualReconnect() {
+    if (_reconnecting) return;
     unawaited(_manualReconnectAsync());
   }
 
   Future<void> _manualReconnectAsync() async {
-    final resolved = await _resolveActiveConnection();
-    final session = ref.read(currentSessionProvider);
-    final canRefresh =
-        _chatApi != null && (_sessionId != null || session?.resumeId != null);
-    if (canRefresh) {
+    final runtime = _runtime;
+    if (runtime.reconnecting) return;
+    setState(() {
+      runtime.reconnecting = true;
+      runtime.error = null;
+    });
+    try {
+      final resolved = await _resolveActiveConnection();
+      if (!mounted || !_isActiveRuntime(runtime)) return;
+      final session = ref.read(currentSessionProvider);
+      final canRefresh =
+          _chatApi != null && (_sessionId != null || session?.resumeId != null);
+      if (canRefresh) {
+        setState(() {
+          _error = null;
+          _attempting = false;
+        });
+        if (resolved != null) {
+          _serverToken = resolved.token;
+          _chatApi = ChatApi(resolved.apiBase, token: resolved.token);
+        }
+        await _refreshActiveRunState(forceResubscribe: true);
+        return;
+      }
+      _stopObserveTimer();
+      _closeSse();
       setState(() {
+        _sessionId = null;
+        _chatApi = null;
+        _boundKey = null;
+        _attemptedKey = null;
         _error = null;
+        _observeMode = false;
+        _observeHolderDeviceId = null;
         _attempting = false;
       });
-      if (resolved != null) {
-        _serverToken = resolved.token;
-        _chatApi = ChatApi(resolved.apiBase, token: resolved.token);
+    } finally {
+      if (!mounted) {
+        runtime.reconnecting = false;
+      } else if (_isActiveRuntime(runtime)) {
+        setState(() => runtime.reconnecting = false);
+      } else {
+        runtime.reconnecting = false;
       }
-      unawaited(_refreshActiveRunState(forceResubscribe: true));
-      return;
     }
-    _stopObserveTimer();
-    _closeSse();
-    setState(() {
-      _sessionId = null;
-      _chatApi = null;
-      _boundKey = null;
-      _attemptedKey = null;
-      _attempting = false;
-      _error = null;
-      _observeMode = false;
-      _observeHolderDeviceId = null;
-    });
   }
 
   Future<Connection?> _resolveActiveConnection() async {
@@ -1699,8 +1766,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       }
     });
     _scheduleCodexApprovalSideEffects(runtime: eventRuntime);
-    _publishRuntimeStatus(_runtime);
-    if (_isActiveRuntime(_runtime)) _scrollToEnd();
+    _publishRuntimeStatus(eventRuntime);
+    if (_isActiveRuntime(eventRuntime)) _scrollToEnd();
   }
 
   bool _isCodexRealtimeSnapshot(Map<String, dynamic> json, String? wireUuid) {
@@ -1929,7 +1996,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               actualSessionId != uuid) {
             streamUuid = actualSessionId;
             if (mounted) {
-              final previousForegroundPayload = _completionPayloadFor(session);
+              final previousForegroundPayload =
+                  _completionPayloadFor(session, resumeId: uuid);
               final previousWindowKey = _sessionKey(session);
               final adoptedKey =
                   _sessionKeyFor(session.agent, session.cwd, actualSessionId);
@@ -2260,7 +2328,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
     if (!runtime.notifiedApprovalIds.add(requestId)) return;
-    final payload = _completionPayloadFor(session);
+    final payload = _completionPayloadFor(session, resumeId: uuid);
     final title = _approvalNotificationTitle(session, approval.toolUse.name);
     final body = _approvalNotificationBody(approval.toolUse);
     if (_appInForeground) {
@@ -2370,7 +2438,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _notifyCodexApprovalIfNeeded(target, activeApproval, config);
-      if (_isActiveRuntime(target)) {
+      if (_isCurrentSessionRuntime(target)) {
         _showCodexApprovalSheetIfNeeded(target, activeApproval);
       }
     });
@@ -2381,7 +2449,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     _PendingCodexApproval approval,
   ) async {
     final requestId = approval.toolUse.id;
-    if (!_isActiveRuntime(runtime)) return;
+    if (!_isCurrentSessionRuntime(runtime)) return;
     if (runtime.dismissedApprovalPopoverId == requestId) return;
     if (!runtime.presentedApprovalSheetIds.add(requestId)) return;
 
@@ -2452,10 +2520,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     };
   }
 
-  ChatCompletionPayload _completionPayloadFor(CurrentSession session) {
+  ChatCompletionPayload _completionPayloadFor(
+    CurrentSession session, {
+    String? resumeId,
+  }) {
     return ChatCompletionPayload(
       cwd: session.cwd,
-      resumeId: _sessionId ?? session.resumeId,
+      resumeId: resumeId ?? _sessionId ?? session.resumeId,
       label: session.label,
       agent: session.agent,
       runtime: session.runtime,
@@ -2577,7 +2648,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     // ToolUseBlock 渲染时需要匹配 result 一起折叠显示。
     final toolResults = _buildToolResultIndex();
     _pruneMessageKeys();
-    _scheduleCodexApprovalSideEffects();
 
     return Column(
       children: [
@@ -2590,6 +2660,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _StatusRow(
             connected: _connected,
             busy: _busy,
+            reconnecting: _reconnecting,
             error: _error,
             uuid: _sessionId,
             onReconnect: _manualReconnect,
@@ -3058,6 +3129,7 @@ class _OlderMessagesLoadingPill extends StatelessWidget {
 class _StatusRow extends StatelessWidget {
   final bool connected;
   final bool busy;
+  final bool reconnecting;
   final String? error;
   final String? uuid;
   final VoidCallback onReconnect;
@@ -3067,6 +3139,7 @@ class _StatusRow extends StatelessWidget {
   const _StatusRow({
     required this.connected,
     required this.busy,
+    required this.reconnecting,
     required this.error,
     required this.onReconnect,
     this.uuid,
@@ -3078,12 +3151,16 @@ class _StatusRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final dotColor = error != null
-        ? t.error
-        : (connected ? (busy ? t.warning : t.success) : t.textDim);
-    final statusText = error != null
-        ? 'error'
-        : (connected ? (busy ? 'streaming' : 'ready') : 'connecting…');
+    final dotColor = reconnecting
+        ? t.accent
+        : error != null
+            ? t.error
+            : (connected ? (busy ? t.warning : t.success) : t.textDim);
+    final statusText = reconnecting
+        ? 'reconnecting…'
+        : error != null
+            ? 'error'
+            : (connected ? (busy ? 'streaming' : 'ready') : 'connecting…');
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -3138,18 +3215,28 @@ class _StatusRow extends StatelessWidget {
             ),
             const SizedBox(width: 6),
           ],
-          if (error != null || (!connected && !busy))
+          if (reconnecting || error != null || (!connected && !busy))
             InkWell(
-              onTap: onReconnect,
+              onTap: reconnecting ? null : onReconnect,
               borderRadius: BorderRadius.circular(4),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 child: Row(
                   children: [
-                    Icon(Icons.refresh, size: 14, color: t.accent),
+                    if (reconnecting)
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.8,
+                          valueColor: AlwaysStoppedAnimation<Color>(t.accent),
+                        ),
+                      )
+                    else
+                      Icon(Icons.refresh, size: 14, color: t.accent),
                     const SizedBox(width: 4),
                     Text(
-                      'reconnect',
+                      reconnecting ? 'reconnecting' : 'reconnect',
                       style: TextStyle(
                           fontSize: 11,
                           color: t.accent,

@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import '../api/chat_api.dart';
 import '../api/agents_api.dart';
 import '../screens/main_shell.dart';
+import 'open_chat_windows.dart';
 import 'projects_store.dart';
 
 final chatCompletionPulseProvider =
@@ -525,13 +526,17 @@ class ChatCompletionNotifier {
     if (payload == null || ref == null || navigator == null) return;
     _pendingTap = null;
 
-    ref.read(currentSessionProvider.notifier).state = CurrentSession(
+    final session = CurrentSession(
       cwd: payload.cwd,
       label: payload.label,
       resumeId: payload.resumeId,
       agent: payload.agent,
       runtime: payload.runtime.isEmpty ? null : payload.runtime,
     );
+    final windows = ref.read(openChatWindowsProvider.notifier);
+    windows.open(session);
+    windows.select(sessionKey(session));
+    ref.read(currentSessionProvider.notifier).state = session;
     ref.read(chatNotificationNavigationProvider.notifier).state++;
     if (ref.read(mainShellMountedProvider)) return;
     navigator.pushAndRemoveUntil(

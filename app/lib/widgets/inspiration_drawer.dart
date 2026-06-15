@@ -1,10 +1,10 @@
-import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
 import '../api/ideas_api.dart';
 import '../theme.dart';
+import '../utils/time_format.dart';
 
 Future<void> showInspirationDrawer(
   BuildContext context, {
@@ -184,7 +184,6 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
                           key: ValueKey('idea-${idea.id}'),
                           idea: idea,
                           archived: _showArchived,
-                          onEdit: () => _edit(idea),
                           onArchive: () async {
                             await widget.api.archive(idea.id);
                             _reload();
@@ -194,11 +193,13 @@ class _InspirationDrawerState extends State<_InspirationDrawer> {
                             _reload();
                           },
                           onDelete: () => _delete(idea),
-                          child: Padding(
+                          childBuilder: (toggleActions) => Padding(
                             padding: const EdgeInsets.only(bottom: 10),
                             child: _IdeaCard(
                               idea: idea,
                               archived: _showArchived,
+                              onTap: toggleActions,
+                              onEdit: () => _edit(idea),
                               onUse: widget.onUseIdea == null
                                   ? null
                                   : () {
@@ -386,21 +387,19 @@ class _IdeaComposerCard extends StatelessWidget {
 class _SwipeableIdeaCard extends StatefulWidget {
   final Idea idea;
   final bool archived;
-  final VoidCallback onEdit;
   final VoidCallback onArchive;
   final VoidCallback onUnarchive;
   final VoidCallback onDelete;
-  final Widget child;
+  final Widget Function(VoidCallback toggleActions) childBuilder;
 
   const _SwipeableIdeaCard({
     super.key,
     required this.idea,
     required this.archived,
-    required this.onEdit,
     required this.onArchive,
     required this.onUnarchive,
     required this.onDelete,
-    required this.child,
+    required this.childBuilder,
   });
 
   @override
@@ -408,7 +407,7 @@ class _SwipeableIdeaCard extends StatefulWidget {
 }
 
 class _SwipeableIdeaCardState extends State<_SwipeableIdeaCard> {
-  static const double _maxOffset = 164;
+  static const double _maxOffset = 110;
   static const double _openThreshold = 0.42;
   double _offset = 0;
   bool _dragging = false;
@@ -426,6 +425,13 @@ class _SwipeableIdeaCardState extends State<_SwipeableIdeaCard> {
   void _runAction(VoidCallback action) {
     _close();
     action();
+  }
+
+  void _toggleActions() {
+    setState(() {
+      _dragging = false;
+      _offset = _offset > 0 ? 0 : _maxOffset;
+    });
   }
 
   void _onDragStart(DragStartDetails details) {
@@ -476,15 +482,6 @@ class _SwipeableIdeaCardState extends State<_SwipeableIdeaCard> {
                   _SwipeActionButton(
                     progress: progress,
                     delay: 0.0,
-                    color: t.accent,
-                    icon: Icons.edit_outlined,
-                    label: '编辑',
-                    onTap: () => _runAction(widget.onEdit),
-                  ),
-                  const SizedBox(width: 6),
-                  _SwipeActionButton(
-                    progress: progress,
-                    delay: 0.08,
                     color: archiveColor,
                     icon: archiveIcon,
                     label: archiveLabel,
@@ -495,7 +492,7 @@ class _SwipeableIdeaCardState extends State<_SwipeableIdeaCard> {
                   const SizedBox(width: 6),
                   _SwipeActionButton(
                     progress: progress,
-                    delay: 0.16,
+                    delay: 0.08,
                     color: t.error,
                     icon: Icons.delete_outline_rounded,
                     label: '删除',
@@ -524,7 +521,7 @@ class _SwipeableIdeaCardState extends State<_SwipeableIdeaCard> {
               ..translate(-_offset)
               ..scale(cardScale, cardScale),
             transformAlignment: Alignment.center,
-            child: widget.child,
+            child: widget.childBuilder(_toggleActions),
           ),
         ),
       ],
@@ -611,11 +608,15 @@ class _SwipeActionButton extends StatelessWidget {
 class _IdeaCard extends StatefulWidget {
   final Idea idea;
   final bool archived;
+  final VoidCallback onTap;
+  final VoidCallback onEdit;
   final VoidCallback? onUse;
 
   const _IdeaCard({
     required this.idea,
     required this.archived,
+    required this.onTap,
+    required this.onEdit,
     required this.onUse,
   });
 
@@ -623,26 +624,9 @@ class _IdeaCard extends StatefulWidget {
   State<_IdeaCard> createState() => _IdeaCardState();
 }
 
-class _IdeaCardState extends State<_IdeaCard>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _shakeController;
+class _IdeaCardState extends State<_IdeaCard> {
   double _scale = 1;
   bool _longPressing = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _shakeController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 220),
-    );
-  }
-
-  @override
-  void dispose() {
-    _shakeController.dispose();
-    super.dispose();
-  }
 
   void _pressDown() {
     if (_longPressing) return;
@@ -659,39 +643,40 @@ class _IdeaCardState extends State<_IdeaCard>
 
   Future<void> _tapBounce() async {
     if (_longPressing) return;
+    widget.onTap();
     setState(() => _scale = 1.018);
     await Future<void>.delayed(const Duration(milliseconds: 85));
     if (!mounted) return;
     setState(() => _scale = 1);
   }
 
-  Future<void> _useWithShake() async {
+  void _useImmediately() {
     if (widget.onUse == null) return;
     _longPressing = true;
     setState(() => _scale = 0.965);
-    await _shakeController.forward(from: 0);
-    if (!mounted) return;
-    setState(() => _scale = 1);
     widget.onUse!.call();
+  }
+
+  String _timeLabel() {
+    final created = tsFromMillis(widget.idea.createdAt);
+    final updated = tsFromMillis(widget.idea.updatedAt);
+    final effective = updated ?? created;
+    if (effective == null) return '';
+    final edited = created != null &&
+        updated != null &&
+        updated.difference(created).inSeconds.abs() > 1;
+    final prefix = edited ? '更新' : '创建';
+    return '$prefix ${formatMessageTime(effective, yesterdayLabel: '昨天')}';
   }
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    return AnimatedBuilder(
-      animation: _shakeController,
-      builder: (context, child) {
-        final shake = math.sin(_shakeController.value * math.pi * 7) * 2.6;
-        return Transform.translate(
-          offset: Offset(shake, 0),
-          child: AnimatedScale(
-            scale: _scale,
-            duration: const Duration(milliseconds: 130),
-            curve: _scale > 1 ? Curves.easeOutBack : Curves.easeOutCubic,
-            child: child,
-          ),
-        );
-      },
+    final timeLabel = _timeLabel();
+    return AnimatedScale(
+      scale: _scale,
+      duration: const Duration(milliseconds: 130),
+      curve: _scale > 1 ? Curves.easeOutBack : Curves.easeOutCubic,
       child: Material(
         color: Colors.transparent,
         child: Container(
@@ -716,9 +701,9 @@ class _IdeaCardState extends State<_IdeaCard>
                   onTapDown: (_) => _pressDown(),
                   onTapCancel: _pressCancel,
                   onTapUp: (_) => _tapBounce(),
-                  onLongPressStart: (_) => _useWithShake(),
+                  onLongPressStart: (_) => _useImmediately(),
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 14, 10, 14),
+                    padding: const EdgeInsets.fromLTRB(14, 14, 6, 14),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -741,19 +726,48 @@ class _IdeaCardState extends State<_IdeaCard>
                         ),
                         const SizedBox(width: 12),
                         Expanded(
-                          child: Text(
-                            widget.idea.text,
-                            style: TextStyle(
-                              color: t.text,
-                              fontSize: 14,
-                              height: 1.46,
-                              fontWeight: FontWeight.w500,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                widget.idea.text,
+                                style: TextStyle(
+                                  color: t.text,
+                                  fontSize: 14,
+                                  height: 1.46,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              if (timeLabel.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  timeLabel,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: t.textDim,
+                                    fontSize: 11,
+                                    height: 1.1,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
                       ],
                     ),
                   ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 6, 6, 0),
+                child: IconButton(
+                  tooltip: '编辑',
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 19,
+                  onPressed: widget.onEdit,
+                  icon: Icon(Icons.edit_outlined, color: t.textDim),
                 ),
               ),
             ],
