@@ -77,9 +77,7 @@ class _MainShellState extends ConsumerState<MainShell>
         return Map<String, dynamic>.from(info.defaultRuntime);
       }
     }
-    return ref
-        .read(projectAgentRuntimeProvider.notifier)
-        .runtimeFor(cwd, agent);
+    return CurrentSession.defaultRuntimeForAgent(agent);
   }
 
   @override
@@ -1362,10 +1360,9 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
                                 agent: s.agent,
                                 runtime: s.runtime.isNotEmpty
                                     ? s.runtime
-                                    : ref
-                                        .read(projectAgentRuntimeProvider
-                                            .notifier)
-                                        .runtimeFor(p.path, s.agent),
+                                    : CurrentSession.defaultRuntimeForAgent(
+                                        s.agent,
+                                      ),
                               );
                               widget.onPop();
                             },

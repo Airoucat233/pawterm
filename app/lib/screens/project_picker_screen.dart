@@ -482,9 +482,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
         return Map<String, dynamic>.from(info.defaultRuntime);
       }
     }
-    return ref
-        .read(projectAgentRuntimeProvider.notifier)
-        .runtimeFor(cwd, agent);
+    return CurrentSession.defaultRuntimeForAgent(agent);
   }
 
   void _showNewChatSheet(
@@ -517,9 +515,7 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
       agent: session.agent,
       runtime: session.runtime.isNotEmpty
           ? session.runtime
-          : ref
-              .read(projectAgentRuntimeProvider.notifier)
-              .runtimeFor(project.path, session.agent),
+          : CurrentSession.defaultRuntimeForAgent(session.agent),
     );
     Navigator.of(context).push(
       CupertinoPageRoute(builder: (_) => const MainShell()),

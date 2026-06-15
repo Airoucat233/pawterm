@@ -120,6 +120,7 @@ class _ChatSessionRuntime {
   final Map<String, String> codexApprovalDecisions = {};
   final Set<String> notifiedApprovalIds = {};
   final Set<String> presentedApprovalSheetIds = {};
+  final Set<String> suppressedApprovalSheetIds = {};
   final List<_AttachmentState> attachments = [];
   final Map<String, List<IncomingMessage>> subMsgs = {};
   final Map<String, StreamingAssistant> subStreaming = {};
@@ -2451,6 +2452,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final requestId = approval.toolUse.id;
     if (!_isCurrentSessionRuntime(runtime)) return;
     if (runtime.dismissedApprovalPopoverId == requestId) return;
+    if (runtime.suppressedApprovalSheetIds.contains(requestId)) return;
+    final pendingApprovals = _withRuntime(
+      runtime,
+      () => _pendingCodexApprovals(_buildToolResultIndex()),
+    );
+    if (pendingApprovals.length > 1) {
+      runtime.suppressedApprovalSheetIds.addAll(
+        pendingApprovals.map((item) => item.toolUse.id),
+      );
+      return;
+    }
     if (!runtime.presentedApprovalSheetIds.add(requestId)) return;
 
     FocusManager.instance.primaryFocus?.unfocus();
@@ -2536,6 +2548,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   _PendingCodexApproval? _latestPendingCodexApproval(
     Map<String, ToolResultBlock> toolResults,
   ) {
+    final pending = _pendingCodexApprovals(toolResults);
+    for (final approval in pending) {
+      if (approval.toolUse.id != _runtime.dismissedApprovalPopoverId) {
+        return approval;
+      }
+    }
+    return null;
+  }
+
+  List<_PendingCodexApproval> _pendingCodexApprovals(
+    Map<String, ToolResultBlock> toolResults,
+  ) {
+    final pending = <_PendingCodexApproval>[];
     for (final m in _messages.reversed) {
       final content = switch (m) {
         UserMsg(:final content) => content,
@@ -2546,13 +2571,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (block is! ToolUseBlock) continue;
         if (!_isCodexApprovalRequestName(block.name)) continue;
         final result = toolResults[block.id];
-        if (result == null && block.id != _runtime.dismissedApprovalPopoverId) {
-          return _PendingCodexApproval(toolUse: block, result: result);
+        if (result == null) {
+          pending.add(_PendingCodexApproval(toolUse: block, result: result));
+          continue;
         }
-        return null;
       }
     }
-    return null;
+    return pending;
   }
 
   /// 弹文件选择器，把每个选中的文件都登记为 uploading 状态并启动并发上传。
