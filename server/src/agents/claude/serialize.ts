@@ -39,6 +39,37 @@ export function messageToWire(msg: any): any | null {
           duration_ms: meta.durationMs ?? null,
         };
       }
+      // SDKStatusMessage: SDK 内部状态（compacting / requesting / null）。
+      // 我们用它驱动 chat 顶部的状态指示符，让用户知道 /compact 正在进行。
+      if (msg.subtype === 'status') {
+        const status = (msg as { status?: string | null }).status;
+        // 仅 null / 'compacting' / 'requesting' 是合法值；其他丢弃避免噪音。
+        if (status !== null && status !== 'compacting' && status !== 'requesting') {
+          return null;
+        }
+        return {
+          type: 'session_status',
+          status: status ?? null,
+          compact_result: (msg as { compact_result?: string }).compact_result ?? null,
+          compact_error: (msg as { compact_error?: string }).compact_error ?? null,
+        };
+      }
+      // SDKInformationalMessage: SDK 自发的提示（warning / suggestion / notice / info）。
+      // 透传给客户端按 level 显示 toast / banner。
+      if (msg.subtype === 'informational') {
+        const content = (msg as { content?: string }).content;
+        const level = (msg as { level?: string }).level;
+        if (typeof content !== 'string' || content.length === 0) return null;
+        if (level !== 'info' && level !== 'notice' && level !== 'suggestion' && level !== 'warning') {
+          return null;
+        }
+        return {
+          type: 'informational',
+          content,
+          level,
+          tool_use_id: (msg as { tool_use_id?: string }).tool_use_id ?? null,
+        };
+      }
       return {
         type: 'system',
         subtype: msg.subtype ?? null,
@@ -83,6 +114,47 @@ export function messageToWire(msg: any): any | null {
         total_cost_usd: msg.total_cost_usd,
         usage: safe(msg.usage),
       };
+
+    case 'tool_progress': {
+      // SDKToolProgressMessage: SDK 周期推送一个工具调用还在执行的信号。
+      // 用来给长跑工具（Bash 跑 build/test/deploy 之类）显示"已执行 Xs"。
+      const toolUseId = (msg as { tool_use_id?: string }).tool_use_id;
+      const toolName = (msg as { tool_name?: string }).tool_name;
+      const elapsed = (msg as { elapsed_time_seconds?: number }).elapsed_time_seconds;
+      if (typeof toolUseId !== 'string' || toolUseId.length === 0) return null;
+      if (typeof elapsed !== 'number') return null;
+      return {
+        type: 'tool_progress',
+        tool_use_id: toolUseId,
+        tool_name: typeof toolName === 'string' ? toolName : '',
+        elapsed_seconds: elapsed,
+        parent_tool_use_id: (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id ?? null,
+      };
+    }
+
+    case 'rate_limit_event': {
+      // SDKRateLimitEvent.rate_limit_info: 限流配额信息。SDK 在每次 rate
+      // limit 变化时推送，我们透传给客户端做可视化（composer 上方 chip）。
+      // 字段命名 camelCase → snake_case 转换；缺失字段保留 null/undefined
+      // 让 wire 类型紧凑（避免一堆 undefined 占带宽）。
+      const info = (msg as { rate_limit_info?: Record<string, unknown> }).rate_limit_info ?? {};
+      const status = info['status'];
+      if (typeof status !== 'string') return null;
+      return {
+        type: 'rate_limit_info',
+        info: {
+          status,
+          resets_at: typeof info['resetsAt'] === 'number' ? info['resetsAt'] : null,
+          rate_limit_type: typeof info['rateLimitType'] === 'string' ? info['rateLimitType'] : null,
+          utilization: typeof info['utilization'] === 'number' ? info['utilization'] : null,
+          overage_status: typeof info['overageStatus'] === 'string' ? info['overageStatus'] : null,
+          overage_resets_at: typeof info['overageResetsAt'] === 'number' ? info['overageResetsAt'] : null,
+          is_using_overage: typeof info['isUsingOverage'] === 'boolean' ? info['isUsingOverage'] : null,
+          overage_in_use: typeof info['overageInUse'] === 'boolean' ? info['overageInUse'] : null,
+          surpassed_threshold: typeof info['surpassedThreshold'] === 'number' ? info['surpassedThreshold'] : null,
+        },
+      };
+    }
 
     case 'stream_event': {
       // Partial assistant stream: forward only useful text deltas to keep client cheap.
