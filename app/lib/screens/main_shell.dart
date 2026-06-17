@@ -18,6 +18,7 @@ import '../state/projects_store.dart';
 import '../state/server_config.dart';
 import '../state/streaming_foreground_service.dart';
 import '../theme.dart';
+import '../widgets/agent_badge.dart';
 import 'settings_screen.dart';
 import 'tabs/chat_tab.dart';
 import 'tabs/files_tab.dart';
@@ -1290,7 +1291,7 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
             child: Row(
               children: [
                 Text(
-                  '切换工作目录',
+                  '选择会话',
                   style: TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w700, color: t.text),
                 ),
@@ -1377,7 +1378,9 @@ class _SessionSwitcherSheetState extends ConsumerState<_SessionSwitcherSheet> {
   }
 }
 
-class _SheetProjectNode extends ConsumerWidget {
+enum _SheetSessionFilter { all, claude, codex }
+
+class _SheetProjectNode extends ConsumerStatefulWidget {
   final Project project;
   final bool isExpanded;
   final String? currentCwd;
@@ -1397,7 +1400,21 @@ class _SheetProjectNode extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SheetProjectNode> createState() => _SheetProjectNodeState();
+}
+
+class _SheetProjectNodeState extends ConsumerState<_SheetProjectNode> {
+  _SheetSessionFilter _filter = _SheetSessionFilter.all;
+
+  @override
+  Widget build(BuildContext context) {
+    final project = widget.project;
+    final isExpanded = widget.isExpanded;
+    final currentCwd = widget.currentCwd;
+    final currentSessionId = widget.currentSessionId;
+    final onToggle = widget.onToggle;
+    final onNewSession = widget.onNewSession;
+    final onPickSession = widget.onPickSession;
     final t = AppTokens.of(context);
     final isCurrent = currentCwd == project.path;
     final myDeviceId = ref.watch(deviceIdProvider).valueOrNull ?? '';
@@ -1470,6 +1487,11 @@ class _SheetProjectNode extends ConsumerWidget {
                   onTap: onNewSession,
                 ),
                 const SizedBox(height: 6),
+                _SheetSessionFilterBar(
+                  selected: _filter,
+                  onChanged: (next) => setState(() => _filter = next),
+                ),
+                const SizedBox(height: 6),
                 Consumer(
                   builder: (_, ref, __) {
                     final async = ref.watch(sessionsProvider(project.path));
@@ -1484,27 +1506,45 @@ class _SheetProjectNode extends ConsumerWidget {
                       ),
                       error: (e, _) => Text('$e',
                           style: TextStyle(fontSize: 10, color: t.error)),
-                      data: (sessions) => Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          if (sessions.isEmpty)
-                            Padding(
-                              padding: const EdgeInsets.all(8),
-                              child: Text('暂无历史 session',
-                                  style: TextStyle(
-                                      fontSize: 11, color: t.textDim)),
-                            ),
-                          for (final s in sessions)
-                            _SheetSessionTile(
-                              session: s,
-                              isCurrent: s.sessionId == currentSessionId,
-                              hasPendingApproval:
-                                  _hasPendingApproval(inAppNotifications, s),
-                              onTap: () => onPickSession(s),
-                              myDeviceId: myDeviceId,
-                            ),
-                        ],
-                      ),
+                      data: (sessions) {
+                        final filtered = sessions.where((s) {
+                          return switch (_filter) {
+                            _SheetSessionFilter.all => true,
+                            _SheetSessionFilter.claude =>
+                              s.agent == AgentKind.claude,
+                            _SheetSessionFilter.codex =>
+                              s.agent == AgentKind.codex,
+                          };
+                        }).toList();
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (sessions.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Text('暂无历史 session',
+                                    style: TextStyle(
+                                        fontSize: 11, color: t.textDim)),
+                              )
+                            else if (filtered.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Text('这个 Agent 暂无历史会话',
+                                    style: TextStyle(
+                                        fontSize: 11, color: t.textDim)),
+                              ),
+                            for (final s in filtered)
+                              _SheetSessionTile(
+                                session: s,
+                                isCurrent: s.sessionId == currentSessionId,
+                                hasPendingApproval:
+                                    _hasPendingApproval(inAppNotifications, s),
+                                onTap: () => onPickSession(s),
+                                myDeviceId: myDeviceId,
+                              ),
+                          ],
+                        );
+                      },
                     );
                   },
                 ),
@@ -1638,16 +1678,102 @@ class _SheetSessionTile extends StatelessWidget {
                       ],
                     ],
                   ),
-                  if (timeText.isNotEmpty)
-                    Text(timeText,
-                        style: TextStyle(
-                            fontSize: 10,
-                            color: t.textDim,
-                            fontFamily: 'monospace')),
+                  Row(
+                    children: [
+                      AgentBadge(agent: session.agent, compact: true),
+                      if (timeText.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        Text(timeText,
+                            style: TextStyle(
+                                fontSize: 10,
+                                color: t.textDim,
+                                fontFamily: 'monospace')),
+                      ],
+                    ],
+                  ),
                 ],
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "选择会话" sheet 中按 Agent 过滤 session 列表的分段控件。
+/// 视觉上参考 project_picker_screen._SessionFilterBar，但配色更低调以适应
+/// bottom sheet 内嵌环境。
+class _SheetSessionFilterBar extends StatelessWidget {
+  final _SheetSessionFilter selected;
+  final ValueChanged<_SheetSessionFilter> onChanged;
+  const _SheetSessionFilterBar(
+      {required this.selected, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      height: 28,
+      decoration: BoxDecoration(
+        color: t.surfaceHi,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: t.borderSubt, width: 0.5),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        children: [
+          _SheetFilterSegment(
+            label: '全部',
+            selected: selected == _SheetSessionFilter.all,
+            onTap: () => onChanged(_SheetSessionFilter.all),
+          ),
+          _SheetFilterSegment(
+            label: 'Claude',
+            selected: selected == _SheetSessionFilter.claude,
+            onTap: () => onChanged(_SheetSessionFilter.claude),
+          ),
+          _SheetFilterSegment(
+            label: 'Codex',
+            selected: selected == _SheetSessionFilter.codex,
+            onTap: () => onChanged(_SheetSessionFilter.codex),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SheetFilterSegment extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _SheetFilterSegment(
+      {required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? t.surface : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            border:
+                selected ? Border.all(color: t.borderSubt, width: 0.5) : null,
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? t.text : t.textMuted,
+              fontSize: 11,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
         ),
       ),
     );
@@ -1992,20 +2118,25 @@ class _OpenChatWindowRow extends StatelessWidget {
                           ),
                           const SizedBox(width: 6),
                           Expanded(
-                            child: Text(
-                              _sessionTitle(session),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: t.text,
-                                fontSize: 13,
-                                fontFamily: session.resumeId == null
-                                    ? null
-                                    : 'monospace',
-                                fontWeight: selected
-                                    ? FontWeight.w700
-                                    : FontWeight.w600,
-                              ),
+                            child: Builder(
+                              builder: (_) {
+                                final (title, isUuidFallback) =
+                                    _sessionTitle(session);
+                                return Text(
+                                  title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: t.text,
+                                    fontSize: 13,
+                                    fontFamily:
+                                        isUuidFallback ? 'monospace' : null,
+                                    fontWeight: selected
+                                        ? FontWeight.w700
+                                        : FontWeight.w600,
+                                  ),
+                                );
+                              },
                             ),
                           ),
                         ],
@@ -2047,10 +2178,31 @@ class _OpenChatWindowRow extends StatelessWidget {
     };
   }
 
-  String _sessionTitle(CurrentSession session) {
+  /// 返回 (展示标题, 是否回退到 UUID)。
+  ///
+  /// session.label 在挑选时被设置为 `"项目名 · displayTitle"`，所以这里取
+  /// `' · '` 后面的部分作为对话标题。如果 label 里只有项目名（典型场景：
+  /// 新对话刚拿到 resumeId 但尚未生成 title/summary），fall back 到截断的
+  /// UUID 并标记 isUuidFallback=true，外层据此决定是否用 monospace 字体。
+  (String, bool) _sessionTitle(CurrentSession session) {
     final id = session.resumeId;
-    if (id == null || id.isEmpty) return '新对话';
-    return id.length <= 8 ? id : id.substring(0, 8);
+    if (id == null || id.isEmpty) return ('新对话', false);
+    final label = session.label;
+    final sepIdx = label.indexOf(' · ');
+    if (sepIdx >= 0) {
+      final title = label.substring(sepIdx + 3).trim();
+      if (title.isNotEmpty) return (title, false);
+    } else if (label.trim().isNotEmpty) {
+      // label 可能还没经过 picker 拼接（极少数恢复路径），整体当标题用。
+      // 仅当它不像 UUID 时才走这条路。
+      final trimmed = label.trim();
+      final looksLikeUuid = RegExp(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+      ).hasMatch(trimmed);
+      if (!looksLikeUuid) return (trimmed, false);
+    }
+    final short = id.length <= 8 ? id : '${id.substring(0, 8)}…';
+    return (short, true);
   }
 
   String _compactPath(String path) {
