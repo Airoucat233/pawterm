@@ -200,8 +200,46 @@ export type ChatServerMessage =
   | ({ type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string; parent_tool_use_id?: string | null } & AgentEventMeta)
   | ({ type: 'stream_block_stop'; index: number; parent_tool_use_id?: string | null } & AgentEventMeta)
   | ({ type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_started'; task_id: string; tool_use_id?: string | null; description: string; subagent_type?: string | null; task_type?: string | null; workflow_name?: string | null; prompt?: string | null; skip_transcript?: boolean; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_updated'; task_id: string; patch: TaskStatePatch; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_progress'; task_id: string; tool_use_id?: string | null; description: string; subagent_type?: string | null; usage?: TaskUsage; last_tool_name?: string | null; summary?: string | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_notification'; task_id: string | null; tool_use_id?: string | null; status: string; summary: string; output_file?: string | null; usage?: TaskUsage; skip_transcript?: boolean; timestamp?: number } & AgentEventMeta)
   | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
+
+// ============== Background Tasks ==============
+
+/**
+ * Claude Code 2.1 + claude-agent-sdk 0.3.x 后台 task 生命周期事件。
+ *
+ * 数据流：SDK emits SDKTask{Started,Updated,Progress,Notification}Message
+ * → server serialize 转 wire (task_started / task_updated / task_progress /
+ * task_notification) → app 累加到 tasks store。
+ *
+ * Task 类型：
+ *   - 'shell': 长跑命令（build/test/deploy）
+ *   - 'subagent': Task tool 触发的子 agent
+ *   - 'monitor': MCP 监听 task
+ *   - 'workflow': local_workflow
+ *
+ * 我们透传，UI 由客户端决定如何渲染。
+ */
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'paused';
+
+export interface TaskStatePatch {
+  status?: TaskStatus;
+  description?: string;
+  end_time?: number;
+  total_paused_ms?: number;
+  error?: string;
+  is_backgrounded?: boolean;
+}
+
+export interface TaskUsage {
+  total_tokens: number;
+  tool_uses: number;
+  duration_ms: number;
+}
 
 export type ContentBlock =
   | { type: 'text'; text: string }
