@@ -24,6 +24,89 @@ export function messageToWire(msg: any): any | null {
       //   1) SDK 哪天暴露元事件时自动接上；
       //   2) 实时流（用户在会话中触发 /compact）若 SDK 转发，也能渲染。
       // 要真正显示分隔线，需要服务端绕过 SDK 直接读 jsonl，目前不做。
+      // SDKTaskStartedMessage / TaskUpdated / TaskProgress / TaskNotification:
+      // 全部以 'system' + 各自 subtype 走过来，透传给客户端组装 tasks panel。
+      if (msg.subtype === 'task_started') {
+        const taskId = (msg as { task_id?: string }).task_id;
+        if (typeof taskId !== 'string' || taskId.length === 0) return null;
+        const m = msg as Record<string, unknown>;
+        return {
+          type: 'task_started',
+          task_id: taskId,
+          tool_use_id: typeof m.tool_use_id === 'string' ? m.tool_use_id : null,
+          description: typeof m.description === 'string' ? m.description : '',
+          subagent_type: typeof m.subagent_type === 'string' ? m.subagent_type : null,
+          task_type: typeof m.task_type === 'string' ? m.task_type : null,
+          workflow_name: typeof m.workflow_name === 'string' ? m.workflow_name : null,
+          prompt: typeof m.prompt === 'string' ? m.prompt : null,
+          skip_transcript: m.skip_transcript === true,
+        };
+      }
+      if (msg.subtype === 'task_updated') {
+        const taskId = (msg as { task_id?: string }).task_id;
+        if (typeof taskId !== 'string' || taskId.length === 0) return null;
+        const patch = (msg as { patch?: Record<string, unknown> }).patch ?? {};
+        return {
+          type: 'task_updated',
+          task_id: taskId,
+          patch: {
+            ...(typeof patch.status === 'string' ? { status: patch.status } : {}),
+            ...(typeof patch.description === 'string' ? { description: patch.description } : {}),
+            ...(typeof patch.end_time === 'number' ? { end_time: patch.end_time } : {}),
+            ...(typeof patch.total_paused_ms === 'number' ? { total_paused_ms: patch.total_paused_ms } : {}),
+            ...(typeof patch.error === 'string' ? { error: patch.error } : {}),
+            ...(typeof patch.is_backgrounded === 'boolean' ? { is_backgrounded: patch.is_backgrounded } : {}),
+          },
+        };
+      }
+      if (msg.subtype === 'task_progress') {
+        const taskId = (msg as { task_id?: string }).task_id;
+        if (typeof taskId !== 'string' || taskId.length === 0) return null;
+        const m = msg as Record<string, unknown>;
+        const usage = m.usage as Record<string, unknown> | undefined;
+        return {
+          type: 'task_progress',
+          task_id: taskId,
+          tool_use_id: typeof m.tool_use_id === 'string' ? m.tool_use_id : null,
+          description: typeof m.description === 'string' ? m.description : '',
+          subagent_type: typeof m.subagent_type === 'string' ? m.subagent_type : null,
+          usage: usage && typeof usage.total_tokens === 'number'
+            ? {
+                total_tokens: usage.total_tokens,
+                tool_uses: typeof usage.tool_uses === 'number' ? usage.tool_uses : 0,
+                duration_ms: typeof usage.duration_ms === 'number' ? usage.duration_ms : 0,
+              }
+            : null,
+          last_tool_name: typeof m.last_tool_name === 'string' ? m.last_tool_name : null,
+          summary: typeof m.summary === 'string' ? m.summary : null,
+        };
+      }
+      // 注意：'task_notification' 走 system subtype 路径（SDK 0.3.x）。旧的
+      // harness XML 路径在 parseHarnessNotification 里处理 user-message 注入版。
+      if (msg.subtype === 'task_notification') {
+        const taskId = (msg as { task_id?: string }).task_id;
+        const status = (msg as { status?: string }).status;
+        const summary = (msg as { summary?: string }).summary;
+        if (typeof status !== 'string') return null;
+        const m = msg as Record<string, unknown>;
+        const usage = m.usage as Record<string, unknown> | undefined;
+        return {
+          type: 'task_notification',
+          task_id: typeof taskId === 'string' ? taskId : null,
+          tool_use_id: typeof m.tool_use_id === 'string' ? m.tool_use_id : null,
+          status,
+          summary: typeof summary === 'string' ? summary : '',
+          output_file: typeof m.output_file === 'string' ? m.output_file : null,
+          usage: usage && typeof usage.total_tokens === 'number'
+            ? {
+                total_tokens: usage.total_tokens,
+                tool_uses: typeof usage.tool_uses === 'number' ? usage.tool_uses : 0,
+                duration_ms: typeof usage.duration_ms === 'number' ? usage.duration_ms : 0,
+              }
+            : null,
+          skip_transcript: m.skip_transcript === true,
+        };
+      }
       if (msg.subtype === 'compact_boundary') {
         const meta = (msg.compactMetadata ?? {}) as {
           trigger?: string;
