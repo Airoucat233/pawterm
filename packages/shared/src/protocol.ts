@@ -158,11 +158,18 @@ export type ChatClientMessage =
   | { type: 'interrupt' }
   | { type: 'ping' };
 
-/** Available Claude models the client can pick. Keep in sync with App + Web. */
+/** Available Claude models the client can pick. Keep in sync with App + Web.
+ *
+ * NOTE: ID 来源——`@anthropic-ai/claude-code` 2.1.x 二进制里抓到的最新档位。
+ * `claude-fable-5` 是 Claude Code 2.1 新增的 coding 专用档位（"fable-mythos"
+ * 系列），目前未公开文档，仅在 CLI binary 里曝光；保留 placeholder，
+ * 需要服务端 `/models` 实际暴露后客户端才会真正用上。
+ */
 export const KNOWN_MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'fast' },
-  { id: 'claude-opus-4-7', label: 'Opus 4.7', tier: 'powerful' },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', tier: 'powerful' },
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', tier: 'cheap' },
+  { id: 'claude-fable-5', label: 'Fable 5', tier: 'coding' },
 ] as const;
 
 // ============== Models ==============

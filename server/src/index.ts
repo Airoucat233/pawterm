@@ -455,15 +455,21 @@ async function main(): Promise<void> {
       env['ANTHROPIC_BASE_URL'] && !env['ANTHROPIC_BASE_URL'].includes('anthropic.com') ? 'unknown' :
       'anthropic';
 
+    // 默认档位 ID 跟 Claude Code 2.1.x 二进制保持一致；env 可覆盖。
     const sonnet = env['ANTHROPIC_DEFAULT_SONNET_MODEL'] ?? env['ANTHROPIC_MODEL'] ?? 'claude-sonnet-4-6';
-    const opus   = env['ANTHROPIC_DEFAULT_OPUS_MODEL']   ?? 'claude-opus-4-7';
+    const opus   = env['ANTHROPIC_DEFAULT_OPUS_MODEL']   ?? 'claude-opus-4-8';
     const haiku  = env['ANTHROPIC_DEFAULT_HAIKU_MODEL']  ?? 'claude-haiku-4-5';
+    // Fable 是 Claude Code 2.1 引入的 coding 专用档位（"fable-mythos"），
+    // 目前未在公开文档中披露但 CLI 已通；env 留出覆盖钩子，未来正式发布
+    // 后可在 ~/.claude/settings.json 里改 ANTHROPIC_DEFAULT_FABLE_MODEL。
+    const fable  = env['ANTHROPIC_DEFAULT_FABLE_MODEL']  ?? 'claude-fable-5';
     const current = env['ANTHROPIC_MODEL'] ?? sonnet;
 
     const models: ModelInfo[] = [
       { id: sonnet, label: _modelLabel(sonnet, 'Sonnet'), tier: 'fast' },
       { id: opus,   label: _modelLabel(opus,   'Opus'),   tier: 'powerful' },
       { id: haiku,  label: _modelLabel(haiku,  'Haiku'),  tier: 'cheap' },
+      { id: fable,  label: _modelLabel(fable,  'Fable'),  tier: 'coding' },
     ];
 
     return { provider, current, models };
