@@ -139,6 +139,12 @@ abstract class IncomingMessage {
           elapsedSeconds: (json['elapsed_seconds'] as num?)?.toDouble() ?? 0,
           parentToolUseId: json['parent_tool_use_id'] as String?,
         );
+      case 'thinking_tokens':
+        return ThinkingTokensMsg(
+          estimatedTokens: (json['estimated_tokens'] as num?)?.toInt() ?? 0,
+          estimatedTokensDelta:
+              (json['estimated_tokens_delta'] as num?)?.toInt() ?? 0,
+        );
       default:
         return UnknownMsg(raw: json);
     }
@@ -243,6 +249,18 @@ class CompactBoundaryMsg extends IncomingMessage {
     this.postTokens,
     this.durationMs,
     this.timestamp,
+  });
+}
+
+/// SDKThinkingTokensMessage → wire `thinking_tokens`。
+/// SDK 在 redacted-thinking 阶段周期推送当前 thinking 块累计 token 估算 +
+/// 本次增量。仅 Claude SDK 路径，Codex 不发。
+class ThinkingTokensMsg extends IncomingMessage {
+  final int estimatedTokens;
+  final int estimatedTokensDelta;
+  ThinkingTokensMsg({
+    required this.estimatedTokens,
+    required this.estimatedTokensDelta,
   });
 }
 

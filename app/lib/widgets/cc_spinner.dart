@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../i18n/locale_provider.dart';
 import '../state/session_status_state.dart';
+import '../state/thinking_tokens_state.dart';
 
 /// claude-code CLI 风格的字符 spinner。
 /// 字符序列复刻自 `src/components/Spinner/utils.ts`（macOS 集合）。
@@ -208,6 +209,36 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
               fontFamily: 'monospace',
             ),
           ),
+          // Thinking tokens pill：仅在 thinking 阶段 SDK 推过 tokens 时显示。
+          // ThinkingTokensProvider 只在 Claude session 写入，Codex 永远是 0
+          // 不显示。值 < 100 时也不显示（信号太弱）。
+          Builder(builder: (_) {
+            final tokens = ref.watch(thinkingTokensProvider);
+            if (tokens < 100) return const SizedBox.shrink();
+            final label = tokens >= 1000
+                ? '${(tokens / 1000).toStringAsFixed(1)}k'
+                : tokens.toString();
+            return Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  '≈ $label thinking',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: widget.color,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            );
+          }),
           const Spacer(),
           if (widget.trailing != null) ...[
             widget.trailing!,

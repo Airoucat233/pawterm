@@ -33,6 +33,7 @@ import '../../state/rate_limit_state.dart';
 import '../../state/server_config.dart';
 import '../../state/session_status_state.dart';
 import '../../state/streaming_foreground_service.dart';
+import '../../state/thinking_tokens_state.dart';
 import '../../state/todo_list.dart';
 import '../../state/tool_progress_state.dart';
 import '../../theme.dart';
@@ -1641,6 +1642,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
         _currentBlockKind = null;
+        // 一轮结束 → 清零 thinking tokens 估算，避免下一轮叠加。
+        ref.read(thinkingTokensProvider.notifier).state = 0;
         _messages.add(msg);
         _debugTrack(msg, json);
         _localUserEchoes.removeWhere((echo) => echo.serverAcked);
@@ -1804,6 +1807,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             ...notifier.state,
             msg.toolUseId: msg.elapsedSeconds,
           };
+        }
+      } else if (msg is ThinkingTokensMsg) {
+        // SDK 在 thinking 阶段周期推送估算 token 数。仅 Claude；写入全局
+        // provider 给 spinner 上的 thinking pill 用。不进消息流。
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude) {
+          ref.read(thinkingTokensProvider.notifier).state = msg.estimatedTokens;
         }
       } else {
         _messages.add(msg);
@@ -4260,7 +4270,7 @@ class _RuntimeSettingsButton extends StatelessWidget {
   }
 }
 
-enum _RuntimeSettingsPage { overview, permissions, permissionAdvanced }
+enum _RuntimeSettingsPage { overview, permissions, permissionAdvanced, thinking }
 
 class _CodexPermissionMode {
   final String label;
@@ -4426,11 +4436,13 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
       _RuntimeSettingsPage.overview => rootTitle,
       _RuntimeSettingsPage.permissions => '权限设置',
       _RuntimeSettingsPage.permissionAdvanced => '高级权限',
+      _RuntimeSettingsPage.thinking => 'Thinking',
     };
     final icon = switch (_page) {
       _RuntimeSettingsPage.permissions ||
       _RuntimeSettingsPage.permissionAdvanced =>
         Icons.shield_outlined,
+      _RuntimeSettingsPage.thinking => Icons.psychology_outlined,
       _ => Icons.tune_rounded,
     };
     return Container(
@@ -4494,6 +4506,7 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
                       _runtimePermissionPage(),
                     _RuntimeSettingsPage.permissionAdvanced =>
                       _codexPermissionAdvancedPage(),
+                    _RuntimeSettingsPage.thinking => _runtimeThinkingPage(),
                     _RuntimeSettingsPage.overview => _runtimeOverviewPage(),
                   },
                 ),
@@ -4534,7 +4547,108 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
           value: _permissionLabel(_permissionMode),
           onTap: () => setState(() => _page = _RuntimeSettingsPage.permissions),
         ),
+        // Thinking 仅 Claude 暴露；Codex 自有 reasoning_effort 走另一条路径。
+        _RuntimeActionRow(
+          icon: Icons.psychology_outlined,
+          title: 'Thinking',
+          value: _thinkingLabel(_runtime['thinking']),
+          onTap: () =>
+              setState(() => _page = _RuntimeSettingsPage.thinking),
+        ),
       ],
+    );
+  }
+
+  String _thinkingLabel(dynamic config) {
+    if (config is! Map) return '默认（adaptive）';
+    final type = (config['type'] ?? '').toString();
+    return switch (type) {
+      'adaptive' => '自适应',
+      'disabled' => '关闭',
+      'enabled' => '固定预算',
+      _ => '默认（adaptive）',
+    };
+  }
+
+  Widget _runtimeThinkingPage() {
+    final current = _runtime['thinking'];
+    final currentType = current is Map ? (current['type'] ?? '').toString() : '';
+    const options = [
+      ('', '默认', '让 SDK 决定（Opus 4.6+ 默认 adaptive）'),
+      ('adaptive', '自适应', 'Claude 自行决定何时及多少 thinking'),
+      ('disabled', '关闭', '完全关闭 extended thinking'),
+    ];
+    return ListView.separated(
+      key: const ValueKey('thinking'),
+      padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
+      itemCount: options.length,
+      separatorBuilder: (context, _) {
+        final t = AppTokens.of(context);
+        return Divider(
+          color: t.borderSubt,
+          height: 0.5,
+          indent: 16,
+          endIndent: 16,
+        );
+      },
+      itemBuilder: (context, index) {
+        final (typeKey, label, desc) = options[index];
+        final t = AppTokens.of(context);
+        final selected = typeKey == currentType ||
+            (typeKey == '' && currentType.isEmpty);
+        return InkWell(
+          onTap: () {
+            // 未选中"默认" → 写 thinking 字段；选"默认"→ 删字段，让 SDK 用默认。
+            final patch = <String, dynamic>{};
+            if (typeKey.isEmpty) {
+              patch['thinking'] = null;
+            } else {
+              patch['thinking'] = {'type': typeKey};
+            }
+            _patchRuntime(patch);
+          },
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Row(
+              children: [
+                Icon(
+                  selected
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_unchecked,
+                  size: 18,
+                  color: selected ? t.accent : t.textMuted,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: TextStyle(
+                          color: selected ? t.accent : t.text,
+                          fontSize: 13,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        desc,
+                        style: TextStyle(
+                          color: t.textDim,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
