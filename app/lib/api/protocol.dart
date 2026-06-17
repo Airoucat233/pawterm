@@ -113,10 +113,119 @@ abstract class IncomingMessage {
           status: json['status'] as String?,
           summary: json['summary'] as String?,
         );
+      case 'rate_limit_info':
+        return RateLimitInfoMsg(
+          info: RateLimitInfo.fromJson(
+            Map<String, dynamic>.from(json['info'] ?? const {}),
+          ),
+          timestamp: (json['timestamp'] as num?)?.toInt(),
+        );
+      case 'session_status':
+        return SessionStatusMsg(
+          status: json['status'] as String?, // 'compacting' | 'requesting' | null
+          compactResult: json['compact_result'] as String?,
+          compactError: json['compact_error'] as String?,
+        );
+      case 'informational':
+        return InformationalMsg(
+          content: json['content'] as String? ?? '',
+          level: json['level'] as String? ?? 'info',
+          toolUseId: json['tool_use_id'] as String?,
+        );
+      case 'tool_progress':
+        return ToolProgressMsg(
+          toolUseId: json['tool_use_id'] as String? ?? '',
+          toolName: json['tool_name'] as String? ?? '',
+          elapsedSeconds: (json['elapsed_seconds'] as num?)?.toDouble() ?? 0,
+          parentToolUseId: json['parent_tool_use_id'] as String?,
+        );
       default:
         return UnknownMsg(raw: json);
     }
   }
+}
+
+/// SDKRateLimitEvent → wire `rate_limit_info`。承载 claude.ai 订阅用户的
+/// 5h / 7d 窗口配额。我们用这个驱动 composer 上方的限流提示 chip。
+class RateLimitInfo {
+  final String status; // 'allowed' | 'allowed_warning' | 'rejected'
+  final int? resetsAt;
+  final String? rateLimitType;
+  final double? utilization;
+  final String? overageStatus;
+  final int? overageResetsAt;
+  final bool? isUsingOverage;
+  final bool? overageInUse;
+  final double? surpassedThreshold;
+
+  const RateLimitInfo({
+    required this.status,
+    this.resetsAt,
+    this.rateLimitType,
+    this.utilization,
+    this.overageStatus,
+    this.overageResetsAt,
+    this.isUsingOverage,
+    this.overageInUse,
+    this.surpassedThreshold,
+  });
+
+  factory RateLimitInfo.fromJson(Map<String, dynamic> j) => RateLimitInfo(
+        status: (j['status'] as String?) ?? 'allowed',
+        resetsAt: (j['resets_at'] as num?)?.toInt(),
+        rateLimitType: j['rate_limit_type'] as String?,
+        utilization: (j['utilization'] as num?)?.toDouble(),
+        overageStatus: j['overage_status'] as String?,
+        overageResetsAt: (j['overage_resets_at'] as num?)?.toInt(),
+        isUsingOverage: j['is_using_overage'] as bool?,
+        overageInUse: j['overage_in_use'] as bool?,
+        surpassedThreshold: (j['surpassed_threshold'] as num?)?.toDouble(),
+      );
+}
+
+class RateLimitInfoMsg extends IncomingMessage {
+  final RateLimitInfo info;
+  final int? timestamp;
+  RateLimitInfoMsg({required this.info, this.timestamp});
+}
+
+/// SDKStatusMessage → wire `session_status`。
+///   - status='compacting': /compact 进行中
+///   - status='requesting': SDK 正在发请求等回包
+///   - status=null + compactResult: compaction 结束（success / failed）
+class SessionStatusMsg extends IncomingMessage {
+  final String? status; // 'compacting' | 'requesting' | null
+  final String? compactResult; // 'success' | 'failed' | null
+  final String? compactError;
+  SessionStatusMsg({this.status, this.compactResult, this.compactError});
+}
+
+/// SDKInformationalMessage → wire `informational`。SDK 自发的提示文案。
+class InformationalMsg extends IncomingMessage {
+  final String content;
+  final String level; // 'info' | 'notice' | 'suggestion' | 'warning'
+  final String? toolUseId;
+  InformationalMsg({
+    required this.content,
+    required this.level,
+    this.toolUseId,
+  });
+}
+
+/// SDKToolProgressMessage → wire `tool_progress`。
+/// SDK 周期推送的工具执行进度信号，给 tool_call_card 显示"已执行 Xs"。
+/// 仅 Claude SDK 路径触发，Codex 不发。
+class ToolProgressMsg extends IncomingMessage {
+  final String toolUseId;
+  final String toolName;
+  final double elapsedSeconds;
+  final String? parentToolUseId;
+  ToolProgressMsg({
+    required this.toolUseId,
+    required this.toolName,
+    required this.elapsedSeconds,
+    this.parentToolUseId,
+  });
 }
 
 /// jsonl 里的 `system / compact_boundary` 行：会话上下文被压缩的边界标记。

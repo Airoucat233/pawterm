@@ -200,8 +200,56 @@ export type ChatServerMessage =
   | ({ type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string; parent_tool_use_id?: string | null } & AgentEventMeta)
   | ({ type: 'stream_block_stop'; index: number; parent_tool_use_id?: string | null } & AgentEventMeta)
   | ({ type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'rate_limit_info'; info: RateLimitInfo; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'session_status'; status: SessionStatus; compact_result?: 'success' | 'failed' | null; compact_error?: string | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'informational'; content: string; level: InformationalLevel; tool_use_id?: string | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'tool_progress'; tool_use_id: string; tool_name: string; elapsed_seconds: number; parent_tool_use_id?: string | null; timestamp?: number } & AgentEventMeta)
   | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
+
+// ============== Session Status / Informational ==============
+
+/**
+ * SDK 当前正在进行的内部操作。null 表示空闲（无内部操作进行中）。
+ *   - 'compacting': 正在压缩会话上下文（用户触发 /compact 或自动触发）
+ *   - 'requesting': 正在向 Anthropic API 发请求等回包
+ * SDK 在状态进入和退出时都会推送（退出时 status=null + 可选的 compact_result）。
+ */
+export type SessionStatus = 'compacting' | 'requesting' | null;
+
+/**
+ * SDK 自发的提示消息级别：
+ *   - 'info': 极弱提示（默认隐藏）
+ *   - 'notice': 灰色 inactive 渲染
+ *   - 'suggestion'/'warning': 显著渲染
+ */
+export type InformationalLevel = 'info' | 'notice' | 'suggestion' | 'warning';
+
+// ============== Rate Limits ==============
+
+/**
+ * Claude.ai 订阅用户的限流信息，SDK 通过 SDKRateLimitEvent 推送。
+ * 字段含义同 SDK：
+ *   - status: 'allowed' 正常 / 'allowed_warning' 接近阈值 / 'rejected' 已限流
+ *   - rate_limit_type: 5h 窗口 / 7d 窗口 / overage（充值额度）
+ *   - utilization: 0-1，当前窗口已用比例
+ *   - resets_at: 当前窗口重置 unix 毫秒时间戳
+ *   - overage_*: 充值额度相关，没开通的话全为 null/undefined
+ */
+export type RateLimitStatus = 'allowed' | 'allowed_warning' | 'rejected';
+export type RateLimitType = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'overage';
+
+export interface RateLimitInfo {
+  status: RateLimitStatus;
+  resets_at?: number | null;
+  rate_limit_type?: RateLimitType | null;
+  utilization?: number | null;
+  overage_status?: RateLimitStatus | null;
+  overage_resets_at?: number | null;
+  is_using_overage?: boolean | null;
+  overage_in_use?: boolean | null;
+  surpassed_threshold?: number | null;
+}
 
 export type ContentBlock =
   | { type: 'text'; text: string }
