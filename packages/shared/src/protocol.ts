@@ -34,7 +34,20 @@ export interface ClaudeRuntime {
   agent: 'claude';
   model?: string;
   permission_mode: PermissionMode;
+  /**
+   * 扩展推理（thinking）配置。可选，未指定时 SDK 自行决定默认（Opus 4.6+ 默认 adaptive）。
+   *   - adaptive: Claude 自行决定何时/多少 thinking（Opus 4.6+）
+   *   - enabled: 固定 token 预算（旧模型）
+   *   - disabled: 完全关闭 extended thinking
+   * 字段命名与 SDK ThinkingConfig 保持一致，方便服务端透传。
+   */
+  thinking?: ThinkingConfig;
 }
+
+export type ThinkingConfig =
+  | { type: 'adaptive'; display?: 'summarized' | 'omitted' }
+  | { type: 'enabled'; budget_tokens?: number; display?: 'summarized' | 'omitted' }
+  | { type: 'disabled' };
 
 export interface CodexRuntime {
   agent: 'codex';
@@ -200,6 +213,7 @@ export type ChatServerMessage =
   | ({ type: 'stream_delta'; index: number; kind: 'text' | 'thinking'; text: string; parent_tool_use_id?: string | null } & AgentEventMeta)
   | ({ type: 'stream_block_stop'; index: number; parent_tool_use_id?: string | null } & AgentEventMeta)
   | ({ type: 'compact_boundary'; trigger: string | null; pre_tokens: number | null; post_tokens: number | null; duration_ms: number | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'thinking_tokens'; estimated_tokens: number; estimated_tokens_delta: number; timestamp?: number } & AgentEventMeta)
   | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
 
