@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/protocol.dart';
 import '../state/prefs.dart';
+import '../state/tool_progress_state.dart';
 import '../theme.dart';
 import 'diff_view.dart';
 
@@ -114,6 +115,29 @@ class _ToolCallCardState extends ConsumerState<ToolCallCard> {
                         alignEnd: isFileChange,
                       ),
                     ),
+                    // SDK 周期推送的工具进度：仅在还没出 result 时显示。
+                    // toolProgressProvider 只在 Claude session 里被写入，
+                    // 这里读取相当于"有进度信号就显示"——Codex 永远没值。
+                    if (result == null)
+                      Builder(builder: (_) {
+                        final elapsed = ref
+                            .watch(toolProgressProvider)[toolUse.id];
+                        if (elapsed == null || elapsed < 1) {
+                          return const SizedBox.shrink();
+                        }
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: Text(
+                            '${elapsed.round()}s',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              color: t.textDim,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        );
+                      }),
                     _statusBadge(t),
                     if (canExpand) ...[
                       const SizedBox(width: 6),

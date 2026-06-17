@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../i18n/locale_provider.dart';
+import '../state/session_status_state.dart';
 
 /// claude-code CLI 风格的字符 spinner。
 /// 字符序列复刻自 `src/components/Spinner/utils.ts`（macOS 集合）。
@@ -157,6 +158,11 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
 
   String _label(WidgetRef ref) {
     final s = ref.watch(stringsProvider);
+    // SDK 内部状态优先级最高：compacting 直接覆盖普通 mode 文案。
+    // 这只在 Claude session 上会触发（写 provider 的地方做了 agent 守卫），
+    // Codex session 永远是 null，照常走下面的 mode switch。
+    final claudeStatus = ref.watch(claudeSessionStatusProvider);
+    if (claudeStatus == 'compacting') return '正在压缩上下文…';
     switch (widget.mode) {
       case CcStreamMode.requesting:
         return s.spinnerRequesting;

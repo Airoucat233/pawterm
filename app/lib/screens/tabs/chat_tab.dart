@@ -29,9 +29,12 @@ import '../../state/open_chat_windows.dart';
 import '../../state/prefs.dart';
 import '../../state/connection_resolver.dart';
 import '../../state/projects_store.dart';
+import '../../state/rate_limit_state.dart';
 import '../../state/server_config.dart';
+import '../../state/session_status_state.dart';
 import '../../state/streaming_foreground_service.dart';
 import '../../state/todo_list.dart';
+import '../../state/tool_progress_state.dart';
 import '../../theme.dart';
 import '../../utils/time_format.dart';
 import '../../widgets/cc_spinner.dart';
@@ -1761,6 +1764,47 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // 实时也可能收到（用户在会话中触发了 /compact）。
         _messages.add(msg);
         _debugTrack(msg, json);
+      } else if (msg is RateLimitInfoMsg) {
+        // 限流是账号级状态，不进消息流；写到全局 provider 给 composer chip 用。
+        ref.read(rateLimitInfoProvider.notifier).state = msg.info;
+      } else if (msg is SessionStatusMsg) {
+        // SDK 内部状态：'compacting' / 'requesting' / null。
+        // 只在 Claude 路径上来；写全局 provider 给状态条用。
+        // 不进消息流。
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude) {
+          ref.read(claudeSessionStatusProvider.notifier).state = msg.status;
+        }
+      } else if (msg is InformationalMsg) {
+        // SDK 自发提示：warning/suggestion 才用 SnackBar 弹出，info/notice 静默。
+        // 同样只对 Claude session 显示。
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude &&
+            (msg.level == 'warning' || msg.level == 'suggestion')) {
+          final t = AppTokens.of(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(msg.content,
+                  style: const TextStyle(fontSize: 12.5)),
+              backgroundColor:
+                  msg.level == 'warning' ? t.error : t.warning,
+              duration: const Duration(seconds: 5),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      } else if (msg is ToolProgressMsg) {
+        // 工具进度：周期推送当前工具已执行多少秒。仅 Claude；写到全局
+        // provider 给 tool_call_card 读取。tool 结果到达时由
+        // _applyAssistantSideEffects 显式清理对应 entry。
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude && msg.toolUseId.isNotEmpty) {
+          final notifier = ref.read(toolProgressProvider.notifier);
+          notifier.state = {
+            ...notifier.state,
+            msg.toolUseId: msg.elapsedSeconds,
+          };
+        }
       } else {
         _messages.add(msg);
         _debugTrack(msg, json);
@@ -1813,6 +1857,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (changed) {
           ref.read(todoUpdatedAtProvider.notifier).state =
               DateTime.now().millisecondsSinceEpoch;
+        }
+      }
+      // 工具结果到达 → 清理对应的 toolProgressProvider entry，避免长会话累积。
+      if (block is ToolResultBlock && block.toolUseId.isNotEmpty) {
+        final notifier = ref.read(toolProgressProvider.notifier);
+        if (notifier.state.containsKey(block.toolUseId)) {
+          final next = Map<String, double>.from(notifier.state);
+          next.remove(block.toolUseId);
+          notifier.state = next;
         }
       }
     }
@@ -3622,6 +3675,12 @@ class _Composer extends ConsumerWidget {
     final t = AppTokens.of(context);
     final conn = ref.watch(activeConnectionProvider);
     final model = ref.watch(currentModelProvider);
+    // 限流提示：只在 SDK 推过 RateLimitInfo 且 status != 'allowed' 时显示。
+    // 仅 Claude 适用；Codex 走 OpenAI 自己的计费。
+    final rateLimitInfo = ref.watch(rateLimitInfoProvider);
+    final showRateChip = agent == AgentKind.claude &&
+        rateLimitInfo != null &&
+        rateLimitInfo.status != 'allowed';
     // canSend：非 busy 且附件就绪才能直接发。
     // canQueue：busy 中且有文字，点击可排队。
     // busy + !hasText：显示停止按钮。
@@ -3637,7 +3696,16 @@ class _Composer extends ConsumerWidget {
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        child: Container(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (showRateChip)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _RateLimitChip(info: rateLimitInfo),
+              ),
+            Container(
           decoration: BoxDecoration(
             color: t.surface,
             borderRadius: BorderRadius.circular(14),
@@ -3795,6 +3863,8 @@ class _Composer extends ConsumerWidget {
               ),
             ],
           ),
+            ),
+          ],
         ),
       ),
     );
@@ -3810,6 +3880,100 @@ class _Composer extends ConsumerWidget {
       if (candidate.id == id) return candidate;
     }
     return ModelOption.custom(id);
+  }
+}
+
+/// Composer 上方的限流提示 chip。
+/// - allowed_warning: 橙色，显示"5h 配额 87%"
+/// - rejected: 红色，显示"已限流 · 14:32 重置"
+///
+/// 用 utilization 字段渲染百分比，resetsAt 渲染倒计时。SDK 推送的事件
+/// 只在状态变化时来，不会高频刷新；这里也不订阅 ticker——一分钟内
+/// 准确度足够，下一条事件来时自然更新。
+class _RateLimitChip extends StatelessWidget {
+  final RateLimitInfo info;
+  const _RateLimitChip({required this.info});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final isRejected = info.status == 'rejected';
+    final color = isRejected ? t.error : t.warning;
+    final label = _label();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.30), width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isRejected ? Icons.block_rounded : Icons.warning_amber_rounded,
+            size: 14,
+            color: color,
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _label() {
+    final window = _windowLabel(info.rateLimitType);
+    if (info.status == 'rejected') {
+      final reset = _resetText(info.resetsAt);
+      return reset == null
+          ? '$window 配额已用尽'
+          : '$window 配额已用尽 · $reset 重置';
+    }
+    // allowed_warning
+    final pct = info.utilization;
+    final pctText = pct == null ? '' : ' ${(pct * 100).round()}%';
+    return '$window 配额$pctText（接近上限）';
+  }
+
+  String _windowLabel(String? type) {
+    return switch (type) {
+      'five_hour' => '5h',
+      'seven_day' => '7d',
+      'seven_day_opus' => '7d Opus',
+      'seven_day_sonnet' => '7d Sonnet',
+      'overage' => '充值',
+      _ => '当前',
+    };
+  }
+
+  /// 把 resetsAt epoch ms 转成 "HH:mm" 或 "Xd Yh"（>24h）。
+  /// null 时返回 null（让调用方决定是否拼接）。
+  String? _resetText(int? resetsAt) {
+    if (resetsAt == null) return null;
+    final reset = DateTime.fromMillisecondsSinceEpoch(resetsAt);
+    final now = DateTime.now();
+    final diff = reset.difference(now);
+    if (diff.isNegative) return null;
+    if (diff.inHours >= 24) {
+      final days = diff.inDays;
+      final hours = diff.inHours - days * 24;
+      return '${days}d${hours}h 后';
+    }
+    final hh = reset.hour.toString().padLeft(2, '0');
+    final mm = reset.minute.toString().padLeft(2, '0');
+    return '$hh:$mm';
   }
 }
 
