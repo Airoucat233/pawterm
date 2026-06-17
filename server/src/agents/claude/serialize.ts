@@ -39,6 +39,18 @@ export function messageToWire(msg: any): any | null {
           duration_ms: meta.durationMs ?? null,
         };
       }
+      // SDKThinkingTokensMessage: SDK 估算的当前 thinking 块累计 token 数 + 增量。
+      // 在 redacted-thinking 阶段（API 只回 ping）的 spinner / pill 进度用。
+      if (msg.subtype === 'thinking_tokens') {
+        const estimated = (msg as { estimated_tokens?: number }).estimated_tokens;
+        const delta = (msg as { estimated_tokens_delta?: number }).estimated_tokens_delta;
+        if (typeof estimated !== 'number') return null;
+        return {
+          type: 'thinking_tokens',
+          estimated_tokens: estimated,
+          estimated_tokens_delta: typeof delta === 'number' ? delta : 0,
+        };
+      }
       return {
         type: 'system',
         subtype: msg.subtype ?? null,

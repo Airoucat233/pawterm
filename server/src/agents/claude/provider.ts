@@ -54,6 +54,7 @@ export class ClaudeAgentProvider implements AgentProvider<'claude'> {
       permissionMode: runtime.permission_mode,
       ...(sessionInfo ? { resume: input.sessionId } : { sessionId: input.sessionId }),
       model: runtime.model,
+      ...(runtime.thinking ? { thinking: runtime.thinking } : {}),
       askRegistry,
     });
     session.pushUserMessage(input.text);

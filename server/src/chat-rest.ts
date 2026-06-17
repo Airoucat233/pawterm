@@ -385,6 +385,7 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           permissionMode: claudeRuntime.permission_mode,
           ...(sessionInfo ? { resume: uuid } : { sessionId: uuid }),
           model: claudeRuntime.model,
+          ...(claudeRuntime.thinking ? { thinking: claudeRuntime.thinking } : {}),
           askRegistry,
         });
 

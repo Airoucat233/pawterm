@@ -1,8 +1,33 @@
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type Options,
+  type ThinkingConfig as SdkThinkingConfig,
+} from '@anthropic-ai/claude-agent-sdk';
 
-import type { PermissionMode } from '@pawterm/shared';
+import type { PermissionMode, ThinkingConfig } from '@pawterm/shared';
 import { buildAgentEnv } from '../../agent-env.js';
 import { type AskUserQuestionRegistry, makeAskUserMcpServer } from '../../ask-user-tool.js';
+
+/**
+ * Wire 的 ThinkingConfig 用 snake_case（budget_tokens），SDK 期望 camelCase
+ * （budgetTokens）。其他字段（type, display）两边一致，直接展开。
+ */
+function thinkingConfigToSdk(config: ThinkingConfig): SdkThinkingConfig {
+  if (config.type === 'enabled') {
+    return {
+      type: 'enabled',
+      ...(config.budget_tokens !== undefined ? { budgetTokens: config.budget_tokens } : {}),
+      ...(config.display !== undefined ? { display: config.display } : {}),
+    };
+  }
+  if (config.type === 'adaptive') {
+    return {
+      type: 'adaptive',
+      ...(config.display !== undefined ? { display: config.display } : {}),
+    };
+  }
+  return { type: 'disabled' };
+}
 
 /**
  * One ClaudeSDK conversation. We use the SDK's streaming `query()` with an
@@ -15,6 +40,11 @@ export class ChatSession {
   readonly resume?: string;
   readonly sessionId?: string;
   readonly model?: string;
+  /**
+   * 用户在 runtime 中显式设置的 thinking 配置。未指定时让 SDK 用默认行为
+   * （Opus 4.6+ 默认 adaptive）。设置后会进入 SDK query options.thinking。
+   */
+  readonly thinking?: ThinkingConfig;
 
   private inputResolver?: (msg: any) => void;
   private inputQueue: any[] = [];
@@ -28,6 +58,7 @@ export class ChatSession {
     resume?: string;
     sessionId?: string;
     model?: string;
+    thinking?: ThinkingConfig;
     askRegistry: AskUserQuestionRegistry;
   }) {
     this.cwd = opts.cwd;
@@ -35,6 +66,7 @@ export class ChatSession {
     this.resume = opts.resume;
     this.sessionId = opts.sessionId;
     this.model = opts.model;
+    this.thinking = opts.thinking;
     this.askRegistry = opts.askRegistry;
   }
 
@@ -89,6 +121,9 @@ export class ChatSession {
           ? { sessionId: this.sessionId }
           : {}),
       ...(this.model ? { model: this.model } : {}),
+      // ThinkingConfig wire 字段命名是 snake_case（budget_tokens），SDK 期望
+      // camelCase（budgetTokens）；这里做一次转换。
+      ...(this.thinking ? { thinking: thinkingConfigToSdk(this.thinking) } : {}),
     };
     this.iter = query({ prompt: this.inputGen.call(this), options });
     return this.iter as unknown as AsyncIterableIterator<any>;
