@@ -75,11 +75,20 @@ export class ChatSession {
       // Native built-in AskUserQuestion path: checkPermissions returns behavior:'ask',
       // which triggers canUseTool. We suspend here (register 'native') and wait for
       // /chat/answer — same client flow as the MCP path, different internal resolver shape.
+      //
+      // 其他 tool 在 'ask' 路径下统一放行——我们的安全模型靠 cwd 白名单 +
+      // permission_mode（acceptEdits / bypassPermissions）把控，到这一层就该信任。
+      // PermissionResultAllow 强制要求 updatedInput 字段（Zod schema），缺了会
+      // 抛 "expected record, received undefined" 让整个 session 挂掉。这里
+      // 透传 input 不修改即可满足 schema。
       canUseTool: async (toolName, input, opts) => {
         if (toolName === 'AskUserQuestion') {
           return this.askRegistry.register('native', opts.toolUseID, input as Record<string, unknown>);
         }
-        return { behavior: 'allow' as const };
+        return {
+          behavior: 'allow' as const,
+          updatedInput: input as Record<string, unknown>,
+        };
       },
       ...(bypassing ? { allowDangerouslySkipPermissions: true } : {}),
       // resume takes priority; sessionId is for brand-new sessions only
