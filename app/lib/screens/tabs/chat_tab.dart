@@ -31,6 +31,7 @@ import '../../state/connection_resolver.dart';
 import '../../state/projects_store.dart';
 import '../../state/server_config.dart';
 import '../../state/streaming_foreground_service.dart';
+import '../../state/tasks_state.dart';
 import '../../state/todo_list.dart';
 import '../../theme.dart';
 import '../../utils/time_format.dart';
@@ -39,6 +40,7 @@ import '../../widgets/codex_approval_card.dart';
 import '../../widgets/inspiration_drawer.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/session_files_drawer.dart';
+import '../../widgets/tasks_chip.dart';
 import '../../widgets/todo_chip.dart';
 import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1638,6 +1640,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
         _currentBlockKind = null;
+        // 一轮结束 → 清掉已完成的后台 task，保留运行中的（用户可能在
+        // 下一轮继续观察）。
+        ref.read(tasksProvider.notifier).purgeCompleted();
         _messages.add(msg);
         _debugTrack(msg, json);
         _localUserEchoes.removeWhere((echo) => echo.serverAcked);
@@ -1761,6 +1766,35 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // 实时也可能收到（用户在会话中触发了 /compact）。
         _messages.add(msg);
         _debugTrack(msg, json);
+      } else if (msg is TaskStartedMsg) {
+        // SDK 0.3.x 后台 task 生命周期：仅 Claude session 写入 tasks store。
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude) {
+          ref.read(tasksProvider.notifier).start(msg);
+        }
+      } else if (msg is TaskUpdatedMsg) {
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude) {
+          ref.read(tasksProvider.notifier).update(msg);
+        }
+      } else if (msg is TaskProgressMsg) {
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude) {
+          ref.read(tasksProvider.notifier).progress(msg);
+        }
+      } else if (msg is TaskNotificationMsg) {
+        // SDK 0.3.x 路径：有 task_id（store 里有对应 entry）就合并终态。
+        // harness XML 路径：task_id 为 null 时不进 store，让 message_view
+        // 的现有 InlineTaskNotification 渲染处理。
+        final session = ref.read(currentSessionProvider);
+        if (session?.agent == AgentKind.claude && msg.taskId != null) {
+          ref.read(tasksProvider.notifier).notify(msg);
+        }
+        // 老路径：仍按原逻辑加入消息流（如果不是 SDK 路径触发的）。
+        if (msg.taskId == null || !msg.skipTranscript) {
+          _messages.add(msg);
+          _debugTrack(msg, json);
+        }
       } else {
         _messages.add(msg);
         _debugTrack(msg, json);
@@ -2845,16 +2879,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             dimColor: t.textDim,
             trailing: const TodoChip(),
             actions: [
+              // tasks chip 只在有活跃后台 task 时显示（内部判断）
+              const TasksChip(),
               if (_unrespondedUserText != null)
                 _ReEditAction(onReEdit: _reEditLastMessage),
             ],
           )
-        else if (ref.watch(todoListProvider).isNotEmpty)
-          // 非 streaming 也要看到任务进度条 —— 单独占一行
+        else if (ref.watch(todoListProvider).isNotEmpty ||
+            ref.watch(activeTasksCountProvider) > 0)
+          // 非 streaming 也要看到 todo / tasks 进度 —— 单独占一行
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 4, 12, 4),
             child: Row(
-              children: [Spacer(), TodoChip()],
+              children: [Spacer(), TasksChip(), SizedBox(width: 6), TodoChip()],
             ),
           ),
         if (_pending.isNotEmpty)
