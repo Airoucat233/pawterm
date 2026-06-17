@@ -110,7 +110,38 @@ abstract class IncomingMessage {
       case 'task_notification':
         return TaskNotificationMsg(
           taskId: json['task_id'] as String?,
+          toolUseId: json['tool_use_id'] as String?,
           status: json['status'] as String?,
+          summary: json['summary'] as String?,
+          outputFile: json['output_file'] as String?,
+          usage: _parseTaskUsage(json['usage']),
+          skipTranscript: json['skip_transcript'] as bool? ?? false,
+        );
+      case 'task_started':
+        return TaskStartedMsg(
+          taskId: json['task_id'] as String? ?? '',
+          toolUseId: json['tool_use_id'] as String?,
+          description: json['description'] as String? ?? '',
+          subagentType: json['subagent_type'] as String?,
+          taskType: json['task_type'] as String?,
+          workflowName: json['workflow_name'] as String?,
+          prompt: json['prompt'] as String?,
+          skipTranscript: json['skip_transcript'] as bool? ?? false,
+        );
+      case 'task_updated':
+        return TaskUpdatedMsg(
+          taskId: json['task_id'] as String? ?? '',
+          patch: TaskStatePatch.fromJson(
+              Map<String, dynamic>.from(json['patch'] ?? const {})),
+        );
+      case 'task_progress':
+        return TaskProgressMsg(
+          taskId: json['task_id'] as String? ?? '',
+          toolUseId: json['tool_use_id'] as String?,
+          description: json['description'] as String? ?? '',
+          subagentType: json['subagent_type'] as String?,
+          usage: _parseTaskUsage(json['usage']),
+          lastToolName: json['last_tool_name'] as String?,
           summary: json['summary'] as String?,
         );
       case 'rate_limit_info':
@@ -149,6 +180,15 @@ abstract class IncomingMessage {
         return UnknownMsg(raw: json);
     }
   }
+}
+
+TaskUsage? _parseTaskUsage(dynamic raw) {
+  if (raw is! Map) return null;
+  return TaskUsage(
+    totalTokens: (raw['total_tokens'] as num?)?.toInt() ?? 0,
+    toolUses: (raw['tool_uses'] as num?)?.toInt() ?? 0,
+    durationMs: (raw['duration_ms'] as num?)?.toInt() ?? 0,
+  );
 }
 
 /// SDKRateLimitEvent → wire `rate_limit_info`。承载 claude.ai 订阅用户的
@@ -375,15 +415,122 @@ class UnknownMsg extends IncomingMessage {
 /// Harness 注入的后台任务通知（如后台 Agent 完成/失败）。
 /// 由 server/src/serialize.ts 从 XML `<task-notification>` 块解析而来。
 class TaskNotificationMsg extends IncomingMessage {
-  /// 触发本通知的 task_id（Task 工具调用的 tool_use_id）。
+  /// 触发本通知的 task_id（Task 工具调用的 tool_use_id 或 SDK 后台任务 ID）。
   final String? taskId;
 
-  /// 任务状态：'completed' | 'killed' | 'failed' | 'info' 等。
+  /// SDK 0.3.x 后台 task：触发它的 tool_use_id。harness XML 路径下为 null。
+  final String? toolUseId;
+
+  /// 任务状态：'completed' | 'killed' | 'failed' | 'stopped' | 'info' 等。
   final String? status;
 
   /// 人读摘要，如 "Task completed successfully"。
   final String? summary;
-  TaskNotificationMsg({this.taskId, this.status, this.summary});
+
+  /// SDK 0.3.x 后台 task：完整输出文件路径（仅 'shell' 类 task 有）。
+  final String? outputFile;
+
+  /// SDK 0.3.x 后台 task：token / 工具使用统计。
+  final TaskUsage? usage;
+
+  /// 设为 true 时建议从 transcript 隐藏，仅在 tasks panel 显示。
+  final bool skipTranscript;
+
+  TaskNotificationMsg({
+    this.taskId,
+    this.toolUseId,
+    this.status,
+    this.summary,
+    this.outputFile,
+    this.usage,
+    this.skipTranscript = false,
+  });
+}
+
+/// SDK 0.3.x BackgroundTask 通用 usage 字段。
+class TaskUsage {
+  final int totalTokens;
+  final int toolUses;
+  final int durationMs;
+  const TaskUsage({
+    required this.totalTokens,
+    required this.toolUses,
+    required this.durationMs,
+  });
+}
+
+/// SDKTaskUpdatedMessage.patch 的 Dart 镜像。
+class TaskStatePatch {
+  final String? status; // 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'paused'
+  final String? description;
+  final int? endTime;
+  final int? totalPausedMs;
+  final String? error;
+  final bool? isBackgrounded;
+
+  const TaskStatePatch({
+    this.status,
+    this.description,
+    this.endTime,
+    this.totalPausedMs,
+    this.error,
+    this.isBackgrounded,
+  });
+
+  factory TaskStatePatch.fromJson(Map<String, dynamic> j) => TaskStatePatch(
+        status: j['status'] as String?,
+        description: j['description'] as String?,
+        endTime: (j['end_time'] as num?)?.toInt(),
+        totalPausedMs: (j['total_paused_ms'] as num?)?.toInt(),
+        error: j['error'] as String?,
+        isBackgrounded: j['is_backgrounded'] as bool?,
+      );
+}
+
+class TaskStartedMsg extends IncomingMessage {
+  final String taskId;
+  final String? toolUseId;
+  final String description;
+  final String? subagentType;
+  final String? taskType;
+  final String? workflowName;
+  final String? prompt;
+  final bool skipTranscript;
+  TaskStartedMsg({
+    required this.taskId,
+    this.toolUseId,
+    required this.description,
+    this.subagentType,
+    this.taskType,
+    this.workflowName,
+    this.prompt,
+    this.skipTranscript = false,
+  });
+}
+
+class TaskUpdatedMsg extends IncomingMessage {
+  final String taskId;
+  final TaskStatePatch patch;
+  TaskUpdatedMsg({required this.taskId, required this.patch});
+}
+
+class TaskProgressMsg extends IncomingMessage {
+  final String taskId;
+  final String? toolUseId;
+  final String description;
+  final String? subagentType;
+  final TaskUsage? usage;
+  final String? lastToolName;
+  final String? summary;
+  TaskProgressMsg({
+    required this.taskId,
+    this.toolUseId,
+    required this.description,
+    this.subagentType,
+    this.usage,
+    this.lastToolName,
+    this.summary,
+  });
 }
 
 sealed class ContentBlock {

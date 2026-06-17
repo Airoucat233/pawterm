@@ -218,6 +218,10 @@ export type ChatServerMessage =
   | ({ type: 'informational'; content: string; level: InformationalLevel; tool_use_id?: string | null; timestamp?: number } & AgentEventMeta)
   | ({ type: 'tool_progress'; tool_use_id: string; tool_name: string; elapsed_seconds: number; parent_tool_use_id?: string | null; timestamp?: number } & AgentEventMeta)
   | ({ type: 'thinking_tokens'; estimated_tokens: number; estimated_tokens_delta: number; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_started'; task_id: string; tool_use_id?: string | null; description: string; subagent_type?: string | null; task_type?: string | null; workflow_name?: string | null; prompt?: string | null; skip_transcript?: boolean; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_updated'; task_id: string; patch: TaskStatePatch; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_progress'; task_id: string; tool_use_id?: string | null; description: string; subagent_type?: string | null; usage?: TaskUsage; last_tool_name?: string | null; summary?: string | null; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'task_notification'; task_id: string | null; tool_use_id?: string | null; status: string; summary: string; output_file?: string | null; usage?: TaskUsage; skip_transcript?: boolean; timestamp?: number } & AgentEventMeta)
   | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
 
@@ -263,6 +267,40 @@ export interface RateLimitInfo {
   is_using_overage?: boolean | null;
   overage_in_use?: boolean | null;
   surpassed_threshold?: number | null;
+}
+
+// ============== Background Tasks ==============
+
+/**
+ * Claude Code 2.1 + claude-agent-sdk 0.3.x 后台 task 生命周期事件。
+ *
+ * 数据流：SDK emits SDKTask{Started,Updated,Progress,Notification}Message
+ * → server serialize 转 wire (task_started / task_updated / task_progress /
+ * task_notification) → app 累加到 tasks store。
+ *
+ * Task 类型：
+ *   - 'shell': 长跑命令（build/test/deploy）
+ *   - 'subagent': Task tool 触发的子 agent
+ *   - 'monitor': MCP 监听 task
+ *   - 'workflow': local_workflow
+ *
+ * 我们透传，UI 由客户端决定如何渲染。
+ */
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'paused';
+
+export interface TaskStatePatch {
+  status?: TaskStatus;
+  description?: string;
+  end_time?: number;
+  total_paused_ms?: number;
+  error?: string;
+  is_backgrounded?: boolean;
+}
+
+export interface TaskUsage {
+  total_tokens: number;
+  tool_uses: number;
+  duration_ms: number;
 }
 
 export type ContentBlock =
