@@ -613,7 +613,13 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
     },
   );
 
-  /** POST /chat/permission — change permission mode mid-run. */
+  /** POST /chat/permission — change permission mode mid-run.
+   *
+   * 同步两件事：
+   *   1. 改 live SDK iterator 的 permission_mode（对后续 tool 调用立刻生效）
+   *   2. setSessionRuntime 写回持久化的 runtime store（避免后续 REST 查询
+   *      或者 client reload 时看到 stale 值）
+   */
   app.post<{ Body: { uuid?: string; mode?: PermissionMode } }>(
     '/chat/permission',
     async (req, reply) => {
@@ -624,6 +630,8 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       if (!entry) { reply.code(404); return { error: 'no active run' }; }
       if (!entry.session) { reply.code(400); return { error: 'permission switch is only available for claude sessions' }; }
       await entry.session.setPermissionMode(mode);
+      // 持久化 patch：单字段更新，避免覆盖 runtime 里的 model / thinking 等字段。
+      setSessionRuntime('claude', entry.cwd, uuid, { permission_mode: mode });
       return { ok: true };
     },
   );

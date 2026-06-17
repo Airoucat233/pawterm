@@ -1179,10 +1179,26 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _switchPermissionMode(CcPermissionMode m) {
     final session = ref.read(currentSessionProvider);
     if (session?.agent != AgentKind.claude) return;
+    // 1) UI 全局态，picker 当前选中项靠这个
     ref.read(permissionModeProvider.notifier).set(m);
+    // 2) 写回 session.runtime['permission_mode']——之前漏了这一步，导致
+    //    UI 选中 bypass 但 session.runtime 还是入会时的初值 acceptEdits；
+    //    任何依赖 session.runtime 的逻辑（runtime sheet 的高亮、新建同 cwd
+    //    session 时的 default 计算等）都会拿到错的值。
+    final nextRuntime = {...session!.runtime, 'permission_mode': m.wire};
+    final next = session.copyWith(runtime: nextRuntime);
+    ref.read(currentSessionProvider.notifier).state = next;
+    _runtime.session = next;
+    // 3) 通知服务端切 live SDK + 持久化 sessionRuntime（服务端 /chat/permission
+    //    现在两件事都会做）
     if (_sessionId != null && _chatApi != null) {
       unawaited(_chatApi!.permission(_sessionId!, m.wire));
     }
+    // 4) 同时更新 agent-level overrides，让用户下次新建 session 直接拿到
+    //    用户偏好的 permission_mode（跨 cwd 共享）。
+    ref
+        .read(agentRuntimeOverridesProvider.notifier)
+        .patch(session.agent, {'permission_mode': m.wire});
   }
 
   void _patchRuntime(Map<String, dynamic> patch) {
@@ -1192,6 +1208,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final next = session.copyWith(runtime: nextRuntime);
     ref.read(currentSessionProvider.notifier).state = next;
     _runtime.session = next;
+    // 写入 agent-level overrides，跨 cwd 共享用户偏好——下次新建同 agent
+    // 的 session 时这些字段会自动 merge 到 default runtime 上。agent 这个
+    // 字段是 wire 标识不能 override，剔掉。
+    final overridePatch = Map<String, dynamic>.from(patch)..remove('agent');
+    if (overridePatch.isNotEmpty) {
+      ref
+          .read(agentRuntimeOverridesProvider.notifier)
+          .patch(session.agent, overridePatch);
+    }
     if (_sessionId != null && _chatApi != null) {
       unawaited(_chatApi!
           .runtime(_sessionId!, next.cwd, next.agent, next.runtime)

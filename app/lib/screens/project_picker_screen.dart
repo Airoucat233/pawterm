@@ -477,12 +477,18 @@ class _ProjectPickerScreenState extends ConsumerState<ProjectPickerScreen>
 
   Map<String, dynamic> _defaultRuntimeForAgent(AgentKind agent, String cwd) {
     final agents = ref.read(agentsProvider).valueOrNull ?? const <AgentInfo>[];
+    // 基底：服务端 /agents 返回的 defaultRuntime
+    Map<String, dynamic> base = CurrentSession.defaultRuntimeForAgent(agent);
     for (final info in agents) {
       if (info.kind == agent && info.defaultRuntime.isNotEmpty) {
-        return Map<String, dynamic>.from(info.defaultRuntime);
+        base = Map<String, dynamic>.from(info.defaultRuntime);
+        break;
       }
     }
-    return CurrentSession.defaultRuntimeForAgent(agent);
+    // 叠 agent-level overrides（跨 cwd 共享）
+    final overrides = ref.read(agentRuntimeOverridesProvider)[agent] ??
+        const <String, dynamic>{};
+    return {...base, ...overrides, 'agent': agent.wire};
   }
 
   void _showNewChatSheet(

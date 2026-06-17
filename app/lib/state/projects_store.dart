@@ -139,23 +139,29 @@ class CurrentSession {
 
 final currentSessionProvider = StateProvider<CurrentSession?>((ref) => null);
 
-final projectAgentRuntimeProvider = StateNotifierProvider<
-    ProjectAgentRuntimeNotifier, Map<String, Map<String, dynamic>>>(
-  (ref) => ProjectAgentRuntimeNotifier(),
-);
-
-class ProjectAgentRuntimeNotifier
-    extends StateNotifier<Map<String, Map<String, dynamic>>> {
-  ProjectAgentRuntimeNotifier() : super(const {}) {
+/// 每个 agent 的用户自定义 runtime 覆盖层（跨 cwd 共享）。
+///
+/// 数据流：用户在 runtime sheet 改 permission_mode / model / thinking 等任意
+/// 字段时，除了写当前 session.runtime + 通知服务端持久化之外，还会调
+/// agentRuntimeOverridesProvider.patch()，把这一份"用户偏好"按 agent 维度
+/// 保存下来。下次同 agent 新建任意 cwd 的 session 时，main_shell 的
+/// _defaultRuntimeForAgent 会把 overrides merge 进 server defaults。
+///
+/// 为什么不绑定 cwd：用户的意图（"我希望 Claude 默认走 bypassPermissions"）
+/// 通常是跨项目的偏好，按项目分实际只会让人困惑。Codex 那边也是按 agent
+/// 维度配 reasoning_effort / sandbox。
+///
+/// 存储：SharedPreferences key 'agent_runtime_overrides_v1'，
+/// `{claude: {permission_mode: 'bypassPermissions', model: '...'}, codex: {...}}`
+class AgentRuntimeOverridesNotifier
+    extends StateNotifier<Map<AgentKind, Map<String, dynamic>>> {
+  AgentRuntimeOverridesNotifier() : super(const {}) {
     _load();
   }
 
-  static const _key = 'project_agent_runtime_v1';
+  static const _key = 'agent_runtime_overrides_v1';
   bool _dirtyBeforeLoad = false;
   bool _loaded = false;
-
-  static String _runtimeKey(String cwd, AgentKind agent) =>
-      '${agent.wire}|$cwd';
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -164,39 +170,52 @@ class ProjectAgentRuntimeNotifier
       _loaded = true;
       return;
     }
-    final decoded = jsonDecode(raw) as Map<String, dynamic>;
-    final loaded = decoded.map((k, v) {
-      final runtime =
-          v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
-      return MapEntry(k, runtime);
-    });
-    state = _dirtyBeforeLoad ? {...loaded, ...state} : loaded;
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      final loaded = <AgentKind, Map<String, dynamic>>{};
+      decoded.forEach((k, v) {
+        if (v is! Map) return;
+        final agent = AgentKind.fromWire(k);
+        loaded[agent] = Map<String, dynamic>.from(v);
+      });
+      state = _dirtyBeforeLoad ? {...loaded, ...state} : loaded;
+    } catch (_) {
+      // 解析失败：清掉脏 prefs，回退到空 overrides。
+    }
     _loaded = true;
   }
 
-  Map<String, dynamic> runtimeFor(String cwd, AgentKind agent) {
-    final saved = state[_runtimeKey(cwd, agent)] ?? const <String, dynamic>{};
-    return {
-      ...CurrentSession.defaultRuntimeForAgent(agent),
-      ...saved,
-      'agent': agent.wire,
-    };
+  Map<String, dynamic> forAgent(AgentKind agent) =>
+      state[agent] ?? const <String, dynamic>{};
+
+  /// 增量合并 patch 到指定 agent 的 overrides，立刻持久化。
+  /// 传 null 值的字段会被显式移除（让 server default 重新生效）。
+  Future<void> patch(AgentKind agent, Map<String, dynamic> patch) async {
+    if (!_loaded) _dirtyBeforeLoad = true;
+    final existing = state[agent] ?? const <String, dynamic>{};
+    final merged = {...existing, ...patch};
+    merged.removeWhere((_, v) => v == null);
+    state = {...state, agent: merged};
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _key, jsonEncode(state.map((k, v) => MapEntry(k.wire, v))));
   }
 
-  Future<void> setRuntime(
-      String cwd, AgentKind agent, Map<String, dynamic> runtime) async {
+  Future<void> clear(AgentKind agent) async {
     if (!_loaded) _dirtyBeforeLoad = true;
-    final key = _runtimeKey(cwd, agent);
-    final next = {
-      ...CurrentSession.defaultRuntimeForAgent(agent),
-      ...runtime,
-      'agent': agent.wire,
-    };
-    state = {...state, key: next};
+    final next = Map<AgentKind, Map<String, dynamic>>.from(state);
+    next.remove(agent);
+    state = next;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, jsonEncode(state));
+    await prefs.setString(
+        _key, jsonEncode(state.map((k, v) => MapEntry(k.wire, v))));
   }
 }
+
+final agentRuntimeOverridesProvider = StateNotifierProvider<
+    AgentRuntimeOverridesNotifier, Map<AgentKind, Map<String, dynamic>>>(
+  (ref) => AgentRuntimeOverridesNotifier(),
+);
 
 class ModelOption {
   final String id;

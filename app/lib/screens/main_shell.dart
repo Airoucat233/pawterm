@@ -73,12 +73,18 @@ class _MainShellState extends ConsumerState<MainShell>
 
   Map<String, dynamic> _defaultRuntimeForAgent(AgentKind agent, String cwd) {
     final agents = ref.read(agentsProvider).valueOrNull ?? const <AgentInfo>[];
+    // 基底：服务端 /agents 返回的 defaultRuntime（per-agent，server 配的）
+    Map<String, dynamic> base = CurrentSession.defaultRuntimeForAgent(agent);
     for (final info in agents) {
       if (info.kind == agent && info.defaultRuntime.isNotEmpty) {
-        return Map<String, dynamic>.from(info.defaultRuntime);
+        base = Map<String, dynamic>.from(info.defaultRuntime);
+        break;
       }
     }
-    return CurrentSession.defaultRuntimeForAgent(agent);
+    // 叠用户的 agent-level overrides（跨 cwd 共享，从 runtime sheet 累积下来的偏好）。
+    final overrides = ref.read(agentRuntimeOverridesProvider)[agent] ??
+        const <String, dynamic>{};
+    return {...base, ...overrides, 'agent': agent.wire};
   }
 
   @override
