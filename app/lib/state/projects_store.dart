@@ -230,10 +230,15 @@ String _customModelLabel(String id) {
   return providerParts.isNotEmpty ? providerParts.last : trimmed;
 }
 
+// ID 跟 server `/models` 默认值、packages/shared protocol.ts 的 KNOWN_MODELS
+// 三处保持一致。Fable 是 Claude Code 2.1 引入的 coding 档位（"fable-mythos"），
+// 服务端 fallback 默认带上；列表里保留以便 picker 没拉到 server 数据时也能
+// 兜底显示一份和最新 CLI 对齐的清单。
 const knownModels = <ModelOption>[
   ModelOption('claude-sonnet-4-6', 'Sonnet 4.6', 'fast', '日常推荐'),
-  ModelOption('claude-opus-4-7', 'Opus 4.7', 'powerful', '深度推理'),
+  ModelOption('claude-opus-4-8', 'Opus 4.8', 'powerful', '深度推理'),
   ModelOption('claude-haiku-4-5', 'Haiku 4.5', 'cheap', '轻量快速'),
+  ModelOption('claude-fable-5', 'Fable 5', 'coding', 'Coding 优化'),
 ];
 
 final currentModelProvider =
