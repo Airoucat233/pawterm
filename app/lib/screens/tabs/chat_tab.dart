@@ -1816,6 +1816,24 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         }
       }
     }
+    _syncRuntimeModelFromAssistant(msg);
+  }
+
+  /// 把 assistant 消息里 SDK 实际使用的 model 回写到 runtime，让 picker
+  /// 显示真正在跑的模型——避免"客户端默认 Sonnet 4.6 但 SDK 实际在用别的"
+  /// 这种对不上的情况。仅当 runtime 没显式指定 model 时才同步（用户主动
+  /// 切换过就尊重选择，不被覆盖）。
+  void _syncRuntimeModelFromAssistant(AssistantMsg msg) {
+    final model = msg.model?.trim();
+    if (model == null || model.isEmpty) return;
+    final session = ref.read(currentSessionProvider);
+    if (session == null) return;
+    final existing = (session.runtime['model'] ?? '').toString().trim();
+    if (existing == model) return;
+    if (existing.isNotEmpty) return; // 用户已经选过，不要覆盖
+    final nextRuntime = {...session.runtime, 'model': model};
+    ref.read(currentSessionProvider.notifier).state =
+        session.copyWith(runtime: nextRuntime);
   }
 
   void _markAiOutputStarted() {
@@ -3838,22 +3856,27 @@ class _ModelPickerButtonState extends State<_ModelPickerButton> {
   @override
   void initState() {
     super.initState();
-    _prefetchCodexModel();
+    _prefetchServerModels();
   }
 
   @override
   void didUpdateWidget(covariant _ModelPickerButton oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.chatApi != widget.chatApi ||
-        oldWidget.agent != widget.agent ||
-        oldWidget.runtime['model'] != widget.runtime['model']) {
-      _prefetchCodexModel();
+        oldWidget.agent != widget.agent) {
+      _prefetchServerModels();
     }
   }
 
-  Future<void> _prefetchCodexModel() async {
-    if (widget.agent != AgentKind.codex || widget.chatApi == null) return;
-    if ((widget.runtime['model'] ?? '').toString().trim().isNotEmpty) return;
+  /// 拉服务端 `/models`，知道当前 agent 的"默认 current"和官方列表。
+  ///
+  /// 之前只在 codex 场景下拉，且 runtime 已有 model 时跳过 —— 导致 Claude
+  /// 的 picker 按钮一直拿不到 server 的 current 值，按钮上显示的永远是
+  /// 客户端 `knownModels.first`（"Sonnet 4.6"），跟 Claude Code CLI 实际
+  /// 使用的可能对不上。这里改成全 agent 都预拉一次，无论 runtime 是否
+  /// 已经写入 model。
+  Future<void> _prefetchServerModels() async {
+    if (widget.chatApi == null) return;
     if (_loadingModels) return;
     _loadingModels = true;
     try {
@@ -3929,20 +3952,42 @@ class _ModelPickerButtonState extends State<_ModelPickerButton> {
     return ModelOption.custom(currentId);
   }
 
+  /// 计算按钮上要显示的 ModelOption。优先级：
+  ///   1. runtime 显式设置的 model（带 label 的话尽量补全）
+  ///   2. server `/models` 返回的 current
+  ///   3. 父级算好的 widget.model（来自 _modelForRuntime / knownModels.first）
+  ///
+  /// 关键：之前对所有 runtimeId.isNotEmpty 都返回 `ModelOption.custom`，
+  /// 等于把已知模型的 label 丢了；现在改成先在 server 列表 + knownModels
+  /// 里找匹配，找不到再 custom。
   ModelOption _displayModel() {
     final runtimeId = (widget.runtime['model'] ?? '').toString().trim();
-    if (runtimeId.isNotEmpty) return ModelOption.custom(runtimeId);
-    if (widget.agent == AgentKind.codex) {
-      final currentId = (_serverModels?.current ?? '').trim();
-      if (currentId.isNotEmpty) {
-        for (final model
-            in _serverModels?.models ?? const <ServerModelInfo>[]) {
-          if (model.id == currentId) return ModelOption.fromServer(model);
-        }
-        return ModelOption.custom(currentId);
+    if (runtimeId.isNotEmpty) {
+      if (widget.model.id == runtimeId) return widget.model;
+      final serverMatch = _matchServer(runtimeId);
+      if (serverMatch != null) return serverMatch;
+      for (final candidate in knownModels) {
+        if (candidate.id == runtimeId) return candidate;
       }
+      return ModelOption.custom(runtimeId);
+    }
+    final serverCurrent = (_serverModels?.current ?? '').trim();
+    if (serverCurrent.isNotEmpty) {
+      final serverMatch = _matchServer(serverCurrent);
+      if (serverMatch != null) return serverMatch;
+      for (final candidate in knownModels) {
+        if (candidate.id == serverCurrent) return candidate;
+      }
+      return ModelOption.custom(serverCurrent);
     }
     return widget.model;
+  }
+
+  ModelOption? _matchServer(String id) {
+    for (final model in _serverModels?.models ?? const <ServerModelInfo>[]) {
+      if (model.id == id) return ModelOption.fromServer(model);
+    }
+    return null;
   }
 
   @override
