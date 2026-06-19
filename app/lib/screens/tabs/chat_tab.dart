@@ -2209,6 +2209,32 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     return toolResults;
   }
 
+  /// 渲染时判断 AI 是否在"等待用户操作"，返回对应 spinner 模式；都没有则 null
+  /// （照常用 _mode）。按"等到的是问题还是审批"区分文案/态，不按 agent——
+  /// Codex 只会命中审批，Claude 命中问题（以后接了工具审批也会命中审批）。
+  AiStreamMode? _pendingUserActionMode() {
+    final toolResults = _buildToolResultIndex();
+    // 待审批：Codex 现有；Claude 工具审批以后接进来也走这条。
+    if (_latestPendingCodexApproval(toolResults) != null) {
+      return AiStreamMode.awaitingApproval;
+    }
+    // 待回答：有个 AskUserQuestion 的 tool_use 还没配上 tool_result。
+    for (final m in _messages.reversed) {
+      final content = switch (m) {
+        AssistantMsg(:final content) => content,
+        _ => const <ContentBlock>[],
+      };
+      for (final b in content) {
+        if (b is ToolUseBlock &&
+            b.name.endsWith('AskUserQuestion') &&
+            !toolResults.containsKey(b.id)) {
+          return AiStreamMode.awaitingAnswer;
+        }
+      }
+    }
+    return null;
+  }
+
   // _scheduleCodexApprovalSideEffects / _showCodexApprovalSheetIfNeeded
   // 已移到 chat_tab_codex.dart，行为不变。
 
@@ -2237,6 +2263,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       AiStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
       AiStreamMode.responding => '生成回复',
       AiStreamMode.toolInput => '准备工具',
+      // _mode 不会被设成这两个（awaiting 只在渲染时由 _pendingUserActionMode
+      // 计算），列出仅为 switch 穷尽。
+      AiStreamMode.awaitingAnswer => '等待回答',
+      AiStreamMode.awaitingApproval => '等待确认',
     };
   }
 
@@ -2442,7 +2472,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (_busy && _busyStartedAt != null)
           AiSpinnerLine(
             startedAt: _busyStartedAt!,
-            mode: _mode,
+            // 在等用户回答/审批时覆盖成"等待"态（spinner 冻住变黄）。
+            mode: _pendingUserActionMode() ?? _mode,
             thoughtSeconds: _thoughtSeconds,
             color: t.accent,
             dimColor: t.textDim,
