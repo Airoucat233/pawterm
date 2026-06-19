@@ -1,7 +1,7 @@
 name: pawterm
 description: Mobile client for AI coding assistants — control Claude Code and more from your phone.
 publish_to: 'none'
-version: 0.8.9-prerelease.4+5
+version: 0.8.9-prerelease.5+6
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
