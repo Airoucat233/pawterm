@@ -1203,7 +1203,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   void _switchPermissionMode(CcPermissionMode m) {
     final session = ref.read(currentSessionProvider);
-    if (session?.agent != AgentKind.claude) return;
+    // 权限模式是一种 agent 能力：只有声明了 permissionMode 的 agent 才有这套
+    // default/acceptEdits/... 选择器（Codex 走 approval_policy，不是这套）。
+    if (!(session?.agent.profile.permissionMode ?? false)) return;
     // 1) UI 全局态，picker 当前选中项靠这个
     ref.read(permissionModeProvider.notifier).set(m);
     // 2) 写回 session.runtime['permission_mode']——之前漏了这一步，导致
@@ -2158,7 +2160,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         text: text,
         deviceId: _deviceId,
         model: isClaude ? model.id : null,
-        permissionMode: isClaude ? permMode.wire : null,
+        // 权限模式只对声明了该能力的 agent 传（Codex 走 approval_policy）。
+        permissionMode:
+            session.agent.profile.permissionMode ? permMode.wire : null,
         agent: session.agent,
         runtime: session.runtime,
       )
