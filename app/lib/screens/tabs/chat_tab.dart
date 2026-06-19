@@ -84,6 +84,29 @@ class _AttachmentState {
   });
 }
 
+/// Codex 专属的 per-session 运行时状态，从 god-runtime 抽出集中到这里
+/// （P3 plugin 架构第一步：runtime 瘦身）。包含 realtime item 快照与审批
+/// 生命周期的全部本地状态——这些只有 Codex 会话用得到。
+class _CodexRuntimeExt {
+  /// realtime SSE 快照：item UUID → 最新消息（upsert in place）。
+  final Map<String, IncomingMessage> codexRealtimeSnapshots = {};
+
+  /// 已决策的 Codex approval ID → 用户决定。
+  final Map<String, String> codexApprovalDecisions = {};
+
+  /// 已通知过的 approval ID，防止重复通知。
+  final Set<String> notifiedApprovalIds = {};
+
+  /// 已弹出过 approval bottom sheet 的 ID。
+  final Set<String> presentedApprovalSheetIds = {};
+
+  /// 因多个 approval 同时到达而被抑制显示的 ID。
+  final Set<String> suppressedApprovalSheetIds = {};
+
+  /// 最后被用户忽略的 approval ID（单一最新值）。
+  String? dismissedApprovalPopoverId;
+}
+
 class _ChatSessionRuntime {
   CurrentSession? session;
   ChatApi? chatApi;
@@ -120,13 +143,9 @@ class _ChatSessionRuntime {
   bool aiRespondedThisTurn = false;
   final List<LocalUserInput> localUserEchoes = [];
   final Set<String> seenRealtimeUuids = {};
-  final Map<String, IncomingMessage> codexRealtimeSnapshots = {};
   String? unrespondedUserText;
-  String? dismissedApprovalPopoverId;
-  final Map<String, String> codexApprovalDecisions = {};
-  final Set<String> notifiedApprovalIds = {};
-  final Set<String> presentedApprovalSheetIds = {};
-  final Set<String> suppressedApprovalSheetIds = {};
+  // Codex 专属运行时状态（realtime 快照 + 审批生命周期）集中在这里。
+  final _CodexRuntimeExt codex = _CodexRuntimeExt();
   final List<_AttachmentState> attachments = [];
   final Map<String, List<IncomingMessage>> subMsgs = {};
   final Map<String, StreamingAssistant> subStreaming = {};
@@ -268,7 +287,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// those must upsert in place to reveal final text/tool results.
   Set<String> get _seenRealtimeUuids => _runtime.seenRealtimeUuids;
   Map<String, IncomingMessage> get _codexRealtimeSnapshots =>
-      _runtime.codexRealtimeSnapshots;
+      _runtime.codex.codexRealtimeSnapshots;
 
   /// 上一轮用户消息的原文，仅在 AI 未响应就中断时保留。
   /// 非 null 时在输入框上方显示"重新编辑"快捷条。
@@ -277,7 +296,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _runtime.unrespondedUserText = value;
 
   Map<String, String> get _codexApprovalDecisions =>
-      _runtime.codexApprovalDecisions;
+      _runtime.codex.codexApprovalDecisions;
 
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
@@ -2467,10 +2486,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final api = runtime.chatApi;
     if (uuid == null || api == null) return;
     void markAnswered() {
-      runtime.notifiedApprovalIds.remove(requestId);
-      runtime.codexApprovalDecisions[requestId] =
+      runtime.codex.notifiedApprovalIds.remove(requestId);
+      runtime.codex.codexApprovalDecisions[requestId] =
           scope == 'session' ? 'accept:session' : decision;
-      runtime.dismissedApprovalPopoverId = requestId;
+      runtime.codex.dismissedApprovalPopoverId = requestId;
     }
 
     if (mounted && _isActiveRuntime(runtime)) {
@@ -2507,7 +2526,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final session = runtime.session;
     if (uuid == null || session == null) return;
     final requestId = approval.toolUse.id;
-    if (!runtime.notifiedApprovalIds.add(requestId)) return;
+    if (!runtime.codex.notifiedApprovalIds.add(requestId)) return;
     final payload = _completionPayloadFor(session, resumeId: uuid);
     final title = _approvalNotificationTitle(session, approval.toolUse.name);
     final body = _approvalNotificationBody(approval.toolUse);
@@ -2630,19 +2649,19 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   ) async {
     final requestId = approval.toolUse.id;
     if (!_isCurrentSessionRuntime(runtime)) return;
-    if (runtime.dismissedApprovalPopoverId == requestId) return;
-    if (runtime.suppressedApprovalSheetIds.contains(requestId)) return;
+    if (runtime.codex.dismissedApprovalPopoverId == requestId) return;
+    if (runtime.codex.suppressedApprovalSheetIds.contains(requestId)) return;
     final pendingApprovals = _withRuntime(
       runtime,
       () => _pendingCodexApprovals(_buildToolResultIndex()),
     );
     if (pendingApprovals.length > 1) {
-      runtime.suppressedApprovalSheetIds.addAll(
+      runtime.codex.suppressedApprovalSheetIds.addAll(
         pendingApprovals.map((item) => item.toolUse.id),
       );
       return;
     }
-    if (!runtime.presentedApprovalSheetIds.add(requestId)) return;
+    if (!runtime.codex.presentedApprovalSheetIds.add(requestId)) return;
 
     FocusManager.instance.primaryFocus?.unfocus();
     final submitted = await showModalBottomSheet<bool>(
@@ -2662,9 +2681,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     );
     if (!mounted) return;
     void markDismissed() {
-      runtime.dismissedApprovalPopoverId = requestId;
+      runtime.codex.dismissedApprovalPopoverId = requestId;
       if (submitted != true) {
-        runtime.presentedApprovalSheetIds.remove(requestId);
+        runtime.codex.presentedApprovalSheetIds.remove(requestId);
       }
     }
 
@@ -2729,7 +2748,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   ) {
     final pending = _pendingCodexApprovals(toolResults);
     for (final approval in pending) {
-      if (approval.toolUse.id != _runtime.dismissedApprovalPopoverId) {
+      if (approval.toolUse.id != _runtime.codex.dismissedApprovalPopoverId) {
         return approval;
       }
     }
