@@ -5,7 +5,7 @@
 
 // ============== Common ==============
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
 
 export type AgentKind = 'claude' | 'codex' | 'gemini';
 
