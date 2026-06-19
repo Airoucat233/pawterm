@@ -176,6 +176,16 @@ abstract class IncomingMessage {
           estimatedTokensDelta:
               (json['estimated_tokens_delta'] as num?)?.toInt() ?? 0,
         );
+      case 'tool_permission_request':
+        return ToolPermissionRequestMsg(
+          requestId: json['request_id'] as String? ?? '',
+          toolName: json['tool_name'] as String? ?? '',
+          input: Map<String, dynamic>.from(json['input'] ?? const {}),
+          title: json['title'] as String?,
+          displayName: json['display_name'] as String?,
+          description: json['description'] as String?,
+          safetyManual: json['safety_manual'] as bool? ?? false,
+        );
       default:
         return UnknownMsg(raw: json);
     }
@@ -271,6 +281,28 @@ class ToolProgressMsg extends IncomingMessage {
     required this.toolName,
     required this.elapsedSeconds,
     this.parentToolUseId,
+  });
+}
+
+/// Claude 工具审批请求：某个 tool_use（按 requestId = tool_use id 匹配）正在
+/// 等用户审批（对齐 Claude Code CLI）。客户端据此在该工具卡上渲染 允许/允许
+/// 且不再问/拒绝。不进消息流，存到 runtime 的待审批表里。
+class ToolPermissionRequestMsg extends IncomingMessage {
+  final String requestId;
+  final String toolName;
+  final Map<String, dynamic> input;
+  final String? title;
+  final String? displayName;
+  final String? description;
+  final bool safetyManual;
+  ToolPermissionRequestMsg({
+    required this.requestId,
+    required this.toolName,
+    required this.input,
+    this.title,
+    this.displayName,
+    this.description,
+    this.safetyManual = false,
   });
 }
 

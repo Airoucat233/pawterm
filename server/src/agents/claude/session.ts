@@ -7,6 +7,19 @@ import {
 import type { PermissionMode, ThinkingConfig } from '@pawterm/shared';
 import { buildAgentEnv } from '../../agent-env.js';
 import { type AskUserQuestionRegistry, makeAskUserMcpServer } from '../../ask-user-tool.js';
+import { ToolPermissionRegistry } from '../../tool-permission.js';
+
+/** server 通过这个回调把"某工具正在等待审批"广播给客户端（chat-rest 注入）。 */
+export interface ToolPermissionRequestEvent {
+  request_id: string;
+  tool_name: string;
+  input: Record<string, unknown>;
+  title?: string | null;
+  display_name?: string | null;
+  description?: string | null;
+  reason_type?: string | null;
+  safety_manual?: boolean;
+}
 
 /**
  * Wire 的 ThinkingConfig 用 snake_case（budget_tokens），SDK 期望 camelCase
@@ -51,6 +64,8 @@ export class ChatSession {
   private finished = false;
   private iter?: AsyncGenerator<any>;
   private readonly askRegistry: AskUserQuestionRegistry;
+  private readonly toolPermissionRegistry: ToolPermissionRegistry;
+  private readonly onToolPermissionRequest?: (req: ToolPermissionRequestEvent) => void;
 
   constructor(opts: {
     cwd: string;
@@ -60,6 +75,7 @@ export class ChatSession {
     model?: string;
     thinking?: ThinkingConfig;
     askRegistry: AskUserQuestionRegistry;
+    onToolPermissionRequest?: (req: ToolPermissionRequestEvent) => void;
   }) {
     this.cwd = opts.cwd;
     this.permissionMode = opts.permissionMode;
@@ -68,6 +84,17 @@ export class ChatSession {
     this.model = opts.model;
     this.thinking = opts.thinking;
     this.askRegistry = opts.askRegistry;
+    this.toolPermissionRegistry = new ToolPermissionRegistry();
+    this.onToolPermissionRequest = opts.onToolPermissionRequest;
+  }
+
+  /** 客户端经 /chat/tool-permission 回传决定，resolve 对应的 canUseTool。 */
+  answerToolPermission(
+    requestId: string,
+    decision: 'allow' | 'deny',
+    opts: { dontAskAgain?: boolean } = {},
+  ): boolean {
+    return this.toolPermissionRegistry.answer(requestId, decision, opts);
   }
 
   /** Build the async iterator the SDK will read user messages from. */
@@ -117,10 +144,38 @@ export class ChatSession {
         if (toolName === 'AskUserQuestion') {
           return this.askRegistry.register('native', opts.toolUseID, input as Record<string, unknown>);
         }
-        return {
-          behavior: 'allow' as const,
-          updatedInput: input as Record<string, unknown>,
-        };
+        // 走到这里 = SDK 上游（permission_mode / allow-deny 规则 / 安全工具
+        // 自动放行）没自动决定，需要用户拍板——对齐 Claude Code CLI 的交互审批。
+        // bypassPermissions 模式下 SDK 根本不调 canUseTool，所以这里天然只在
+        // default / acceptEdits / auto 等需要审批的模式触发。
+        const o = opts as Record<string, unknown>;
+        const toolUseId = opts.toolUseID;
+        // 诊断日志：记录每次进入审批路径的工具 + 当前 mode + SDK 给的升级原因。
+        // 方便核验"auto 模式下到底哪些工具会进 canUseTool"——若 auto 下普通工具
+        // 也进，说明需要按 classifier_approvable 收口（只在 safety 升级时弹）。
+        // 看日志：grep '\[canUseTool\]' ~/.config/pawterm/server.log（或测试服日志）。
+        console.error('[canUseTool]', JSON.stringify({
+          mode: this.permissionMode,
+          tool: toolName,
+          reason_type: (o.decision_reason_type as string) ?? null,
+          classifier_approvable: (o.classifier_approvable as boolean) ?? null,
+          blocked_path: (o.blockedPath as string) ?? null,
+        }));
+        this.onToolPermissionRequest?.({
+          request_id: toolUseId,
+          tool_name: toolName,
+          input: input as Record<string, unknown>,
+          title: (o.title as string) ?? null,
+          display_name: (o.displayName as string) ?? null,
+          description: (o.description as string) ?? null,
+          reason_type: (o.decision_reason_type as string) ?? null,
+          safety_manual: o.classifier_approvable === false,
+        });
+        return this.toolPermissionRegistry.register(
+          toolUseId,
+          input as Record<string, unknown>,
+          toolName,
+        );
       },
       ...(bypassing ? { allowDangerouslySkipPermissions: true } : {}),
       // resume takes priority; sessionId is for brand-new sessions only
@@ -199,6 +254,8 @@ export class ChatSession {
 
   close(): void {
     this.finished = true;
+    // 把挂起的工具审批按拒绝 resolve，避免 SDK / Promise 泄漏。
+    this.toolPermissionRegistry.rejectAll('session closed');
     if (this.inputResolver) {
       this.inputResolver(null);
     }

@@ -229,8 +229,24 @@ export type ChatServerMessage =
   | ({ type: 'task_updated'; task_id: string; patch: TaskStatePatch; timestamp?: number } & AgentEventMeta)
   | ({ type: 'task_progress'; task_id: string; tool_use_id?: string | null; description: string; subagent_type?: string | null; usage?: TaskUsage; last_tool_name?: string | null; summary?: string | null; timestamp?: number } & AgentEventMeta)
   | ({ type: 'task_notification'; task_id: string | null; tool_use_id?: string | null; status: string; summary: string; output_file?: string | null; usage?: TaskUsage; skip_transcript?: boolean; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'tool_permission_request'; request_id: string; tool_name: string; input: Record<string, unknown>; title?: string | null; display_name?: string | null; description?: string | null; reason_type?: string | null; safety_manual?: boolean; timestamp?: number } & AgentEventMeta)
   | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
+
+/**
+ * 工具审批请求（对齐 Claude Code CLI 的交互审批）。当 SDK 的 canUseTool 被调到
+ * （上游已按 permission_mode / 规则过滤，只剩需要用户拍板的工具），server 通过
+ * 这条消息把"此 tool_use（按 request_id = tool_use_id 匹配）正在等你审批"告诉
+ * 客户端；客户端渲染 允许 / 允许且不再问 / 拒绝，决定经 POST /chat/tool-permission
+ * 回传。仅 Claude 路径产生；Codex 用自己的 item/.../requestApproval。
+ */
+export interface ToolPermissionDecisionBody {
+  uuid: string;
+  request_id: string;
+  decision: 'allow' | 'deny';
+  /** CLI 的 "Yes, and don't ask again"：本会话内同名工具不再询问。 */
+  dont_ask_again?: boolean;
+}
 
 // ============== Session Status / Informational ==============
 

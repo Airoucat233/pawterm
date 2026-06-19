@@ -207,6 +207,25 @@ class ChatApi {
     );
   }
 
+  /// 回传 Claude 工具审批决定（allow/deny），对应 server 挂起的 canUseTool。
+  Future<void> toolPermission(
+    String uuid,
+    String requestId,
+    String decision, {
+    bool dontAskAgain = false,
+  }) async {
+    await http.post(
+      Uri.parse('$_apiBase/chat/tool-permission'),
+      headers: {'Content-Type': 'application/json', ..._auth},
+      body: jsonEncode({
+        'uuid': uuid,
+        'request_id': requestId,
+        'decision': decision,
+        if (dontAskAgain) 'dont_ask_again': true,
+      }),
+    );
+  }
+
   /// Fetch available models and current provider from the server.
   Future<ServerModels> fetchModels({AgentKind agent = AgentKind.claude}) async {
     final resp = await http.get(

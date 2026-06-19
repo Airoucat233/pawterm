@@ -37,12 +37,35 @@ extension _ClaudeChatLogic on _ChatTabState {
   /// tool progress / thinking tokens / 后台 task 生命周期）。命中并处理返回
   /// true，调用方（_handleWireMessage 中央分发）据此判定已消费；非 Claude 类型
   /// 返回 false，落回默认追加。与 Codex 的 _upsertCodexRealtimeSnapshot 对称。
+  /// 回传 Claude 工具审批决定，并从待审批表移除。
+  void _sendClaudeToolPermission(
+    String requestId,
+    String decision, {
+    bool dontAskAgain = false,
+  }) {
+    final uuid = _sessionId;
+    final api = _chatApi;
+    rebuild(() => _runtime.claudeToolApprovals.remove(requestId));
+    if (uuid != null && api != null) {
+      unawaited(api
+          .toolPermission(uuid, requestId, decision, dontAskAgain: dontAskAgain)
+          .catchError((Object e) {
+        if (mounted) showTopToast(context, '审批回传失败: $e');
+      }));
+    }
+  }
+
   bool _applyClaudeWireMessage(
     IncomingMessage msg,
     _ChatSessionRuntime eventRuntime,
     Map<String, dynamic> json,
   ) {
-    if (msg is SessionStatusMsg) {
+    if (msg is ToolPermissionRequestMsg) {
+      // 某工具正在等审批：存进待审批表，渲染层据此在该工具卡上显示
+      // 允许/允许且不再问/拒绝。不进消息流。
+      eventRuntime.claudeToolApprovals[msg.requestId] = msg;
+      return true;
+    } else if (msg is SessionStatusMsg) {
       // SDK 内部状态 'compacting'/'requesting'/null。按事件 session 的 key 写
       // family provider，后台 session 不会串到当前页面。不进消息流。
       final liveKey = _liveStatusKey(eventRuntime);
