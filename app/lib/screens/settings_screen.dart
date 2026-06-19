@@ -264,7 +264,6 @@ class _ConversationSettingsPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scrollToBottom = ref.watch(scrollToBottomOnSessionSwitchProvider);
     final fileToolExpanded = ref.watch(fileToolCardsExpandedProvider);
-    final rawInspect = ref.watch(rawInspectModeProvider);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
@@ -291,17 +290,6 @@ class _ConversationSettingsPage extends ConsumerWidget {
             value: fileToolExpanded,
             onChanged: (v) =>
                 ref.read(fileToolCardsExpandedProvider.notifier).set(v),
-          ),
-        ]),
-        const _SettingSection('高级'),
-        _SettingCard(children: [
-          _SwitchRow(
-            label: '原始事件检查',
-            subtitle: '长按消息查看 server 下发的原始事件，含 SDK / Codex 的 native 原生结构。仅排查问题时开启',
-            icon: Icons.data_object_outlined,
-            value: rawInspect,
-            onChanged: (v) =>
-                ref.read(rawInspectModeProvider.notifier).set(v),
           ),
         ]),
       ],

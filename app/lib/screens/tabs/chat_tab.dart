@@ -1629,8 +1629,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _debugTrack(IncomingMessage msg, Map<String, dynamic> json) {
-    // debug 包始终留存；release/prerelease 下需用户在设置里开「原始事件检查」。
-    if (kDebugMode || ref.read(rawInspectModeProvider)) _debugRaw[msg] = json;
+    if (kDebugMode) _debugRaw[msg] = json;
   }
 
   /// Routes messages that belong to a sub-agent (Task tool) into [_subMsgs].
@@ -2972,10 +2971,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                                 codexApprovalDecisions: _codexApprovalDecisions,
                                 onOpenFilePath: _openRemoteFilePreview,
                                 onSaveFilePath: _saveRemoteFileRef,
-                                rawJson:
-                                    (kDebugMode || ref.read(rawInspectModeProvider))
-                                        ? _debugRaw[m]
-                                        : null,
+                                rawJson: kDebugMode ? _debugRaw[m] : null,
                               );
                             }
                             return KeyedSubtree(
