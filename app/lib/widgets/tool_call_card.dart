@@ -5,6 +5,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/protocol.dart';
+import '../state/open_chat_windows.dart';
 import '../state/prefs.dart';
 import '../state/tool_progress_state.dart';
 import '../theme.dart';
@@ -120,8 +121,12 @@ class _ToolCallCardState extends ConsumerState<ToolCallCard> {
                     // 这里读取相当于"有进度信号就显示"——Codex 永远没值。
                     if (result == null)
                       Builder(builder: (_) {
-                        final elapsed = ref
-                            .watch(toolProgressProvider)[toolUse.id];
+                        final sessionKey =
+                            ref.watch(currentSessionKeyProvider);
+                        final elapsed = sessionKey == null
+                            ? null
+                            : ref.watch(
+                                toolProgressProvider(sessionKey))[toolUse.id];
                         if (elapsed == null || elapsed < 1) {
                           return const SizedBox.shrink();
                         }

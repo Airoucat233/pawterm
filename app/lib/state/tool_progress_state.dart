@@ -12,5 +12,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// 内存增长控制：tool 结果到达（ToolResultBlock 出现在消息流）后应该
 /// 显式清理对应 entry，避免长会话累积。具体清理点见 chat_tab.dart
 /// 处理 AssistantMsg 的 _applyAssistantSideEffects。
+///
+/// 按 sessionKey 做 family 隔离：写入侧用事件所属 runtime 的 key，渲染侧
+/// （tool_call_card）用 currentSessionKeyProvider 的 key。后台 session 的
+/// 工具计时不会串到当前页面。
 final toolProgressProvider =
-    StateProvider<Map<String, double>>((ref) => const {});
+    StateProvider.family<Map<String, double>, String>(
+        (ref, sessionKey) => const {});

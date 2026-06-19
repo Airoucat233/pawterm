@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../state/open_chat_windows.dart';
 import '../state/tasks_state.dart';
 import '../theme.dart';
 
@@ -12,7 +13,10 @@ class TasksChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final count = ref.watch(activeTasksCountProvider);
+    final sessionKey = ref.watch(currentSessionKeyProvider);
+    final count = sessionKey == null
+        ? 0
+        : ref.watch(activeTasksCountProvider(sessionKey));
     if (count == 0) return const SizedBox.shrink();
     final t = AppTokens.of(context);
     return InkWell(
@@ -61,7 +65,10 @@ class _TasksSheet extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final t = AppTokens.of(context);
-    final tasks = ref.watch(tasksProvider);
+    final sessionKey = ref.watch(currentSessionKeyProvider);
+    final tasks = sessionKey == null
+        ? const <String, TaskRecord>{}
+        : ref.watch(tasksProvider(sessionKey));
     final active = tasks.values.where((tk) => tk.isActive).toList();
     final completed = tasks.values.where((tk) => !tk.isActive).toList();
     return Container(

@@ -299,22 +299,21 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       identical(_selectedRuntime ?? _runtime, runtime);
 
   /// 这条 wire 事件所属的 runtime 是否就是当前前台显示的 Claude session。
-  /// 全局 live-status provider（session status / thinking tokens / tool
-  /// progress）只代表"屏幕上这个 session"的瞬时状态，所以只有激活态且 Claude
-  /// 的事件才允许写。否则后台 Claude session 的 compacting / thinking 会串到
-  /// 当前正看的另一个会话（包括 Codex 页）底部 spinner 上。
+  /// 现在只用于"只该对当前显示 session 弹"的副作用（如 InformationalMsg 的
+  /// SnackBar）；per-session live-status provider 已改为 family-by-sessionKey
+  /// 隔离，写入不再需要这个守卫（见 _liveStatusKey）。
   bool _isActiveClaudeRuntime(_ChatSessionRuntime runtime) =>
       _isActiveRuntime(runtime) &&
       runtime.session?.agent == AgentKind.claude;
 
-  /// 切换前台显示 session 时清空所有 per-session live-status 全局 provider，
-  /// 避免离开的 session 残留值（compacting 文案、thinking pill、工具计时）
-  /// 串到新 session 页面。rateLimit 是账号级状态，不在此清。
-  void _resetLiveStatusProviders() {
-    ref.read(claudeSessionStatusProvider.notifier).state = null;
-    ref.read(thinkingTokensProvider.notifier).state = 0;
-    final toolProgress = ref.read(toolProgressProvider.notifier);
-    if (toolProgress.state.isNotEmpty) toolProgress.state = const {};
+  /// 这条事件所属 runtime 的 live-status family key（null 表示 runtime 还没
+  /// 绑定 session）。per-session live-status provider（session status /
+  /// thinking tokens / tool progress / tasks）用它做 family 隔离：写入侧用
+  /// 事件 runtime 的 key，渲染侧用 currentSessionKeyProvider。后台 session 的
+  /// 状态写进自己的 key，结构上不可能串到当前显示页面——无需再切换时手动清空。
+  String? _liveStatusKey(_ChatSessionRuntime runtime) {
+    final session = runtime.session;
+    return session == null ? null : _sessionKey(session);
   }
 
   bool _isCurrentSessionRuntime(_ChatSessionRuntime runtime) {
@@ -688,9 +687,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _stickToBottom = true;
         _suppressAutoScrollUntil = null;
       });
-      // 切到了不同 session：清掉上一个 session 残留的全局 live 状态，
-      // 否则 spinner 上的 compacting / thinking pill 会串到新页面。
-      _resetLiveStatusProviders();
+      // live-status provider 现在按 sessionKey family 隔离，切 session 自然
+      // 读到新 key 的状态，无需手动清空上一个 session。
       if (shouldScrollToBottom) {
         _scrollToEnd(force: true);
       }
@@ -1152,6 +1150,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       final runtime = _runtimes.remove(key);
       if (runtime == null) continue;
       runtime.dispose();
+      // 释放该 session 的 live-status family 条目，避免 family 随会话开关无界增长。
+      ref.invalidate(claudeSessionStatusProvider(key));
+      ref.invalidate(thinkingTokensProvider(key));
+      ref.invalidate(toolProgressProvider(key));
+      ref.invalidate(tasksProvider(key));
       if (identical(_selectedRuntime, runtime)) _selectedRuntime = null;
       if (identical(_runtime, runtime)) {
         _runtime = _selectedRuntime ?? _ChatSessionRuntime();
@@ -1691,14 +1694,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
         _currentBlockKind = null;
-        // 一轮结束 → 清零 thinking tokens 估算，避免下一轮叠加。
-        // 只对前台显示的 Claude session 动全局 provider，否则后台 session
-        // 收尾会把当前页面的 thinking pill / 已完成任务清掉。
-        if (_isActiveClaudeRuntime(eventRuntime)) {
-          ref.read(thinkingTokensProvider.notifier).state = 0;
-          // 一轮结束 → 清掉已完成的后台 task，保留运行中的（用户可能在
-          // 下一轮继续观察）。
-          ref.read(tasksProvider.notifier).purgeCompleted();
+        // 一轮结束 → 清零本 session 的 thinking tokens 估算 + 清掉已完成的
+        // 后台 task（保留运行中的）。按事件所属 session 的 key 写，后台 session
+        // 收尾不会影响当前显示页面。
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null) {
+          ref.read(thinkingTokensProvider(liveKey).notifier).state = 0;
+          ref.read(tasksProvider(liveKey).notifier).purgeCompleted();
         }
         _messages.add(msg);
         _debugTrack(msg, json);
@@ -1827,11 +1829,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // 限流是账号级状态，不进消息流；写到全局 provider 给 composer chip 用。
         ref.read(rateLimitInfoProvider.notifier).state = msg.info;
       } else if (msg is SessionStatusMsg) {
-        // SDK 内部状态：'compacting' / 'requesting' / null。
-        // 只有"前台正显示的 Claude session"的事件才写全局 provider，
-        // 否则后台 session 的 compacting 会串到当前页面。不进消息流。
-        if (_isActiveClaudeRuntime(eventRuntime)) {
-          ref.read(claudeSessionStatusProvider.notifier).state = msg.status;
+        // SDK 内部状态：'compacting' / 'requesting' / null。按事件所属 session
+        // 的 key 写 family provider —— 后台 session 的 compacting 写进自己的
+        // key，结构上不会串到当前显示页面。不进消息流。
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null) {
+          ref.read(claudeSessionStatusProvider(liveKey).notifier).state =
+              msg.status;
         }
       } else if (msg is InformationalMsg) {
         // SDK 自发提示：warning/suggestion 才用 SnackBar 弹出，info/notice 静默。
@@ -1851,42 +1855,49 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           );
         }
       } else if (msg is ToolProgressMsg) {
-        // 工具进度：周期推送当前工具已执行多少秒。仅 Claude；写到全局
-        // provider 给 tool_call_card 读取。tool 结果到达时由
+        // 工具进度：周期推送当前工具已执行多少秒。按事件 session 的 key 写
+        // family provider 给 tool_call_card 读取。tool 结果到达时由
         // _applyAssistantSideEffects 显式清理对应 entry。
-        if (_isActiveClaudeRuntime(eventRuntime) && msg.toolUseId.isNotEmpty) {
-          final notifier = ref.read(toolProgressProvider.notifier);
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null && msg.toolUseId.isNotEmpty) {
+          final notifier = ref.read(toolProgressProvider(liveKey).notifier);
           notifier.state = {
             ...notifier.state,
             msg.toolUseId: msg.elapsedSeconds,
           };
         }
       } else if (msg is ThinkingTokensMsg) {
-        // SDK 在 thinking 阶段周期推送估算 token 数。只有前台显示的 Claude
-        // session 才写，给 spinner 上的 thinking pill 用。不进消息流。
-        if (_isActiveClaudeRuntime(eventRuntime)) {
-          ref.read(thinkingTokensProvider.notifier).state = msg.estimatedTokens;
+        // SDK 在 thinking 阶段周期推送估算 token 数。按事件 session 的 key 写，
+        // 给 spinner 上的 thinking pill 用。不进消息流。
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null) {
+          ref.read(thinkingTokensProvider(liveKey).notifier).state =
+              msg.estimatedTokens;
         }
       } else if (msg is TaskStartedMsg) {
-        // SDK 0.3.x 后台 task 生命周期：只有前台显示的 Claude session 写
-        // tasks store，避免后台 session 的 task 串到当前页面的 TasksChip。
-        if (_isActiveClaudeRuntime(eventRuntime)) {
-          ref.read(tasksProvider.notifier).start(msg);
+        // SDK 0.3.x 后台 task 生命周期：按事件 session 的 key 写 tasks store，
+        // 后台 session 的 task 进自己的 key，不串到当前页面的 TasksChip。
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null) {
+          ref.read(tasksProvider(liveKey).notifier).start(msg);
         }
       } else if (msg is TaskUpdatedMsg) {
-        if (_isActiveClaudeRuntime(eventRuntime)) {
-          ref.read(tasksProvider.notifier).update(msg);
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null) {
+          ref.read(tasksProvider(liveKey).notifier).update(msg);
         }
       } else if (msg is TaskProgressMsg) {
-        if (_isActiveClaudeRuntime(eventRuntime)) {
-          ref.read(tasksProvider.notifier).progress(msg);
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null) {
+          ref.read(tasksProvider(liveKey).notifier).progress(msg);
         }
       } else if (msg is TaskNotificationMsg) {
         // SDK 0.3.x 路径：有 task_id（store 里有对应 entry）就合并终态。
         // harness XML 路径：task_id 为 null 时不进 store，让 message_view
         // 的现有 InlineTaskNotification 渲染处理。
-        if (_isActiveClaudeRuntime(eventRuntime) && msg.taskId != null) {
-          ref.read(tasksProvider.notifier).notify(msg);
+        final liveKey = _liveStatusKey(eventRuntime);
+        if (liveKey != null && msg.taskId != null) {
+          ref.read(tasksProvider(liveKey).notifier).notify(msg);
         }
         // 老路径：仍按原逻辑加入消息流（如果不是 SDK 路径触发的）。
         if (msg.taskId == null || !msg.skipTranscript) {
@@ -1947,13 +1958,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               DateTime.now().millisecondsSinceEpoch;
         }
       }
-      // 工具结果到达 → 清理对应的 toolProgressProvider entry，避免长会话累积。
+      // 工具结果到达 → 清理对应的 toolProgress entry，避免长会话累积。
+      // 用事件所属 session 的 key（此处 _runtime 即 eventRuntime）。
       if (block is ToolResultBlock && block.toolUseId.isNotEmpty) {
-        final notifier = ref.read(toolProgressProvider.notifier);
-        if (notifier.state.containsKey(block.toolUseId)) {
-          final next = Map<String, double>.from(notifier.state);
-          next.remove(block.toolUseId);
-          notifier.state = next;
+        final liveKey = _liveStatusKey(_runtime);
+        if (liveKey != null) {
+          final notifier = ref.read(toolProgressProvider(liveKey).notifier);
+          if (notifier.state.containsKey(block.toolUseId)) {
+            final next = Map<String, double>.from(notifier.state);
+            next.remove(block.toolUseId);
+            notifier.state = next;
+          }
         }
       }
     }
@@ -2993,7 +3008,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             ],
           )
         else if (ref.watch(todoListProvider).isNotEmpty ||
-            ref.watch(activeTasksCountProvider) > 0)
+            ref.watch(activeTasksCountProvider(_sessionKey(session))) > 0)
           // 非 streaming 也要看到 todo / tasks 进度 —— 单独占一行
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 4, 12, 4),

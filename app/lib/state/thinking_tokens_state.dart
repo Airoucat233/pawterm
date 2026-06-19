@@ -11,6 +11,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 ///   - 收到 AssistantMsg 最终消息（streaming 结束）→ 0
 ///   - 用户发新消息 → 0
 ///
-/// **仅 Claude session 写**：chat_tab 写入处加 agent 守卫，Codex
-/// 永远停在 0。
-final thinkingTokensProvider = StateProvider<int>((ref) => 0);
+/// 按 sessionKey 做 family 隔离：写入侧用事件所属 runtime 的 key，渲染侧用
+/// currentSessionKeyProvider 的 key。后台 session 的 thinking 角标不会串到
+/// 当前页面。仅 Claude session 写；Codex 对应 key 永远停在 0。
+final thinkingTokensProvider =
+    StateProvider.family<int, String>((ref, sessionKey) => 0);
