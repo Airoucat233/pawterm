@@ -31,46 +31,38 @@ class ContextUsageBar extends ConsumerWidget {
             ? t.warning
             : _green;
 
-    String fmt(int n) => n >= 1000
-        ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k'
-        : '$n';
-
+    // 参考 claude-hud 的紧凑风格：只占右半边、单行 —— 一根细进度条 + 百分比，
+    // 按阈值变色（绿/黄/红）。不再占满整行、不再单列 token 文字。
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Text(
-                '上下文 ${fmt(usage.totalTokens)} / ${fmt(usage.maxTokens)}',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  color: t.textDim,
-                  fontFamily: 'monospace',
+          const Spacer(),
+          Expanded(
+            child: Row(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(2),
+                    child: LinearProgressIndicator(
+                      value: pct,
+                      minHeight: 3,
+                      backgroundColor: t.border,
+                      valueColor: AlwaysStoppedAnimation<Color>(color),
+                    ),
+                  ),
                 ),
-              ),
-              const Spacer(),
-              Text(
-                '${usage.percentage.toStringAsFixed(0)}%',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  color: color,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.w600,
+                const SizedBox(width: 6),
+                Text(
+                  '${usage.percentage.toStringAsFixed(0)}%',
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    color: color,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 3),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: LinearProgressIndicator(
-              value: pct,
-              minHeight: 3,
-              backgroundColor: t.border,
-              valueColor: AlwaysStoppedAnimation<Color>(color),
+              ],
             ),
           ),
         ],

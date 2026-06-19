@@ -274,25 +274,17 @@ class _AiSpinnerLineState extends ConsumerState<AiSpinnerLine> {
             final label = tokens >= 1000
                 ? '${(tokens / 1000).toStringAsFixed(1)}k'
                 : tokens.toString();
+            // 和左边读秒一样的灰色纯文字，无背景。
+            // Claude Code CLI 风格：'↑ {tokens} tokens'（↑ = 本轮输出/思考 token）。
             return Padding(
               padding: const EdgeInsets.only(left: 8),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: widget.color.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                // Claude Code CLI 风格：'↑ {tokens} tokens'（↑ = 本轮输出/思考
-                // token，随生成增长）。复刻 CLI spinner 的 token 展示。
-                child: Text(
-                  '↑ $label tokens',
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: widget.color,
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.w600,
-                  ),
+              child: Text(
+                '↑ $label tokens',
+                style: TextStyle(
+                  fontSize: 11,
+                  height: 1.2,
+                  color: widget.dimColor,
+                  fontFamily: 'monospace',
                 ),
               ),
             );
