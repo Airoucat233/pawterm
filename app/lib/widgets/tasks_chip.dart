@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,39 +7,72 @@ import '../state/open_chat_windows.dart';
 import '../state/tasks_state.dart';
 import '../theme.dart';
 
-/// 顶部 spinner 行上的 tasks 计数 chip：点击展开当前活跃 task 列表。
-/// 仅 Claude session（tasksProvider 只在 Claude 路径写入；Codex 不显示是
-/// 通过 activeTasksCountProvider == 0 自然隐藏）。
-class TasksChip extends ConsumerWidget {
+/// 顶部 spinner 行上的 tasks 计数 chip：显示"完成/总数"（几杠几），点击
+/// 展开任务列表。仅 Claude session（tasksProvider 只在 Claude 路径写入；
+/// Codex total==0 自然隐藏）。任务全部完成时放一轮烟花特效；轮末
+/// purgeCompleted 清空后 chip 自然消失。
+class TasksChip extends ConsumerStatefulWidget {
   const TasksChip({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<TasksChip> createState() => _TasksChipState();
+}
+
+class _TasksChipState extends ConsumerState<TasksChip>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _burst = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  );
+  bool _wasAllDone = false;
+
+  @override
+  void dispose() {
+    _burst.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final sessionKey = ref.watch(currentSessionKeyProvider);
-    final count = sessionKey == null
-        ? 0
-        : ref.watch(activeTasksCountProvider(sessionKey));
-    if (count == 0) return const SizedBox.shrink();
+    final counts = sessionKey == null
+        ? const TaskCounts(0, 0)
+        : ref.watch(taskCountsProvider(sessionKey));
+
+    // 全部完成的瞬间（false→true）放一轮烟花。在 build 里只记录状态，动画
+    // 启动放到 post-frame，避免 build 期间触发动画。
+    if (counts.allDone && !_wasAllDone) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _burst.forward(from: 0);
+      });
+    }
+    _wasAllDone = counts.allDone;
+
+    if (counts.total == 0) return const SizedBox.shrink();
     final t = AppTokens.of(context);
-    return InkWell(
+    final done = counts.allDone;
+    final accent = done ? t.success : t.accent;
+
+    final chip = InkWell(
       onTap: () => _showSheet(context),
       borderRadius: BorderRadius.circular(6),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          color: t.accent.withValues(alpha: 0.10),
+          color: accent.withValues(alpha: 0.10),
           borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: t.accent.withValues(alpha: 0.25), width: 0.5),
+          border: Border.all(color: accent.withValues(alpha: 0.25), width: 0.5),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.bolt_rounded, size: 12, color: t.accent),
+            Icon(done ? Icons.celebration_rounded : Icons.bolt_rounded,
+                size: 12, color: accent),
             const SizedBox(width: 4),
             Text(
-              '$count tasks',
+              '${counts.completed}/${counts.total}',
               style: TextStyle(
-                color: t.accent,
+                color: accent,
                 fontSize: 10.5,
                 fontWeight: FontWeight.w700,
                 fontFamily: 'monospace',
@@ -46,6 +81,19 @@ class TasksChip extends ConsumerWidget {
           ],
         ),
       ),
+    );
+
+    // 烟花覆盖层：不撑大布局，溢出绘制到 chip 周围。
+    return AnimatedBuilder(
+      animation: _burst,
+      builder: (context, child) {
+        if (_burst.isDismissed) return child!;
+        return CustomPaint(
+          foregroundPainter: _FireworksPainter(_burst.value),
+          child: child,
+        );
+      },
+      child: chip,
     );
   }
 
@@ -57,6 +105,45 @@ class TasksChip extends ConsumerWidget {
       builder: (_) => const _TasksSheet(),
     );
   }
+}
+
+/// 轻量烟花：一圈粒子从 chip 中心向外飞、半径放大、透明度衰减。
+class _FireworksPainter extends CustomPainter {
+  final double progress; // 0..1
+  _FireworksPainter(this.progress);
+
+  static const _colors = [
+    Color(0xFFFFD166),
+    Color(0xFFEF476F),
+    Color(0xFF06D6A0),
+    Color(0xFF118AB2),
+    Color(0xFFFF9F1C),
+    Color(0xFFA06CD5),
+  ];
+  static const _count = 14;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final maxR = math.max(size.width, size.height) * 1.6;
+    // ease-out：先快后慢。
+    final eased = 1 - math.pow(1 - progress, 3).toDouble();
+    final radius = maxR * eased;
+    final opacity = (1 - progress).clamp(0.0, 1.0);
+    if (opacity <= 0) return;
+    for (var i = 0; i < _count; i++) {
+      final angle = (i / _count) * 2 * math.pi + progress * 0.6;
+      final r = radius * (0.6 + 0.4 * ((i % 3) / 2));
+      final p = center + Offset(math.cos(angle), math.sin(angle)) * r;
+      final paint = Paint()
+        ..color = _colors[i % _colors.length].withValues(alpha: opacity)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(p, 2.0 * (1 - 0.5 * progress), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_FireworksPainter old) => old.progress != progress;
 }
 
 class _TasksSheet extends ConsumerWidget {

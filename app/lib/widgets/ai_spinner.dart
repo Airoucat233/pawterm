@@ -237,13 +237,19 @@ class _AiSpinnerLineState extends ConsumerState<AiSpinnerLine> {
         children: [
           AiSpinner(size: 14, color: accent, animate: !awaiting),
           const SizedBox(width: 8),
-          Text(
-            _label(ref),
-            style: TextStyle(
-              fontSize: 12,
-              height: 1.2,
-              color: accent,
-              fontWeight: FontWeight.w500,
+          // Flexible + ellipsis：右侧胶囊（tasks / todo / 重新编辑）多时让文案
+          // 收缩，而不是把胶囊挤出屏幕。
+          Flexible(
+            child: Text(
+              _label(ref),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.2,
+                color: accent,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
           const SizedBox(width: 10),
