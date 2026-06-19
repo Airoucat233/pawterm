@@ -51,7 +51,10 @@ class _CcAppState extends ConsumerState<CcApp> {
     final locale = ref.watch(materialLocaleProvider);
     return MaterialApp(
       navigatorKey: navigatorKey,
-      title: 'PawTerm',
+      // MaterialApp.title 会经 setApplicationSwitcherDescription 写到 Android
+      // 最近任务页标题（盖过原生 setTaskDescription）。跟随 flavor，避免 dev 包
+      // 在多任务页显示成 "PawTerm" 与正式版撞名。appFlavor 由 --flavor 注入。
+      title: appFlavor == 'dev' ? 'PawTerm Dev' : 'PawTerm',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
