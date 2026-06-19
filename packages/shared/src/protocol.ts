@@ -229,6 +229,7 @@ export type ChatServerMessage =
   | ({ type: 'task_updated'; task_id: string; patch: TaskStatePatch; timestamp?: number } & AgentEventMeta)
   | ({ type: 'task_progress'; task_id: string; tool_use_id?: string | null; description: string; subagent_type?: string | null; usage?: TaskUsage; last_tool_name?: string | null; summary?: string | null; timestamp?: number } & AgentEventMeta)
   | ({ type: 'task_notification'; task_id: string | null; tool_use_id?: string | null; status: string; summary: string; output_file?: string | null; usage?: TaskUsage; skip_transcript?: boolean; timestamp?: number } & AgentEventMeta)
+  | ({ type: 'context_usage'; total_tokens: number; max_tokens: number; percentage: number; auto_compact_threshold: number | null; auto_compact_enabled: boolean; timestamp?: number } & AgentEventMeta)
   | ({ type: 'error'; message: string } & AgentEventMeta)
   | { type: 'pong' };
 

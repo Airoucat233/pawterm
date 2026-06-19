@@ -151,6 +151,32 @@ final scrollToBottomOnSessionSwitchProvider =
   (_) => ScrollToBottomOnSessionSwitchNotifier(),
 );
 
+/// 「上下文占用条」开关：在输入框上方显示一条上下文窗口占用进度条
+/// （绿/黄/红）。默认开启。仅 Claude 会话有数据。
+class ShowContextBarNotifier extends StateNotifier<bool> {
+  ShowContextBarNotifier() : super(true) {
+    _load();
+  }
+
+  static const _key = 'show_context_bar_v1';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? true;
+  }
+
+  Future<void> set(bool value) async {
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, value);
+  }
+}
+
+final showContextBarProvider =
+    StateNotifierProvider<ShowContextBarNotifier, bool>(
+  (_) => ShowContextBarNotifier(),
+);
+
 enum BottomTabId {
   chat('chat'),
   shell('shell'),

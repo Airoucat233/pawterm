@@ -176,6 +176,15 @@ abstract class IncomingMessage {
           estimatedTokensDelta:
               (json['estimated_tokens_delta'] as num?)?.toInt() ?? 0,
         );
+      case 'context_usage':
+        return ContextUsageMsg(
+          totalTokens: (json['total_tokens'] as num?)?.toInt() ?? 0,
+          maxTokens: (json['max_tokens'] as num?)?.toInt() ?? 0,
+          percentage: (json['percentage'] as num?)?.toDouble() ?? 0,
+          autoCompactThreshold:
+              (json['auto_compact_threshold'] as num?)?.toDouble(),
+          autoCompactEnabled: json['auto_compact_enabled'] as bool? ?? false,
+        );
       default:
         return UnknownMsg(raw: json);
     }
@@ -271,6 +280,23 @@ class ToolProgressMsg extends IncomingMessage {
     required this.toolName,
     required this.elapsedSeconds,
     this.parentToolUseId,
+  });
+}
+
+/// 上下文窗口实时占用（SDK getContextUsage，每轮 result 后 server 推一次）。
+/// 驱动 composer 上方的绿/黄/红进度条。percentage 是 0–100。
+class ContextUsageMsg extends IncomingMessage {
+  final int totalTokens;
+  final int maxTokens;
+  final double percentage;
+  final double? autoCompactThreshold;
+  final bool autoCompactEnabled;
+  ContextUsageMsg({
+    required this.totalTokens,
+    required this.maxTokens,
+    required this.percentage,
+    this.autoCompactThreshold,
+    this.autoCompactEnabled = false,
   });
 }
 

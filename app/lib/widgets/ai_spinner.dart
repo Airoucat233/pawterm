@@ -277,8 +277,10 @@ class _AiSpinnerLineState extends ConsumerState<AiSpinnerLine> {
                   color: widget.color.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(4),
                 ),
+                // Claude Code CLI 风格：'↑ {tokens} tokens'（↑ = 本轮输出/思考
+                // token，随生成增长）。复刻 CLI spinner 的 token 展示。
                 child: Text(
-                  '≈ $label thinking',
+                  '↑ $label tokens',
                   style: TextStyle(
                     fontSize: 10,
                     color: widget.color,

@@ -264,6 +264,7 @@ class _ConversationSettingsPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scrollToBottom = ref.watch(scrollToBottomOnSessionSwitchProvider);
     final fileToolExpanded = ref.watch(fileToolCardsExpandedProvider);
+    final showContextBar = ref.watch(showContextBarProvider);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
@@ -290,6 +291,14 @@ class _ConversationSettingsPage extends ConsumerWidget {
             value: fileToolExpanded,
             onChanged: (v) =>
                 ref.read(fileToolCardsExpandedProvider.notifier).set(v),
+          ),
+          _Divider(),
+          _SwitchRow(
+            label: '上下文占用条',
+            subtitle: '输入框上方显示上下文窗口实时占用进度条（绿/黄/红），仅 Claude',
+            icon: Icons.data_usage_outlined,
+            value: showContextBar,
+            onChanged: (v) => ref.read(showContextBarProvider.notifier).set(v),
           ),
         ]),
       ],

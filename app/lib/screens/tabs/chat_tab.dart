@@ -33,6 +33,7 @@ import '../../state/rate_limit_state.dart';
 import '../../state/server_config.dart';
 import '../../state/session_status_state.dart';
 import '../../state/streaming_foreground_service.dart';
+import '../../state/context_usage_state.dart';
 import '../../state/tasks_state.dart';
 import '../../state/thinking_tokens_state.dart';
 import '../../state/todo_list.dart';
@@ -41,6 +42,7 @@ import '../../theme.dart';
 import '../../utils/time_format.dart';
 import '../../widgets/ai_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
+import '../../widgets/context_usage_bar.dart';
 import '../../widgets/inspiration_drawer.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/session_files_drawer.dart';
@@ -2507,6 +2509,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             text: _unrespondedUserText!,
             onReEdit: _reEditLastMessage,
           ),
+        // 输入框上方的上下文窗口占用进度条（设置可关、仅 Claude 有数据）。
+        const ContextUsageBar(),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         if (!_observeMode)
           _Composer(

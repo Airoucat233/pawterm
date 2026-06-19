@@ -272,6 +272,38 @@ async function consumeRun(agent: AgentKind, key: string, uuid: string, entry: Ru
           log.info({ uuid, agent }, 'run: result received, starting grace');
           entry.resultReceived = true;
           startGrace(key, entry, log);
+          // Claude：一轮结束后取上下文窗口占用，广播给前端画进度条。异步，
+          // 不阻塞消费循环；grace 期内 iter 仍在，可正常请求。
+          if (agent === 'claude' && entry.session) {
+            entry.session
+              .getContextUsage()
+              .then((raw) => {
+                const u = raw as {
+                  totalTokens?: number;
+                  maxTokens?: number;
+                  percentage?: number;
+                  autoCompactThreshold?: number;
+                  isAutoCompactEnabled?: boolean;
+                } | null;
+                if (u && activeRuns.get(key) === entry) {
+                  broadcast(entry, 'context_usage', {
+                    type: 'context_usage',
+                    agent,
+                    session_ref: { agent, id: entry.sessionId },
+                    timestamp: Date.now(),
+                    total_tokens: u.totalTokens ?? 0,
+                    max_tokens: u.maxTokens ?? 0,
+                    percentage: u.percentage ?? 0,
+                    auto_compact_threshold:
+                      typeof u.autoCompactThreshold === 'number'
+                        ? u.autoCompactThreshold
+                        : null,
+                    auto_compact_enabled: !!u.isAutoCompactEnabled,
+                  });
+                }
+              })
+              .catch(() => {});
+          }
         }
       }
     }
