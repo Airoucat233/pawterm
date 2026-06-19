@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../i18n/locale_provider.dart';
+import '../state/open_chat_windows.dart';
 import '../state/session_status_state.dart';
 import '../state/thinking_tokens_state.dart';
 
@@ -162,7 +163,10 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
     // SDK 内部状态优先级最高：compacting 直接覆盖普通 mode 文案。
     // 这只在 Claude session 上会触发（写 provider 的地方做了 agent 守卫），
     // Codex session 永远是 null，照常走下面的 mode switch。
-    final claudeStatus = ref.watch(claudeSessionStatusProvider);
+    final sessionKey = ref.watch(currentSessionKeyProvider);
+    final claudeStatus = sessionKey == null
+        ? null
+        : ref.watch(claudeSessionStatusProvider(sessionKey));
     if (claudeStatus == 'compacting') return '正在压缩上下文…';
     switch (widget.mode) {
       case CcStreamMode.requesting:
@@ -213,7 +217,10 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
           // ThinkingTokensProvider 只在 Claude session 写入，Codex 永远是 0
           // 不显示。值 < 100 时也不显示（信号太弱）。
           Builder(builder: (_) {
-            final tokens = ref.watch(thinkingTokensProvider);
+            final sessionKey = ref.watch(currentSessionKeyProvider);
+            final tokens = sessionKey == null
+                ? 0
+                : ref.watch(thinkingTokensProvider(sessionKey));
             if (tokens < 100) return const SizedBox.shrink();
             final label = tokens >= 1000
                 ? '${(tokens / 1000).toStringAsFixed(1)}k'

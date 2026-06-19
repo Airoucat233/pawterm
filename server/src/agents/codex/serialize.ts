@@ -1,4 +1,5 @@
 import type { ChatServerMessage, ContentBlock } from '@pawterm/shared';
+import { safeClone } from '../../util/safe-json.js';
 
 type CodexItem = Record<string, any> & { type?: string; id?: string };
 type ToolUseBlock = Extract<ContentBlock, { type: 'tool_use' }>;
@@ -79,7 +80,20 @@ function isFinishedStatus(status: unknown): boolean {
   return status !== 'inProgress' && status !== undefined && status !== null;
 }
 
-export function codexThreadItemToWire(item: CodexItem): ChatServerMessage | null {
+/**
+ * Public entry: convert a Codex thread item to a wire dict and attach the
+ * original native item under `native`, so the App's raw view can show the true
+ * native Codex (app-server JSON-RPC) structure, not just our normalized fields.
+ */
+export function codexThreadItemToWire(item: CodexItem): any | null {
+  const wire = codexThreadItemToWireInner(item);
+  // Codex item 可能带循环引用（parent/self 指针），必须先 sanitize 再挂，
+  // 否则整条 SSE 的 JSON.stringify 会抛 circular structure。
+  if (wire) (wire as Record<string, unknown>).native = safeClone(item);
+  return wire;
+}
+
+function codexThreadItemToWireInner(item: CodexItem): ChatServerMessage | null {
   switch (item.type) {
     case 'userMessage':
       return {

@@ -73,6 +73,18 @@ String sessionKey(CurrentSession session) =>
 String sessionKeyFor(AgentKind agent, String cwd, String? resumeId) =>
     '${agent.wire}|$cwd|${resumeId ?? "new"}';
 
+/// 当前前台显示 session 的 key（null 表示无选中 session）。
+///
+/// 这是 per-session live-status provider（session status / thinking tokens /
+/// tool progress / tasks）的"读取键"：这些 provider 现在都按 sessionKey 做
+/// family 隔离，渲染侧统一用这个 key 读"当前显示的那个 session"的状态，
+/// 写入侧用事件所属 runtime 的 key 写——不同 key 天然隔离，后台 session 的
+/// 状态结构上不可能串到当前页面。
+final currentSessionKeyProvider = Provider<String?>((ref) {
+  final session = ref.watch(currentSessionProvider);
+  return session == null ? null : sessionKey(session);
+});
+
 class OpenChatWindowsNotifier extends StateNotifier<OpenChatWindowsState> {
   OpenChatWindowsNotifier() : super(const OpenChatWindowsState());
 

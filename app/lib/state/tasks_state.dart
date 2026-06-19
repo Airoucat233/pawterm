@@ -207,11 +207,14 @@ class TasksNotifier extends StateNotifier<Map<String, TaskRecord>> {
   }
 }
 
+/// 按 sessionKey 做 family 隔离：写入侧用事件所属 runtime 的 key，渲染侧
+/// （TasksChip）用 currentSessionKeyProvider 的 key。后台 Claude session 的
+/// 后台任务不会串到当前页面的 chip 上。
 final tasksProvider =
-    StateNotifierProvider<TasksNotifier, Map<String, TaskRecord>>(
-        (ref) => TasksNotifier());
+    StateNotifierProvider.family<TasksNotifier, Map<String, TaskRecord>, String>(
+        (ref, sessionKey) => TasksNotifier());
 
-/// 当前活跃 task 数量（>0 时 chat tab 上的 TasksChip 才显示）。
-final activeTasksCountProvider = Provider<int>((ref) {
-  return ref.watch(tasksProvider).values.where((t) => t.isActive).length;
+/// 指定 session 当前活跃 task 数量（>0 时 chat tab 上的 TasksChip 才显示）。
+final activeTasksCountProvider = Provider.family<int, String>((ref, sessionKey) {
+  return ref.watch(tasksProvider(sessionKey)).values.where((t) => t.isActive).length;
 });
