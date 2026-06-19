@@ -298,6 +298,25 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   bool _isActiveRuntime(_ChatSessionRuntime runtime) =>
       identical(_selectedRuntime ?? _runtime, runtime);
 
+  /// 这条 wire 事件所属的 runtime 是否就是当前前台显示的 Claude session。
+  /// 全局 live-status provider（session status / thinking tokens / tool
+  /// progress）只代表"屏幕上这个 session"的瞬时状态，所以只有激活态且 Claude
+  /// 的事件才允许写。否则后台 Claude session 的 compacting / thinking 会串到
+  /// 当前正看的另一个会话（包括 Codex 页）底部 spinner 上。
+  bool _isActiveClaudeRuntime(_ChatSessionRuntime runtime) =>
+      _isActiveRuntime(runtime) &&
+      runtime.session?.agent == AgentKind.claude;
+
+  /// 切换前台显示 session 时清空所有 per-session live-status 全局 provider，
+  /// 避免离开的 session 残留值（compacting 文案、thinking pill、工具计时）
+  /// 串到新 session 页面。rateLimit 是账号级状态，不在此清。
+  void _resetLiveStatusProviders() {
+    ref.read(claudeSessionStatusProvider.notifier).state = null;
+    ref.read(thinkingTokensProvider.notifier).state = 0;
+    final toolProgress = ref.read(toolProgressProvider.notifier);
+    if (toolProgress.state.isNotEmpty) toolProgress.state = const {};
+  }
+
   bool _isCurrentSessionRuntime(_ChatSessionRuntime runtime) {
     if (!_isActiveRuntime(runtime)) return false;
     final current = ref.read(currentSessionProvider);
@@ -669,6 +688,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _stickToBottom = true;
         _suppressAutoScrollUntil = null;
       });
+      // 切到了不同 session：清掉上一个 session 残留的全局 live 状态，
+      // 否则 spinner 上的 compacting / thinking pill 会串到新页面。
+      _resetLiveStatusProviders();
       if (shouldScrollToBottom) {
         _scrollToEnd(force: true);
       }
@@ -1670,10 +1692,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _thoughtSeconds = null;
         _currentBlockKind = null;
         // 一轮结束 → 清零 thinking tokens 估算，避免下一轮叠加。
-        ref.read(thinkingTokensProvider.notifier).state = 0;
-        // 一轮结束 → 清掉已完成的后台 task，保留运行中的（用户可能在
-        // 下一轮继续观察）。
-        ref.read(tasksProvider.notifier).purgeCompleted();
+        // 只对前台显示的 Claude session 动全局 provider，否则后台 session
+        // 收尾会把当前页面的 thinking pill / 已完成任务清掉。
+        if (_isActiveClaudeRuntime(eventRuntime)) {
+          ref.read(thinkingTokensProvider.notifier).state = 0;
+          // 一轮结束 → 清掉已完成的后台 task，保留运行中的（用户可能在
+          // 下一轮继续观察）。
+          ref.read(tasksProvider.notifier).purgeCompleted();
+        }
         _messages.add(msg);
         _debugTrack(msg, json);
         _localUserEchoes.removeWhere((echo) => echo.serverAcked);
@@ -1802,17 +1828,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         ref.read(rateLimitInfoProvider.notifier).state = msg.info;
       } else if (msg is SessionStatusMsg) {
         // SDK 内部状态：'compacting' / 'requesting' / null。
-        // 只在 Claude 路径上来；写全局 provider 给状态条用。
-        // 不进消息流。
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude) {
+        // 只有"前台正显示的 Claude session"的事件才写全局 provider，
+        // 否则后台 session 的 compacting 会串到当前页面。不进消息流。
+        if (_isActiveClaudeRuntime(eventRuntime)) {
           ref.read(claudeSessionStatusProvider.notifier).state = msg.status;
         }
       } else if (msg is InformationalMsg) {
         // SDK 自发提示：warning/suggestion 才用 SnackBar 弹出，info/notice 静默。
-        // 同样只对 Claude session 显示。
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude &&
+        // 只对前台显示的 Claude session 弹，避免后台 session 打断当前页面。
+        if (_isActiveClaudeRuntime(eventRuntime) &&
             (msg.level == 'warning' || msg.level == 'suggestion')) {
           final t = AppTokens.of(context);
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1830,8 +1854,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         // 工具进度：周期推送当前工具已执行多少秒。仅 Claude；写到全局
         // provider 给 tool_call_card 读取。tool 结果到达时由
         // _applyAssistantSideEffects 显式清理对应 entry。
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude && msg.toolUseId.isNotEmpty) {
+        if (_isActiveClaudeRuntime(eventRuntime) && msg.toolUseId.isNotEmpty) {
           final notifier = ref.read(toolProgressProvider.notifier);
           notifier.state = {
             ...notifier.state,
@@ -1839,34 +1862,30 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           };
         }
       } else if (msg is ThinkingTokensMsg) {
-        // SDK 在 thinking 阶段周期推送估算 token 数。仅 Claude；写入全局
-        // provider 给 spinner 上的 thinking pill 用。不进消息流。
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude) {
+        // SDK 在 thinking 阶段周期推送估算 token 数。只有前台显示的 Claude
+        // session 才写，给 spinner 上的 thinking pill 用。不进消息流。
+        if (_isActiveClaudeRuntime(eventRuntime)) {
           ref.read(thinkingTokensProvider.notifier).state = msg.estimatedTokens;
         }
       } else if (msg is TaskStartedMsg) {
-        // SDK 0.3.x 后台 task 生命周期：仅 Claude session 写入 tasks store。
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude) {
+        // SDK 0.3.x 后台 task 生命周期：只有前台显示的 Claude session 写
+        // tasks store，避免后台 session 的 task 串到当前页面的 TasksChip。
+        if (_isActiveClaudeRuntime(eventRuntime)) {
           ref.read(tasksProvider.notifier).start(msg);
         }
       } else if (msg is TaskUpdatedMsg) {
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude) {
+        if (_isActiveClaudeRuntime(eventRuntime)) {
           ref.read(tasksProvider.notifier).update(msg);
         }
       } else if (msg is TaskProgressMsg) {
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude) {
+        if (_isActiveClaudeRuntime(eventRuntime)) {
           ref.read(tasksProvider.notifier).progress(msg);
         }
       } else if (msg is TaskNotificationMsg) {
         // SDK 0.3.x 路径：有 task_id（store 里有对应 entry）就合并终态。
         // harness XML 路径：task_id 为 null 时不进 store，让 message_view
         // 的现有 InlineTaskNotification 渲染处理。
-        final session = ref.read(currentSessionProvider);
-        if (session?.agent == AgentKind.claude && msg.taskId != null) {
+        if (_isActiveClaudeRuntime(eventRuntime) && msg.taskId != null) {
           ref.read(tasksProvider.notifier).notify(msg);
         }
         // 老路径：仍按原逻辑加入消息流（如果不是 SDK 路径触发的）。
