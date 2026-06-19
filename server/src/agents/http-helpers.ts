@@ -3,7 +3,7 @@ import type { AgentKind, AgentRuntime, ClaudeRuntime, CodexRuntime, GeminiRuntim
 export type AgentQuery = AgentKind | 'all';
 
 const validAgents = new Set(['claude', 'codex', 'gemini']);
-const validPermissionModes = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions']);
+const validPermissionModes = new Set(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
 const validCodexSandboxes = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 const validCodexApprovalPolicies = new Set(['untrusted', 'on-request', 'never']);
 const validReasoningEfforts = new Set(['low', 'medium', 'high', 'xhigh']);

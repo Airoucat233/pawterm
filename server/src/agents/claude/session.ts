@@ -49,7 +49,7 @@ function thinkingConfigToSdk(config: ThinkingConfig): SdkThinkingConfig {
  */
 export class ChatSession {
   readonly cwd: string;
-  readonly permissionMode: PermissionMode;
+  permissionMode: PermissionMode;
   readonly resume?: string;
   readonly sessionId?: string;
   readonly model?: string;
@@ -114,11 +114,13 @@ export class ChatSession {
   };
 
   start(): AsyncIterableIterator<any> {
-    // bypassPermissions 模式必须额外传 allowDangerouslySkipPermissions=true，
-    // 否则 SDK 会拒绝启动。这个组合让 Claude 摆脱"只能读写 cwd 子树"的限制 ——
-    // 它能访问整个服务端文件系统（场景：LAN/Tailscale 私有部署，用户操作的是
-    // 自己拥有 shell 权限的机器，本来就该有全权访问）。
-    const bypassing = this.permissionMode === 'bypassPermissions';
+    // allowDangerouslySkipPermissions 是 bypassPermissions 的"前置确认门"：SDK 要求
+    // 用 bypass 时必须传 true（否则拒绝），它本身不是开关——default/acceptEdits 是否
+    // 弹仍由 permissionMode 主导。这里**启动时总是传**，是为了让用户**中途切到
+    // bypass** 时也能真正生效：否则运行期 setPermissionMode('bypassPermissions') 缺了
+    // 这个启动确认，SDK 仍会调 canUseTool 继续弹审批（这正是"选了 bypass 还弹"的根因）。
+    // bypass 生效后 Claude 可访问整个服务端文件系统（LAN/Tailscale 私有部署，用户操作
+    // 的是自己有 shell 权限的机器，本就该全权）。
     const options: Options = {
       cwd: this.cwd,
       permissionMode: this.permissionMode,
@@ -177,7 +179,7 @@ export class ChatSession {
           toolName,
         );
       },
-      ...(bypassing ? { allowDangerouslySkipPermissions: true } : {}),
+      allowDangerouslySkipPermissions: true,
       // resume takes priority; sessionId is for brand-new sessions only
       ...(this.resume
         ? { resume: this.resume }
@@ -203,6 +205,7 @@ export class ChatSession {
 
   /** Runtime permission-mode switch — SDK iterator has setPermissionMode. */
   async setPermissionMode(mode: PermissionMode): Promise<void> {
+    this.permissionMode = mode;
     const iter = this.iter as any;
     if (iter?.setPermissionMode) {
       await iter.setPermissionMode(mode);

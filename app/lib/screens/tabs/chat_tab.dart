@@ -2579,8 +2579,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             text: _unrespondedUserText!,
             onReEdit: _reEditLastMessage,
           ),
-        // 输入框上方的上下文窗口占用进度条（设置可关、仅 Claude 有数据）。
-        const ContextUsageBar(),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         if (!_observeMode)
           _Composer(
@@ -2608,6 +2606,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             runtime: session.runtime,
             sessionId: _sessionId ?? session.resumeId,
           ),
+        // 贴输入框底边、左对齐的上下文占用条（设置可关、仅 Claude 有数据）。
+        const ContextUsageBar(),
       ],
     );
   }
@@ -4360,6 +4360,7 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
         CcPermissionMode.defaultMode => 'Claude 配置策略',
         CcPermissionMode.acceptEdits => 'Accept Edits',
         CcPermissionMode.plan => 'Plan',
+        CcPermissionMode.auto => 'Auto',
         CcPermissionMode.bypass => 'Bypass',
       };
 
@@ -4373,6 +4374,7 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
         CcPermissionMode.defaultMode => '按 Claude Code 配置策略询问',
         CcPermissionMode.acceptEdits => '自动接受文件编辑，高风险操作仍询问',
         CcPermissionMode.plan => '只规划，不直接修改文件',
+        CcPermissionMode.auto => '模型分类器自动判断，仅在有风险时才询问',
         CcPermissionMode.bypass => '跳过权限检查，完整访问',
       };
 
@@ -4381,6 +4383,7 @@ class _RuntimeSettingsSheetState extends State<_RuntimeSettingsSheet> {
         CcPermissionMode.defaultMode => (Icons.front_hand_outlined, t.warning),
         CcPermissionMode.acceptEdits => (Icons.edit_note_outlined, t.accent),
         CcPermissionMode.plan => (Icons.checklist_outlined, t.toolRead),
+        CcPermissionMode.auto => (Icons.auto_awesome_outlined, t.accent),
         CcPermissionMode.bypass => (Icons.rocket_launch_outlined, t.toolBash),
       };
 }

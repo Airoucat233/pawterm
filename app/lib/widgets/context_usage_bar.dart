@@ -35,44 +35,35 @@ class ContextUsageBar extends ConsumerWidget {
         ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k'
         : '$n';
 
+    // 贴输入框底边、左对齐、极小高度：一根迷你细条 + 「大小 + 百分比」，
+    // 按阈值变色（绿/黄/红）。
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+      child: Row(
         children: [
-          Row(
-            children: [
-              Text(
-                '上下文 ${fmt(usage.totalTokens)} / ${fmt(usage.maxTokens)}',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  color: t.textDim,
-                  fontFamily: 'monospace',
-                ),
+          SizedBox(
+            width: 44,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: pct,
+                minHeight: 2.5,
+                backgroundColor: t.border,
+                valueColor: AlwaysStoppedAnimation<Color>(color),
               ),
-              const Spacer(),
-              Text(
-                '${usage.percentage.toStringAsFixed(0)}%',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  color: color,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 3),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: LinearProgressIndicator(
-              value: pct,
-              minHeight: 3,
-              backgroundColor: t.border,
-              valueColor: AlwaysStoppedAnimation<Color>(color),
             ),
           ),
+          const SizedBox(width: 6),
+          Text(
+            '${fmt(usage.totalTokens)}/${fmt(usage.maxTokens)} · ${usage.percentage.toStringAsFixed(0)}%',
+            style: TextStyle(
+              fontSize: 9,
+              height: 1.1,
+              color: color,
+              fontFamily: 'monospace',
+            ),
+          ),
+          const Spacer(),
         ],
       ),
     );
