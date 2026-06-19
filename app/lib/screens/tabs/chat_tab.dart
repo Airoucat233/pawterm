@@ -33,6 +33,7 @@ import '../../state/rate_limit_state.dart';
 import '../../state/server_config.dart';
 import '../../state/session_status_state.dart';
 import '../../state/streaming_foreground_service.dart';
+import '../../state/context_usage_state.dart';
 import '../../state/tasks_state.dart';
 import '../../state/thinking_tokens_state.dart';
 import '../../state/todo_list.dart';
@@ -41,6 +42,7 @@ import '../../theme.dart';
 import '../../utils/time_format.dart';
 import '../../widgets/ai_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
+import '../../widgets/context_usage_bar.dart';
 import '../../widgets/inspiration_drawer.dart';
 import '../../widgets/message_view.dart';
 import '../../widgets/session_files_drawer.dart';
@@ -1052,13 +1054,34 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
 
     TurnStatus turnStatus;
+    var statusFailed = false;
     try {
       turnStatus = await api.status(uuid, agent: session.agent);
     } catch (_) {
       turnStatus = TurnStatus(TurnState.unknown);
+      statusFailed = true;
     }
 
     if (!mounted || !identical(runtime.session, session)) return;
+
+    // status() 抛错 = server 不可达：这是真·建连失败。之前会被吞成 unknown，
+    // 然后 applyConnected() 乐观置 connected=true（"假装连上"）。这里改成明确
+    // 置错 + 弹提示，让用户看到失败并能点重试。
+    if (statusFailed) {
+      void applyFailed() {
+        runtime.attempting = false;
+        runtime.connected = false;
+        runtime.error = '连接失败：服务器无法访问';
+      }
+
+      if (_isActiveRuntime(runtime)) {
+        setState(applyFailed);
+        _showConnError('连接失败，服务器无法访问');
+      } else {
+        applyFailed();
+      }
+      return;
+    }
 
     if (turnStatus.state == TurnState.running &&
         !_isOwnActiveRun(turnStatus, runtime: runtime)) {
@@ -1288,6 +1311,26 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     await prefs.setString(_kLastUuidKey, uuid);
   }
 
+  /// 建连/重连失败时弹一条醒目的错误提示，带「重试」按钮（再走一次完整重连）。
+  void _showConnError(String msg) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(msg, style: const TextStyle(fontSize: 13)),
+        backgroundColor: AppTokens.of(context).error,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: '重试',
+          textColor: Colors.white,
+          onPressed: _manualReconnect,
+        ),
+      ),
+    );
+  }
+
   void _manualReconnect() {
     if (_reconnecting) return;
     unawaited(_manualReconnectAsync());
@@ -1316,8 +1359,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           _chatApi = ChatApi(resolved.apiBase, token: resolved.token);
         }
         await _refreshActiveRunState(forceResubscribe: true);
+        // 重订阅后仍没连上 = server 不可达，弹提示让用户能再重试。
+        if (mounted && _isActiveRuntime(runtime) && !_connected) {
+          _showConnError('重连失败，服务器无法访问');
+        }
         return;
       }
+      // 没有可重订阅的活跃 run（B 从没连上 / 新会话无 sessionId）：以前这里
+      // 只重置状态、不重新建连，所以"页内重连"点了没反应、得退回首页重进。
+      // 改成清掉建连守卫后，重跑与"首页重进"完全一致的完整建连链 _ensureConnected。
       _stopObserveTimer();
       _closeSse();
       setState(() {
@@ -1330,6 +1380,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _observeHolderDeviceId = null;
         _attempting = false;
       });
+      if (session != null) {
+        _ensureConnected(session);
+      }
     } finally {
       if (!mounted) {
         runtime.reconnecting = false;
@@ -2476,6 +2529,18 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             ],
           ),
         ),
+        // 重新编辑胶囊：移出 spinner 行，单独占一行放在它正上方，避免和
+        // 状态/耗时/进度 chip 挤在一行。streaming 时也显示。
+        if (_unrespondedUserText != null && _busy)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 12, 0),
+            child: Row(
+              children: [
+                const Spacer(),
+                _ReEditAction(onReEdit: _reEditLastMessage),
+              ],
+            ),
+          ),
         if (_busy && _busyStartedAt != null)
           AiSpinnerLine(
             startedAt: _busyStartedAt!,
@@ -2484,12 +2549,12 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             thoughtSeconds: _thoughtSeconds,
             color: t.accent,
             dimColor: t.textDim,
+            // spinner 行只留：状态 + 耗时 + tokens + Todo/Task 进度 chip + 停止。
+            // Todo/Task 都是「图标+几杠几」，点开看详情。
             trailing: const TodoChip(),
-            actions: [
+            actions: const [
               // tasks chip 只在有活跃后台 task 时显示（内部判断）
-              const TasksChip(),
-              if (_unrespondedUserText != null)
-                _ReEditAction(onReEdit: _reEditLastMessage),
+              TasksChip(),
             ],
           )
         else if (ref.watch(todoListProvider).isNotEmpty ||
@@ -2498,7 +2563,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 4, 12, 4),
             child: Row(
-              children: [Spacer(), TasksChip(), SizedBox(width: 6), TodoChip()],
+              children: [Spacer(), TodoChip(), SizedBox(width: 6), TasksChip()],
             ),
           ),
         if (_pending.isNotEmpty)
@@ -2514,6 +2579,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             text: _unrespondedUserText!,
             onReEdit: _reEditLastMessage,
           ),
+        // 输入框上方的上下文窗口占用进度条（设置可关、仅 Claude 有数据）。
+        const ContextUsageBar(),
         Divider(color: t.borderSubt, height: 0.5, thickness: 0.5),
         if (!_observeMode)
           _Composer(
@@ -2860,7 +2927,14 @@ class _StatusRow extends StatelessWidget {
             decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
-          Text(statusText, style: TextStyle(fontSize: 11, color: t.textMuted)),
+          Flexible(
+            child: Text(
+              statusText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: t.textMuted),
+            ),
+          ),
           const Spacer(),
           if (gitApi != null && gitCwd != null) ...[
             _StatusGitBranchChip(

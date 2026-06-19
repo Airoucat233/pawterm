@@ -254,10 +254,6 @@ class _TodoChipState extends ConsumerState<TodoChip>
     if (renderTodos.isEmpty) return const SizedBox.shrink();
 
     final done = renderTodos.where((e) => e.isCompleted).length;
-    final inProgress = renderTodos.firstWhere(
-      (e) => e.isInProgress,
-      orElse: () => const TodoItem(content: '', activeForm: '', status: ''),
-    );
     final label = s.todoChipTpl
         .replaceAll('{done}', '$done')
         .replaceAll('{total}', '${renderTodos.length}');
@@ -290,23 +286,8 @@ class _TodoChipState extends ConsumerState<TodoChip>
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                if (inProgress.content.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 140),
-                    child: Text(
-                      inProgress.activeForm.isNotEmpty
-                          ? inProgress.activeForm
-                          : inProgress.content,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: t.accent.withValues(alpha: 0.8),
-                      ),
-                    ),
-                  ),
-                ],
+                // 只显示「图标 + 几杠几」，进行中任务文字移到点开的详情面板里，
+                // 让 chip 在 spinner 行里保持最小占宽。
               ],
             ),
           ),

@@ -65,6 +65,14 @@ extension _ClaudeChatLogic on _ChatTabState {
       // 允许/允许且不再问/拒绝。不进消息流。
       eventRuntime.claudeToolApprovals[msg.requestId] = msg;
       return true;
+    } else if (msg is ContextUsageMsg) {
+      // 上下文窗口实时占用 → 按事件 session 的 key 写 family provider，
+      // 给 composer 上方的进度条用。不进消息流。
+      final liveKey = _liveStatusKey(eventRuntime);
+      if (liveKey != null) {
+        ref.read(contextUsageProvider(liveKey).notifier).state = msg;
+      }
+      return true;
     } else if (msg is SessionStatusMsg) {
       // SDK 内部状态 'compacting'/'requesting'/null。按事件 session 的 key 写
       // family provider，后台 session 不会串到当前页面。不进消息流。

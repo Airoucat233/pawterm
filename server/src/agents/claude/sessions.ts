@@ -173,7 +173,17 @@ async function readClaudeRawHistory(input: {
     const idx = parsed.findIndex((m) => m.uuid === input.beforeUuid);
     if (idx > 0) upper = idx;
   }
-  const lower = Math.max(0, upper - input.limit);
+  let lower = Math.max(0, upper - input.limit);
+  // 把窗口起点回退到所在轮的起点（用户提问那条），避免把一轮从中间切开、
+  // 丢掉用户问题——工具多的轮常 >50 条，否则首屏/重连只剩回复看不到问题。
+  // parsed 里的 'user' 条目都是真·用户提问（纯 tool_result 的已在上面过滤掉；
+  // harness 通知会被 messageToWire 转成 task_notification，type 不是 'user'，
+  // 所以这里会跳过它们继续往回找到真正的提问）。
+  while (lower > 0) {
+    const m = parsed[lower].message as { type?: string } | undefined;
+    if (m?.type === 'user') break;
+    lower--;
+  }
   const slice = parsed.slice(lower, upper);
 
   return { messages: slice, has_more: lower > 0, total };

@@ -184,7 +184,10 @@ class TasksNotifier extends StateNotifier<Map<String, TaskRecord>> {
     state = {
       ...state,
       id: existing.copyWith(
-        status: msg.status,
+        // notification 是终态事件：SDK 有时不带 status（null）。copyWith 的
+        // `status ?? this.status` 会保留旧的 'running'，导致任务永远 active、
+        // chip 不消失。这里兜底成 'completed'，让终态可靠落地。
+        status: msg.status ?? 'completed',
         outputFile: msg.outputFile,
         finalSummary: msg.summary,
         usage: msg.usage,
@@ -217,4 +220,31 @@ final tasksProvider =
 /// 指定 session 当前活跃 task 数量（>0 时 chat tab 上的 TasksChip 才显示）。
 final activeTasksCountProvider = Provider.family<int, String>((ref, sessionKey) {
   return ref.watch(tasksProvider(sessionKey)).values.where((t) => t.isActive).length;
+});
+
+/// tasks chip 显示用：完成数 / 总数（"几杠几"）。total>0 才显示 chip；
+/// allDone（total>0 且全部完成）触发完成特效。
+class TaskCounts {
+  final int completed;
+  final int total;
+  const TaskCounts(this.completed, this.total);
+
+  bool get allDone => total > 0 && completed >= total;
+
+  @override
+  bool operator ==(Object other) =>
+      other is TaskCounts &&
+      other.completed == completed &&
+      other.total == total;
+
+  @override
+  int get hashCode => Object.hash(completed, total);
+}
+
+final taskCountsProvider =
+    Provider.family<TaskCounts, String>((ref, sessionKey) {
+  final tasks = ref.watch(tasksProvider(sessionKey)).values;
+  final total = tasks.length;
+  final completed = tasks.where((t) => !t.isActive).length;
+  return TaskCounts(completed, total);
 });

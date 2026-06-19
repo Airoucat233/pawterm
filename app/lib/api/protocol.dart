@@ -186,6 +186,15 @@ abstract class IncomingMessage {
           description: json['description'] as String?,
           safetyManual: json['safety_manual'] as bool? ?? false,
         );
+      case 'context_usage':
+        return ContextUsageMsg(
+          totalTokens: (json['total_tokens'] as num?)?.toInt() ?? 0,
+          maxTokens: (json['max_tokens'] as num?)?.toInt() ?? 0,
+          percentage: (json['percentage'] as num?)?.toDouble() ?? 0,
+          autoCompactThreshold:
+              (json['auto_compact_threshold'] as num?)?.toDouble(),
+          autoCompactEnabled: json['auto_compact_enabled'] as bool? ?? false,
+        );
       default:
         return UnknownMsg(raw: json);
     }
@@ -303,6 +312,23 @@ class ToolPermissionRequestMsg extends IncomingMessage {
     this.displayName,
     this.description,
     this.safetyManual = false,
+  });
+}
+
+/// 上下文窗口实时占用（SDK getContextUsage，每轮 result 后 server 推一次）。
+/// 驱动 composer 上方的绿/黄/红进度条。percentage 是 0–100。
+class ContextUsageMsg extends IncomingMessage {
+  final int totalTokens;
+  final int maxTokens;
+  final double percentage;
+  final double? autoCompactThreshold;
+  final bool autoCompactEnabled;
+  ContextUsageMsg({
+    required this.totalTokens,
+    required this.maxTokens,
+    required this.percentage,
+    this.autoCompactThreshold,
+    this.autoCompactEnabled = false,
   });
 }
 
