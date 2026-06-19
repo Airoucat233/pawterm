@@ -93,6 +93,13 @@ export interface AgentEventMeta {
   native_name?: string;
   native_event?: string;
   raw_payload?: unknown;
+  /**
+   * 原生事件透传（P2）：server 把 SDK / Codex 的**原始事件结构**逐字挂在这里，
+   * 供 App 的「原始事件检查」长按视图展示真原生形状（而非我们归一化后的字段）。
+   * 高频 streaming delta 不挂（开销大且不持久化）。客户端只读，不依赖其形状。
+   * 这是后续 envelope 架构（docs/agent-chat-architecture.md）的雏形字段。
+   */
+  native?: unknown;
 }
 
 // ============== Health ==============

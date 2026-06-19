@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -59,8 +58,9 @@ class MessageView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final content = _buildContent(context);
-    // debug 打包：长按弹出原始 SSE 数据
-    if (kDebugMode && rawJson != null) {
+    // 长按弹出原始事件（含 native 原生结构）。rawJson 仅在 debug 包、或用户在
+    // 设置里开启「原始事件检查」时才会被传入，所以此处只需判断它是否存在。
+    if (rawJson != null) {
       return GestureDetector(
         onLongPress: () => _showRawSheet(context),
         child: content,
@@ -71,11 +71,16 @@ class MessageView extends StatelessWidget {
 
   void _showRawSheet(BuildContext context) {
     const enc = JsonEncoder.withIndent('  ');
+    // 优先展示 server 透传的 `native` 原生事件结构（SDK / Codex 原始形状）；
+    // 没有 native 时回退展示我们的 wire 数据。
+    final native = rawJson?['native'];
+    final payload = native ?? rawJson;
+    final title = native != null ? 'Native event' : 'Raw wire';
     String text;
     try {
-      text = enc.convert(rawJson);
+      text = enc.convert(payload);
     } catch (_) {
-      text = rawJson.toString();
+      text = payload.toString();
     }
     showModalBottomSheet<void>(
       context: context,
@@ -98,7 +103,7 @@ class MessageView extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      'Raw Message',
+                      title,
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,

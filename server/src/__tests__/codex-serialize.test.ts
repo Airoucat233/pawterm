@@ -36,6 +36,7 @@ describe('codexThreadItemToWire', () => {
           raw_payload: item,
         },
       ],
+      native: item,
     });
   });
 
@@ -77,16 +78,18 @@ describe('codexThreadItemToWire', () => {
   });
 
   it('converts agentMessage to assistant text', () => {
-    const wire = codexThreadItemToWire({
+    const item = {
       type: 'agentMessage',
       id: 'msg_1',
       text: 'hello',
       phase: null,
       memoryCitation: null,
-    });
+    };
+    const wire = codexThreadItemToWire(item);
     expect(wire).toEqual({
       type: 'assistant',
       content: [{ type: 'text', text: 'hello' }],
+      native: item,
     });
   });
 
@@ -130,6 +133,7 @@ describe('codexThreadItemToWire', () => {
           raw_payload: item,
         },
       ],
+      native: item,
     });
   });
 

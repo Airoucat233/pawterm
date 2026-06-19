@@ -7,7 +7,30 @@ import type { ContentBlock } from '@pawterm/shared';
  * here we just normalize block shapes and prune internal fields.
  */
 
+/**
+ * Public entry: convert an SDK message to a wire dict and attach the original
+ * native SDK event under `native` so the App's raw view can show the true
+ * native structure (not just our normalized fields). High-frequency streaming
+ * deltas are skipped — they don't persist as inspectable messages and the
+ * payload overhead isn't worth it.
+ */
 export function messageToWire(msg: any): any | null {
+  const wire = messageToWireInner(msg);
+  if (wire && !isStreamWireType(wire.type)) {
+    wire.native = safe(msg);
+  }
+  return wire;
+}
+
+function isStreamWireType(type: unknown): boolean {
+  return (
+    type === 'stream_delta' ||
+    type === 'stream_block_start' ||
+    type === 'stream_block_stop'
+  );
+}
+
+function messageToWireInner(msg: any): any | null {
   if (!msg || typeof msg !== 'object') return null;
 
   const type = msg.type;
