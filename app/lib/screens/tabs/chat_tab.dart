@@ -57,6 +57,7 @@ import 'package:uuid/uuid.dart';
 part 'chat_tab_codex.dart';
 part 'chat_tab_claude.dart';
 part 'chat_tab_history.dart';
+part 'chat_tab_attachments.dart';
 
 class LocalUserInput extends IncomingMessage {
   final String text;
@@ -2256,64 +2257,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   // chat_tab_codex.dart，行为不变。
 
   /// 弹文件选择器，把每个选中的文件都登记为 uploading 状态并启动并发上传。
-  Future<void> _pickAndUploadAttachments() async {
-    FocusManager.instance.primaryFocus?.unfocus();
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-    if (result == null) return;
-    final session = ref.read(currentSessionProvider);
-    if (session == null) return;
-    final config = ref.read(activeConnectionProvider);
-    if (config == null) return;
-    final api = UploadApi(config.apiBase, token: config.token);
-    for (final pickedFile in result.files) {
-      final path = pickedFile.path;
-      if (path == null) continue;
-      final state = _AttachmentState(
-        localName: pickedFile.name,
-        localPath: path,
-        status: _AttachmentStatus.uploading,
-      );
-      setState(() => _attachments.add(state));
-      unawaited(_uploadOne(api, state, session.cwd));
-    }
-  }
-
-  Future<void> _uploadOne(
-      UploadApi api, _AttachmentState state, String cwd) async {
-    try {
-      final result = await api.upload(File(state.localPath), cwd);
-      if (!mounted) return;
-      setState(() {
-        state.remotePath = result.path;
-        state.status = _AttachmentStatus.ready;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        state.errorMsg = e.toString();
-        state.status = _AttachmentStatus.failed;
-      });
-    }
-  }
-
-  void _removeAttachment(_AttachmentState a) {
-    setState(() => _attachments.remove(a));
-  }
-
-  Future<void> _retryAttachment(_AttachmentState a) async {
-    final session = ref.read(currentSessionProvider);
-    final config = ref.read(activeConnectionProvider);
-    if (session == null || config == null) return;
-    setState(() {
-      a.status = _AttachmentStatus.uploading;
-      a.errorMsg = null;
-    });
-    await _uploadOne(
-        UploadApi(config.apiBase, token: config.token), a, session.cwd);
-  }
-
-  bool get _attachmentsAllReady =>
-      _attachments.every((a) => a.status == _AttachmentStatus.ready);
+  // 附件选择/上传方法（_pickAndUploadAttachments / _uploadOne /
+  // _removeAttachment / _retryAttachment / _attachmentsAllReady）已移到
+  // chat_tab_attachments.dart（_AttachmentLogic extension），行为不变。
 
   @override
   Widget build(BuildContext context) {
