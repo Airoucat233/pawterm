@@ -36,6 +36,12 @@ class MessageView extends StatelessWidget {
       onAnswerCodexApproval;
   final Map<String, String>? codexApprovalDecisions;
 
+  /// Claude 工具审批：requestId(= tool_use id) → 待审批请求。某 tool_use 命中
+  /// 时在它的工具卡下显示 允许/允许且不再问/拒绝。
+  final Map<String, ToolPermissionRequestMsg>? claudeApprovals;
+  final void Function(String requestId, String decision, bool dontAskAgain)?
+      onToolPermission;
+
   /// 原始 SSE event data（仅 debug 打包时传入，release 为 null）。
   /// 长按消息可查看。
   final Map<String, dynamic>? rawJson;
@@ -51,6 +57,8 @@ class MessageView extends StatelessWidget {
     this.onAnswerQuestion,
     this.onAnswerCodexApproval,
     this.codexApprovalDecisions,
+    this.claudeApprovals,
+    this.onToolPermission,
     this.rawJson,
     this.onOpenFilePath,
     this.onSaveFilePath,
@@ -387,11 +395,23 @@ class MessageView extends StatelessWidget {
           return const SizedBox.shrink();
         }
       }
-      return ToolCallCard(
+      final card = ToolCallCard(
         toolUse: block,
         result: result,
         subAgentMsgs: subMsgsMap?[block.id],
       );
+      // Claude 工具审批：该 tool_use 正在等你拍板 → 卡下挂审批按钮条。
+      final approval = claudeApprovals?[block.id];
+      if (approval != null && onToolPermission != null && result == null) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            card,
+            _ToolPermissionBar(request: approval, onDecide: onToolPermission!),
+          ],
+        );
+      }
+      return card;
     }
 
     if (block is ToolResultBlock) {
@@ -1199,4 +1219,86 @@ class _InterruptedChip extends StatelessWidget {
           border: Border(bottom: BorderSide(color: t.borderSubt, width: 0.5)),
         ),
       );
+}
+
+/// Claude 工具审批按钮条：挂在待审批工具卡下面，允许/允许且不再问/拒绝。
+/// 对齐 Claude Code CLI 的交互审批选项。
+class _ToolPermissionBar extends StatelessWidget {
+  final ToolPermissionRequestMsg request;
+  final void Function(String requestId, String decision, bool dontAskAgain)
+      onDecide;
+  const _ToolPermissionBar({required this.request, required this.onDecide});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      margin: const EdgeInsets.only(top: 4, bottom: 6),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: t.warning.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: t.warning.withValues(alpha: 0.3), width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.front_hand_outlined, size: 14, color: t.warning),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  request.title ??
+                      '需要确认：${request.displayName ?? request.toolName}',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: t.text,
+                      fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _btn(t, '允许', t.accent,
+                    () => onDecide(request.requestId, 'allow', false)),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _btn(t, '不再问', t.accent,
+                    () => onDecide(request.requestId, 'allow', true)),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _btn(t, '拒绝', t.error,
+                    () => onDecide(request.requestId, 'deny', false)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _btn(AppTokens t, String label, Color color, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 11.5, color: color, fontWeight: FontWeight.w600)),
+      ),
+    );
+  }
 }

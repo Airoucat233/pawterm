@@ -155,6 +155,9 @@ class _ChatSessionRuntime {
   String? unrespondedUserText;
   // Codex 专属运行时状态（realtime 快照 + 审批生命周期）集中在这里。
   final _CodexRuntimeExt codex = _CodexRuntimeExt();
+  // Claude 待审批的工具：requestId(= tool_use id) → 请求。收到
+  // tool_permission_request 时存入，用户决定后移除。
+  final Map<String, ToolPermissionRequestMsg> claudeToolApprovals = {};
   final List<_AttachmentState> attachments = [];
   final Map<String, List<IncomingMessage>> subMsgs = {};
   final Map<String, StreamingAssistant> subStreaming = {};
@@ -2423,6 +2426,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                                 onAnswerQuestion: _sendAnswerQuestion,
                                 onAnswerCodexApproval: _sendCodexApproval,
                                 codexApprovalDecisions: _codexApprovalDecisions,
+                                claudeApprovals: _runtime.claudeToolApprovals,
+                                onToolPermission: (id, decision, dontAsk) =>
+                                    _sendClaudeToolPermission(id, decision,
+                                        dontAskAgain: dontAsk),
                                 onOpenFilePath: _openRemoteFilePreview,
                                 onSaveFilePath: _saveRemoteFileRef,
                                 rawJson: kDebugMode ? _debugRaw[m] : null,
