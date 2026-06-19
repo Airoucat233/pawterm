@@ -39,7 +39,7 @@ import '../../state/todo_list.dart';
 import '../../state/tool_progress_state.dart';
 import '../../theme.dart';
 import '../../utils/time_format.dart';
-import '../../widgets/cc_spinner.dart';
+import '../../widgets/ai_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
 import '../../widgets/inspiration_drawer.dart';
 import '../../widgets/message_view.dart';
@@ -136,7 +136,7 @@ class _ChatSessionRuntime {
   bool interrupting = false;
   String? error;
   String? boundKey;
-  CcStreamMode mode = CcStreamMode.requesting;
+  AiStreamMode mode = AiStreamMode.requesting;
   String? currentBlockKind;
   DateTime? thinkingStartedAt;
   int? thoughtSeconds;
@@ -228,8 +228,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   set _error(String? value) => _runtime.error = value;
   String? get _boundKey => _runtime.boundKey;
   set _boundKey(String? value) => _runtime.boundKey = value;
-  CcStreamMode get _mode => _runtime.mode;
-  set _mode(CcStreamMode value) => _runtime.mode = value;
+  AiStreamMode get _mode => _runtime.mode;
+  set _mode(AiStreamMode value) => _runtime.mode = value;
   String? get _currentBlockKind => _runtime.currentBlockKind;
   set _currentBlockKind(String? value) => _runtime.currentBlockKind = value;
   DateTime? get _thinkingStartedAt => _runtime.thinkingStartedAt;
@@ -601,7 +601,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _busy = true;
         _queuePausedOnUnknown = false;
         _busyStartedAt ??= DateTime.now();
-        _mode = CcStreamMode.responding;
+        _mode = AiStreamMode.responding;
         _error = null;
       });
       _syncForegroundStreamService(session: session, busy: true);
@@ -1092,7 +1092,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         runtime.busy = true;
         runtime.queuePausedOnUnknown = false;
         runtime.busyStartedAt ??= DateTime.now();
-        runtime.mode = CcStreamMode.responding;
+        runtime.mode = AiStreamMode.responding;
       }
     }
 
@@ -1381,7 +1381,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _busy = false;
             _busyStartedAt = null;
             _interrupting = false;
-            _mode = CcStreamMode.requesting;
+            _mode = AiStreamMode.requesting;
           });
           _syncForegroundStreamService(busy: false);
           unawaited(_refreshActiveRunState());
@@ -1492,7 +1492,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (msg.busy) {
           _busy = true;
           _busyStartedAt ??= DateTime.now();
-          _mode = CcStreamMode.responding;
+          _mode = AiStreamMode.responding;
         }
       } else if (msg is ResultMsg) {
         final shouldNotify = _busy;
@@ -1506,7 +1506,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _busy = false;
         _busyStartedAt = null;
         _interrupting = false;
-        _mode = CcStreamMode.requesting;
+        _mode = AiStreamMode.requesting;
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
         _currentBlockKind = null;
@@ -1566,25 +1566,25 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _currentBlockKind = msg.kind;
         switch (msg.kind) {
           case 'text':
-            _mode = CcStreamMode.responding;
+            _mode = AiStreamMode.responding;
             _thoughtForTimer?.cancel();
             _thoughtSeconds = null;
             _messages.add(StreamingAssistant());
             break;
           case 'thinking':
-            _mode = CcStreamMode.thinking;
+            _mode = AiStreamMode.thinking;
             _thinkingStartedAt = DateTime.now();
             _thoughtForTimer?.cancel();
             break;
           case 'tool_use':
-            _mode = CcStreamMode.toolInput;
+            _mode = AiStreamMode.toolInput;
             break;
         }
         _syncForegroundStreamService();
       } else if (msg is StreamDelta) {
         _markAiOutputStarted();
         if (msg.kind == 'text') {
-          _mode = CcStreamMode.responding;
+          _mode = AiStreamMode.responding;
           // 追加流式文本；thinking_delta 丢弃（参见 docs/streaming-response.md）。
           final last = _messages.isNotEmpty ? _messages.last : null;
           if (last is StreamingAssistant && !last.stopped) {
@@ -1600,14 +1600,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           final dur = DateTime.now().difference(_thinkingStartedAt!);
           _thinkingStartedAt = null;
           _thoughtSeconds = dur.inSeconds.clamp(1, 99999);
-          _mode = CcStreamMode.thoughtFor;
+          _mode = AiStreamMode.thoughtFor;
           _thoughtForTimer?.cancel();
           _thoughtForTimer = Timer(const Duration(seconds: 2), () {
             if (!mounted) return;
             setState(() {
               // 2 秒后回落到 responding 提示（除非新的 block 已经来）。
-              if (_mode == CcStreamMode.thoughtFor) {
-                _mode = CcStreamMode.responding;
+              if (_mode == AiStreamMode.thoughtFor) {
+                _mode = AiStreamMode.responding;
                 _thoughtSeconds = null;
               }
             });
@@ -1851,7 +1851,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _localUserEchoes.add(local);
       _busy = true;
       _busyStartedAt = DateTime.now();
-      _mode = CcStreamMode.requesting;
+      _mode = AiStreamMode.requesting;
       _currentBlockKind = null;
       _thoughtSeconds = null;
       _thoughtForTimer?.cancel();
@@ -2043,7 +2043,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _interrupting = false;
             _busy = false;
             _busyStartedAt = null;
-            _mode = CcStreamMode.requesting;
+            _mode = AiStreamMode.requesting;
             _currentBlockKind = null;
             _thinkingStartedAt = null;
             _thoughtSeconds = null;
@@ -2119,7 +2119,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _busy = false;
       _busyStartedAt = null;
       _interrupting = false;
-      _mode = CcStreamMode.requesting;
+      _mode = AiStreamMode.requesting;
       _currentBlockKind = null;
       _thinkingStartedAt = null;
       _thoughtSeconds = null;
@@ -2232,11 +2232,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   String _foregroundActivityLabel() {
     return switch (_mode) {
-      CcStreamMode.requesting => '连接中',
-      CcStreamMode.thinking => '思考中',
-      CcStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
-      CcStreamMode.responding => '生成回复',
-      CcStreamMode.toolInput => '准备工具',
+      AiStreamMode.requesting => '连接中',
+      AiStreamMode.thinking => '思考中',
+      AiStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
+      AiStreamMode.responding => '生成回复',
+      AiStreamMode.toolInput => '准备工具',
     };
   }
 
@@ -2440,7 +2440,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           ),
         ),
         if (_busy && _busyStartedAt != null)
-          CcSpinnerLine(
+          AiSpinnerLine(
             startedAt: _busyStartedAt!,
             mode: _mode,
             thoughtSeconds: _thoughtSeconds,

@@ -8,19 +8,20 @@ import '../state/open_chat_windows.dart';
 import '../state/session_status_state.dart';
 import '../state/thinking_tokens_state.dart';
 
-/// claude-code CLI 风格的字符 spinner。
-/// 字符序列复刻自 `src/components/Spinner/utils.ts`（macOS 集合）。
+/// "AI 在忙"的字符 spinner —— **两个 agent（Claude / Codex）共用**的活动指示
+/// 器（以前叫 CcSpinner，Cc=claude-code 是历史误导，其实并非 Claude 专属）。
+/// 视觉风格复刻自 claude-code CLI 的字符 spinner（`Spinner/utils.ts` macOS 集）。
 /// 帧序列 = 正向 + 反向，共 12 帧 "开花-合上" 循环，约 80ms/帧。
-class CcSpinner extends StatefulWidget {
+class AiSpinner extends StatefulWidget {
   final double size;
   final Color color;
-  const CcSpinner({super.key, this.size = 16, required this.color});
+  const AiSpinner({super.key, this.size = 16, required this.color});
 
   @override
-  State<CcSpinner> createState() => _CcSpinnerState();
+  State<AiSpinner> createState() => _AiSpinnerState();
 }
 
-class _CcSpinnerState extends State<CcSpinner>
+class _AiSpinnerState extends State<AiSpinner>
     with SingleTickerProviderStateMixin {
   static const _chars = ['·', '✢', '✳', '✶', '✻', '✽'];
   static final List<String> _frames =
@@ -83,7 +84,7 @@ class _CcSpinnerState extends State<CcSpinner>
 /// thoughtFor → thinking 刚结束的过渡态，显示"已思考 Xs"约 2 秒
 /// responding → 生成普通文本
 /// toolInput → 生成工具调用参数
-enum CcStreamMode { requesting, thinking, thoughtFor, responding, toolInput }
+enum AiStreamMode { requesting, thinking, thoughtFor, responding, toolInput }
 
 /// 把秒数格式化成 `12s` / `1m30s` / `1h2m30s` 紧凑形式。
 /// - 总是从最高非零位开始；
@@ -102,9 +103,9 @@ String _formatElapsed(int seconds) {
 
 /// 一整行的"响应中"状态：spinner + 文案 + 经过秒数 + 停止按钮。
 /// 支持随 [mode] 动态切换文案，thinking → thoughtFor 至少持续 2s（防抖）。
-class CcSpinnerLine extends ConsumerStatefulWidget {
+class AiSpinnerLine extends ConsumerStatefulWidget {
   final DateTime startedAt;
-  final CcStreamMode mode;
+  final AiStreamMode mode;
 
   /// 仅在 [mode] == thoughtFor 时有意义：本轮 thinking 耗时秒数。
   final int? thoughtSeconds;
@@ -117,7 +118,7 @@ class CcSpinnerLine extends ConsumerStatefulWidget {
   final Widget? trailing;
   final List<Widget> actions;
 
-  const CcSpinnerLine({
+  const AiSpinnerLine({
     super.key,
     required this.startedAt,
     required this.mode,
@@ -130,10 +131,10 @@ class CcSpinnerLine extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<CcSpinnerLine> createState() => _CcSpinnerLineState();
+  ConsumerState<AiSpinnerLine> createState() => _AiSpinnerLineState();
 }
 
-class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
+class _AiSpinnerLineState extends ConsumerState<AiSpinnerLine> {
   late int _verbIndex;
   Timer? _tick;
   int _elapsed = 0;
@@ -169,17 +170,17 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
         : ref.watch(claudeSessionStatusProvider(sessionKey));
     if (claudeStatus == 'compacting') return '正在压缩上下文…';
     switch (widget.mode) {
-      case CcStreamMode.requesting:
+      case AiStreamMode.requesting:
         return s.spinnerRequesting;
-      case CcStreamMode.thinking:
+      case AiStreamMode.thinking:
         return s.spinnerThinking;
-      case CcStreamMode.thoughtFor:
+      case AiStreamMode.thoughtFor:
         final sec = widget.thoughtSeconds ?? 0;
         return s.spinnerThoughtForTpl.replaceAll('{s}', '$sec');
-      case CcStreamMode.responding:
+      case AiStreamMode.responding:
         final verbs = s.spinnerRespondingVerbs;
         return '${verbs[_verbIndex % verbs.length]}…';
-      case CcStreamMode.toolInput:
+      case AiStreamMode.toolInput:
         return s.spinnerToolInput;
     }
   }
@@ -192,7 +193,7 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          CcSpinner(size: 14, color: widget.color),
+          AiSpinner(size: 14, color: widget.color),
           const SizedBox(width: 8),
           Text(
             _label(ref),
