@@ -87,4 +87,186 @@ extension _CodexChatLogic on _ChatTabState {
       },
     ));
   }
+
+  void _notifyCodexApprovalIfNeeded(
+    _ChatSessionRuntime runtime,
+    _PendingCodexApproval approval,
+    Connection config,
+  ) {
+    final uuid = runtime.sessionId;
+    final session = runtime.session;
+    if (uuid == null || session == null) return;
+    final requestId = approval.toolUse.id;
+    if (!runtime.codex.notifiedApprovalIds.add(requestId)) return;
+    final payload = _completionPayloadFor(session, resumeId: uuid);
+    final title = _approvalNotificationTitle(session, approval.toolUse.name);
+    final body = _approvalNotificationBody(approval.toolUse);
+    if (_appInForeground) {
+      ChatCompletionNotifier.instance.showInAppApproval(
+        payload: payload,
+        requestId: requestId,
+        title: title,
+        body: body,
+      );
+      return;
+    }
+    unawaited(StreamingForegroundService.instance.complete(payload));
+    unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
+      payload: payload,
+      apiBase: config.apiBase,
+      token: config.token,
+      uuid: uuid,
+      requestId: requestId,
+      method: approval.toolUse.name,
+      title: title,
+      body: body,
+      appInForeground: _appInForeground,
+    ));
+  }
+
+  String _approvalNotificationTitle(CurrentSession session, String method) {
+    final sessionName = _notificationSessionName(session);
+    if (method == 'item/commandExecution/requestApproval') {
+      return '$sessionName 等待确认命令';
+    }
+    if (method == 'item/fileChange/requestApproval') {
+      return '$sessionName 等待确认文件修改';
+    }
+    if (method == 'item/permissions/requestApproval') {
+      return '$sessionName 等待确认权限';
+    }
+    return '$sessionName 等待确认';
+  }
+
+  String _approvalNotificationBody(ToolUseBlock toolUse) {
+    final input = toolUse.input;
+    final reason = input['reason']?.toString().trim();
+    if (toolUse.name == 'item/commandExecution/requestApproval') {
+      final command = input['command']?.toString().trim();
+      if (command != null && command.isNotEmpty) return command;
+    }
+    if (toolUse.name == 'item/fileChange/requestApproval') {
+      final grantRoot = input['grantRoot']?.toString().trim();
+      if (grantRoot != null && grantRoot.isNotEmpty) return grantRoot;
+    }
+    if (reason != null && reason.isNotEmpty) return reason;
+    return '需要你确认后继续';
+  }
+
+  void _scheduleCodexApprovalSideEffects({_ChatSessionRuntime? runtime}) {
+    final target = runtime ?? _runtime;
+    final config = ref.read(activeConnectionProvider);
+    final activeApproval = _withRuntime(
+      target,
+      () => _latestPendingCodexApproval(_buildToolResultIndex()),
+    );
+    if (activeApproval == null || config == null || target.sessionId == null) {
+      return;
+    }
+    if (!_appInForeground) {
+      _notifyCodexApprovalIfNeeded(target, activeApproval, config);
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _notifyCodexApprovalIfNeeded(target, activeApproval, config);
+      if (_isCurrentSessionRuntime(target)) {
+        _showCodexApprovalSheetIfNeeded(target, activeApproval);
+      }
+    });
+  }
+
+  Future<void> _showCodexApprovalSheetIfNeeded(
+    _ChatSessionRuntime runtime,
+    _PendingCodexApproval approval,
+  ) async {
+    final requestId = approval.toolUse.id;
+    if (!_isCurrentSessionRuntime(runtime)) return;
+    if (runtime.codex.dismissedApprovalPopoverId == requestId) return;
+    if (runtime.codex.suppressedApprovalSheetIds.contains(requestId)) return;
+    final pendingApprovals = _withRuntime(
+      runtime,
+      () => _pendingCodexApprovals(_buildToolResultIndex()),
+    );
+    if (pendingApprovals.length > 1) {
+      runtime.codex.suppressedApprovalSheetIds.addAll(
+        pendingApprovals.map((item) => item.toolUse.id),
+      );
+      return;
+    }
+    if (!runtime.codex.presentedApprovalSheetIds.add(requestId)) return;
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      requestFocus: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.32),
+      builder: (sheetContext) => _ApprovalBottomSheet(
+        toolUse: approval.toolUse,
+        result: approval.result,
+        onSubmit: (id, decision, scope) {
+          _sendCodexApprovalForRuntime(runtime, id, decision, scope);
+          Navigator.of(sheetContext).pop(true);
+        },
+      ),
+    );
+    if (!mounted) return;
+    void markDismissed() {
+      runtime.codex.dismissedApprovalPopoverId = requestId;
+      if (submitted != true) {
+        runtime.codex.presentedApprovalSheetIds.remove(requestId);
+      }
+    }
+
+    if (submitted == true) {
+      if (_isActiveRuntime(runtime)) {
+        rebuild(markDismissed);
+      } else {
+        markDismissed();
+      }
+    } else {
+      if (_isActiveRuntime(runtime)) {
+        rebuild(markDismissed);
+      } else {
+        markDismissed();
+      }
+    }
+  }
+
+  _PendingCodexApproval? _latestPendingCodexApproval(
+    Map<String, ToolResultBlock> toolResults,
+  ) {
+    final pending = _pendingCodexApprovals(toolResults);
+    for (final approval in pending) {
+      if (approval.toolUse.id != _runtime.codex.dismissedApprovalPopoverId) {
+        return approval;
+      }
+    }
+    return null;
+  }
+
+  List<_PendingCodexApproval> _pendingCodexApprovals(
+    Map<String, ToolResultBlock> toolResults,
+  ) {
+    final pending = <_PendingCodexApproval>[];
+    for (final m in _messages.reversed) {
+      final content = switch (m) {
+        UserMsg(:final content) => content,
+        AssistantMsg(:final content) => content,
+        _ => const <ContentBlock>[],
+      };
+      for (final block in content.reversed) {
+        if (block is! ToolUseBlock) continue;
+        if (!_isCodexApprovalRequestName(block.name)) continue;
+        final result = toolResults[block.id];
+        if (result == null) {
+          pending.add(_PendingCodexApproval(toolUse: block, result: result));
+          continue;
+        }
+      }
+    }
+    return pending;
+  }
 }
