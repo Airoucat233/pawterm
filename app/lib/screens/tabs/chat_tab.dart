@@ -39,7 +39,7 @@ import '../../state/todo_list.dart';
 import '../../state/tool_progress_state.dart';
 import '../../theme.dart';
 import '../../utils/time_format.dart';
-import '../../widgets/cc_spinner.dart';
+import '../../widgets/ai_spinner.dart';
 import '../../widgets/codex_approval_card.dart';
 import '../../widgets/inspiration_drawer.dart';
 import '../../widgets/message_view.dart';
@@ -49,6 +49,15 @@ import '../../widgets/todo_chip.dart';
 import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+
+// 各 agent 专属逻辑拆到对称的 part 文件（_ChatTabState 的 extension）。part 与
+// 本文件同库，privacy 与调用语义完全一致，纯结构位移、零行为改动。
+// _handleWireMessage 做中央分发，agent 专属处理委托到各自文件——骨架对称，
+// 未来某个 agent 扩展就往它自己的文件塞（P3 绞杀式拆分）。
+part 'chat_tab_codex.dart';
+part 'chat_tab_claude.dart';
+part 'chat_tab_history.dart';
+part 'chat_tab_attachments.dart';
 
 class LocalUserInput extends IncomingMessage {
   final String text;
@@ -84,6 +93,29 @@ class _AttachmentState {
   });
 }
 
+/// Codex 专属的 per-session 运行时状态，从 god-runtime 抽出集中到这里
+/// （P3 plugin 架构第一步：runtime 瘦身）。包含 realtime item 快照与审批
+/// 生命周期的全部本地状态——这些只有 Codex 会话用得到。
+class _CodexRuntimeExt {
+  /// realtime SSE 快照：item UUID → 最新消息（upsert in place）。
+  final Map<String, IncomingMessage> codexRealtimeSnapshots = {};
+
+  /// 已决策的 Codex approval ID → 用户决定。
+  final Map<String, String> codexApprovalDecisions = {};
+
+  /// 已通知过的 approval ID，防止重复通知。
+  final Set<String> notifiedApprovalIds = {};
+
+  /// 已弹出过 approval bottom sheet 的 ID。
+  final Set<String> presentedApprovalSheetIds = {};
+
+  /// 因多个 approval 同时到达而被抑制显示的 ID。
+  final Set<String> suppressedApprovalSheetIds = {};
+
+  /// 最后被用户忽略的 approval ID（单一最新值）。
+  String? dismissedApprovalPopoverId;
+}
+
 class _ChatSessionRuntime {
   CurrentSession? session;
   ChatApi? chatApi;
@@ -104,7 +136,7 @@ class _ChatSessionRuntime {
   bool interrupting = false;
   String? error;
   String? boundKey;
-  CcStreamMode mode = CcStreamMode.requesting;
+  AiStreamMode mode = AiStreamMode.requesting;
   String? currentBlockKind;
   DateTime? thinkingStartedAt;
   int? thoughtSeconds;
@@ -120,13 +152,9 @@ class _ChatSessionRuntime {
   bool aiRespondedThisTurn = false;
   final List<LocalUserInput> localUserEchoes = [];
   final Set<String> seenRealtimeUuids = {};
-  final Map<String, IncomingMessage> codexRealtimeSnapshots = {};
   String? unrespondedUserText;
-  String? dismissedApprovalPopoverId;
-  final Map<String, String> codexApprovalDecisions = {};
-  final Set<String> notifiedApprovalIds = {};
-  final Set<String> presentedApprovalSheetIds = {};
-  final Set<String> suppressedApprovalSheetIds = {};
+  // Codex 专属运行时状态（realtime 快照 + 审批生命周期）集中在这里。
+  final _CodexRuntimeExt codex = _CodexRuntimeExt();
   final List<_AttachmentState> attachments = [];
   final Map<String, List<IncomingMessage>> subMsgs = {};
   final Map<String, StreamingAssistant> subStreaming = {};
@@ -200,8 +228,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   set _error(String? value) => _runtime.error = value;
   String? get _boundKey => _runtime.boundKey;
   set _boundKey(String? value) => _runtime.boundKey = value;
-  CcStreamMode get _mode => _runtime.mode;
-  set _mode(CcStreamMode value) => _runtime.mode = value;
+  AiStreamMode get _mode => _runtime.mode;
+  set _mode(AiStreamMode value) => _runtime.mode = value;
   String? get _currentBlockKind => _runtime.currentBlockKind;
   set _currentBlockKind(String? value) => _runtime.currentBlockKind = value;
   DateTime? get _thinkingStartedAt => _runtime.thinkingStartedAt;
@@ -268,7 +296,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   /// those must upsert in place to reveal final text/tool results.
   Set<String> get _seenRealtimeUuids => _runtime.seenRealtimeUuids;
   Map<String, IncomingMessage> get _codexRealtimeSnapshots =>
-      _runtime.codexRealtimeSnapshots;
+      _runtime.codex.codexRealtimeSnapshots;
 
   /// 上一轮用户消息的原文，仅在 AI 未响应就中断时保留。
   /// 非 null 时在输入框上方显示"重新编辑"快捷条。
@@ -277,7 +305,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _runtime.unrespondedUserText = value;
 
   Map<String, String> get _codexApprovalDecisions =>
-      _runtime.codexApprovalDecisions;
+      _runtime.codex.codexApprovalDecisions;
 
   /// 待发送的附件：用户从相册/文件选择后立即上传，发送时把 remotePath 拼到消息文本里。
   /// 上传中/失败的附件会阻塞发送（_attachmentsAllReady=false）。
@@ -315,6 +343,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     final session = runtime.session;
     return session == null ? null : _sessionKey(session);
   }
+
+  /// setState 的对外包装：State.setState 是 @protected，part 文件里的 extension
+  /// （CodexChatLogic 等）不能直接调，统一经这里转发。纯转发，行为与 setState
+  /// 完全一致。
+  void rebuild(VoidCallback fn) => setState(fn);
 
   bool _isCurrentSessionRuntime(_ChatSessionRuntime runtime) {
     if (!_isActiveRuntime(runtime)) return false;
@@ -568,7 +601,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _busy = true;
         _queuePausedOnUnknown = false;
         _busyStartedAt ??= DateTime.now();
-        _mode = CcStreamMode.responding;
+        _mode = AiStreamMode.responding;
         _error = null;
       });
       _syncForegroundStreamService(session: session, busy: true);
@@ -1059,7 +1092,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         runtime.busy = true;
         runtime.queuePausedOnUnknown = false;
         runtime.busyStartedAt ??= DateTime.now();
-        runtime.mode = CcStreamMode.responding;
+        runtime.mode = AiStreamMode.responding;
       }
     }
 
@@ -1201,30 +1234,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  void _switchPermissionMode(CcPermissionMode m) {
-    final session = ref.read(currentSessionProvider);
-    if (session?.agent != AgentKind.claude) return;
-    // 1) UI 全局态，picker 当前选中项靠这个
-    ref.read(permissionModeProvider.notifier).set(m);
-    // 2) 写回 session.runtime['permission_mode']——之前漏了这一步，导致
-    //    UI 选中 bypass 但 session.runtime 还是入会时的初值 acceptEdits；
-    //    任何依赖 session.runtime 的逻辑（runtime sheet 的高亮、新建同 cwd
-    //    session 时的 default 计算等）都会拿到错的值。
-    final nextRuntime = {...session!.runtime, 'permission_mode': m.wire};
-    final next = session.copyWith(runtime: nextRuntime);
-    ref.read(currentSessionProvider.notifier).state = next;
-    _runtime.session = next;
-    // 3) 通知服务端切 live SDK + 持久化 sessionRuntime（服务端 /chat/permission
-    //    现在两件事都会做）
-    if (_sessionId != null && _chatApi != null) {
-      unawaited(_chatApi!.permission(_sessionId!, m.wire));
-    }
-    // 4) 同时更新 agent-level overrides，让用户下次新建 session 直接拿到
-    //    用户偏好的 permission_mode（跨 cwd 共享）。
-    ref
-        .read(agentRuntimeOverridesProvider.notifier)
-        .patch(session.agent, {'permission_mode': m.wire});
-  }
+  // _switchPermissionMode 已移到 chat_tab_claude.dart（_ClaudeChatLogic），
+  // 行为不变。
 
   void _patchRuntime(Map<String, dynamic> patch) {
     final session = ref.read(currentSessionProvider);
@@ -1264,203 +1275,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   /// 首屏加载：最后 [_historyPageSize] 条消息。
-  Future<void> _loadHistory(
-    String httpBase,
-    String cwd,
-    String sessionId,
-    AgentKind agent, {
-    _ChatSessionRuntime? runtime,
-  }) async {
-    final target = runtime ?? _runtime;
-    // 给骨架屏一个最少展示时长，避免 fetch 太快"闪一下"
-    final minShowUntil = DateTime.now().add(const Duration(milliseconds: 280));
-    if (_isActiveRuntime(target)) {
-      setState(() => _withRuntime(target, () => _loadingHistory = true));
-    } else {
-      _withRuntime(target, () => _loadingHistory = true);
-    }
-    try {
-      final page = await _fetchHistoryPage(
-        httpBase,
-        cwd,
-        sessionId,
-        agent,
-        limit: _historyPageSize,
-      );
-      if (!mounted) return;
-      final remaining = minShowUntil.difference(DateTime.now());
-      if (remaining > Duration.zero) await Future.delayed(remaining);
-      if (!mounted) return;
-      final targetSession = target.session;
-      final targetSessionId = target.sessionId ?? targetSession?.resumeId;
-      if (targetSession?.cwd != cwd ||
-          targetSession?.agent != agent ||
-          targetSessionId != sessionId) {
-        return;
-      }
-      if (page != null) {
-        if (_isActiveRuntime(target)) {
-          setState(() => _withRuntime(target, () {
-                _messages
-                  ..clear()
-                  ..addAll(page.messages);
-                _localUserEchoes.clear();
-                _seenRealtimeUuids.clear();
-                _codexRealtimeSnapshots.clear();
-                _oldestUuid = page.oldestUuid;
-                _hasMoreHistory = page.hasMore;
-                _loadingHistory = false;
-              }));
-        } else {
-          _withRuntime(target, () {
-            _messages
-              ..clear()
-              ..addAll(page.messages);
-            _localUserEchoes.clear();
-            _seenRealtimeUuids.clear();
-            _codexRealtimeSnapshots.clear();
-            _oldestUuid = page.oldestUuid;
-            _hasMoreHistory = page.hasMore;
-            _loadingHistory = false;
-          });
-        }
-        if (_isActiveRuntime(target)) {
-          _settleScrollToEnd(target);
-        }
-      } else if (_isActiveRuntime(target)) {
-        setState(() => _loadingHistory = false);
-      } else {
-        _withRuntime(target, () => _loadingHistory = false);
-      }
-    } catch (_) {
-      if (mounted && _isActiveRuntime(target)) {
-        setState(() => _loadingHistory = false);
-      } else {
-        _withRuntime(target, () => _loadingHistory = false);
-      }
-    }
-  }
-
-  Future<void> _reloadCurrentHistory() async {
-    final conn = ref.read(activeConnectionProvider);
-    final session = ref.read(currentSessionProvider);
-    final uuid = _sessionId ?? session?.resumeId;
-    if (conn == null || session == null || uuid == null) return;
-    final page = await _fetchHistoryPage(
-      conn.apiBase,
-      session.cwd,
-      uuid,
-      session.agent,
-      limit: _historyPageSize,
-    );
-    if (!mounted || page == null) return;
-    setState(() {
-      _messages
-        ..clear()
-        ..addAll(page.messages);
-      _oldestUuid = page.oldestUuid;
-      _hasMoreHistory = page.hasMore;
-      _loadingHistory = false;
-    });
-    _scrollToEnd(force: true);
-  }
-
-  /// 上滑到顶时调用：取 [_oldestUuid] 前面的一页，prepend 到列表前。
-  /// prepend 后用 maxScrollExtent 差值保持视口位置（避免视觉跳动）。
-  Future<void> _loadOlderPage() async {
-    if (_loadingOlder || !_hasMoreHistory || _oldestUuid == null) return;
-    final conn = ref.read(activeConnectionProvider);
-    final session = ref.read(currentSessionProvider);
-    if (conn == null || session?.resumeId == null) return;
-
-    setState(() => _loadingOlder = true);
-    final preMax = _scrollController.hasClients
-        ? _scrollController.position.maxScrollExtent
-        : 0.0;
-    final preOffset =
-        _scrollController.hasClients ? _scrollController.offset : 0.0;
-
-    try {
-      final page = await _fetchHistoryPage(
-        conn.apiBase,
-        session!.cwd,
-        session.resumeId!,
-        session.agent,
-        limit: _historyPageSize,
-        beforeUuid: _oldestUuid,
-      );
-      if (page == null || !mounted) {
-        setState(() => _loadingOlder = false);
-        return;
-      }
-      // 先插入消息，保持固定 loading 浮层可见（_loadingOlder 仍为 true），
-      // 下一帧 layout 完成后先恢复视口位置再隐藏浮层，避免列表高度突变。
-      setState(() {
-        _messages.insertAll(0, page.messages);
-        _oldestUuid = page.oldestUuid ?? _oldestUuid;
-        _hasMoreHistory = page.hasMore;
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_scrollController.hasClients) {
-          final postMax = _scrollController.position.maxScrollExtent;
-          final delta = postMax - preMax;
-          if (delta > 0) _scrollController.jumpTo(preOffset + delta);
-        }
-        if (mounted) setState(() => _loadingOlder = false);
-      });
-    } catch (_) {
-      if (mounted) setState(() => _loadingOlder = false);
-    }
-  }
-
-  Future<_HistoryPage?> _fetchHistoryPage(
-    String httpBase,
-    String cwd,
-    String sessionId,
-    AgentKind agent, {
-    required int limit,
-    String? beforeUuid,
-  }) async {
-    final apiBase = httpBase.endsWith('/api') ? httpBase : '$httpBase/api';
-    final uri = Uri.parse('$apiBase/sessions/$sessionId/messages').replace(
-      queryParameters: {
-        'cwd': cwd,
-        'limit': '$limit',
-        'agent': agent.wire,
-        if (beforeUuid != null) 'before_uuid': beforeUuid,
-      },
-    );
-    final authHeaders = _serverToken != null
-        ? {'Authorization': 'Bearer $_serverToken'}
-        : const <String, String>{};
-    final resp = await http
-        .get(uri, headers: authHeaders)
-        .timeout(const Duration(seconds: 10));
-    if (resp.statusCode != 200) return null;
-    final data = jsonDecode(resp.body) as Map<String, dynamic>;
-    final raw = (data['messages'] as List?) ?? const [];
-    final loaded = <IncomingMessage>[];
-    String? oldestUuid;
-    for (final item in raw) {
-      final env = item as Map<String, dynamic>;
-      oldestUuid ??= env['uuid'] as String?;
-      final inner = env['message'];
-      if (inner is Map<String, dynamic>) {
-        final m = IncomingMessage.fromJson(inner);
-        if (m is AssistantMsg ||
-            m is UserMsg ||
-            m is ResultMsg ||
-            m is CompactBoundaryMsg) {
-          loaded.add(m);
-        }
-      }
-    }
-    return _HistoryPage(
-      messages: loaded,
-      oldestUuid: oldestUuid,
-      hasMore: (data['has_more'] as bool?) ?? false,
-    );
-  }
+  // _loadHistory / _reloadCurrentHistory / _loadOlderPage / _fetchHistoryPage
+  // 已移到 chat_tab_history.dart（_HistoryLogic extension），行为不变。
 
   static const _kLastUuidKey = 'chat_last_uuid';
 
@@ -1565,7 +1381,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _busy = false;
             _busyStartedAt = null;
             _interrupting = false;
-            _mode = CcStreamMode.requesting;
+            _mode = AiStreamMode.requesting;
           });
           _syncForegroundStreamService(busy: false);
           unawaited(_refreshActiveRunState());
@@ -1608,8 +1424,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   }
 
   void _debugTrack(IncomingMessage msg, Map<String, dynamic> json) {
-    // debug 包始终留存；release/prerelease 下需用户在设置里开「原始事件检查」。
-    if (kDebugMode || ref.read(rawInspectModeProvider)) _debugRaw[msg] = json;
+    if (kDebugMode) _debugRaw[msg] = json;
   }
 
   /// Routes messages that belong to a sub-agent (Task tool) into [_subMsgs].
@@ -1677,7 +1492,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         if (msg.busy) {
           _busy = true;
           _busyStartedAt ??= DateTime.now();
-          _mode = CcStreamMode.responding;
+          _mode = AiStreamMode.responding;
         }
       } else if (msg is ResultMsg) {
         final shouldNotify = _busy;
@@ -1691,7 +1506,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _busy = false;
         _busyStartedAt = null;
         _interrupting = false;
-        _mode = CcStreamMode.requesting;
+        _mode = AiStreamMode.requesting;
         _thoughtForTimer?.cancel();
         _thoughtSeconds = null;
         _currentBlockKind = null;
@@ -1751,25 +1566,25 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         _currentBlockKind = msg.kind;
         switch (msg.kind) {
           case 'text':
-            _mode = CcStreamMode.responding;
+            _mode = AiStreamMode.responding;
             _thoughtForTimer?.cancel();
             _thoughtSeconds = null;
             _messages.add(StreamingAssistant());
             break;
           case 'thinking':
-            _mode = CcStreamMode.thinking;
+            _mode = AiStreamMode.thinking;
             _thinkingStartedAt = DateTime.now();
             _thoughtForTimer?.cancel();
             break;
           case 'tool_use':
-            _mode = CcStreamMode.toolInput;
+            _mode = AiStreamMode.toolInput;
             break;
         }
         _syncForegroundStreamService();
       } else if (msg is StreamDelta) {
         _markAiOutputStarted();
         if (msg.kind == 'text') {
-          _mode = CcStreamMode.responding;
+          _mode = AiStreamMode.responding;
           // 追加流式文本；thinking_delta 丢弃（参见 docs/streaming-response.md）。
           final last = _messages.isNotEmpty ? _messages.last : null;
           if (last is StreamingAssistant && !last.stopped) {
@@ -1785,14 +1600,14 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           final dur = DateTime.now().difference(_thinkingStartedAt!);
           _thinkingStartedAt = null;
           _thoughtSeconds = dur.inSeconds.clamp(1, 99999);
-          _mode = CcStreamMode.thoughtFor;
+          _mode = AiStreamMode.thoughtFor;
           _thoughtForTimer?.cancel();
           _thoughtForTimer = Timer(const Duration(seconds: 2), () {
             if (!mounted) return;
             setState(() {
               // 2 秒后回落到 responding 提示（除非新的 block 已经来）。
-              if (_mode == CcStreamMode.thoughtFor) {
-                _mode = CcStreamMode.responding;
+              if (_mode == AiStreamMode.thoughtFor) {
+                _mode = AiStreamMode.responding;
                 _thoughtSeconds = null;
               }
             });
@@ -1829,82 +1644,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       } else if (msg is RateLimitInfoMsg) {
         // 限流是账号级状态，不进消息流；写到全局 provider 给 composer chip 用。
         ref.read(rateLimitInfoProvider.notifier).state = msg.info;
-      } else if (msg is SessionStatusMsg) {
-        // SDK 内部状态：'compacting' / 'requesting' / null。按事件所属 session
-        // 的 key 写 family provider —— 后台 session 的 compacting 写进自己的
-        // key，结构上不会串到当前显示页面。不进消息流。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(claudeSessionStatusProvider(liveKey).notifier).state =
-              msg.status;
-        }
-      } else if (msg is InformationalMsg) {
-        // SDK 自发提示：warning/suggestion 才用 SnackBar 弹出，info/notice 静默。
-        // 只对前台显示的 Claude session 弹，避免后台 session 打断当前页面。
-        if (_isActiveClaudeRuntime(eventRuntime) &&
-            (msg.level == 'warning' || msg.level == 'suggestion')) {
-          final t = AppTokens.of(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(msg.content,
-                  style: const TextStyle(fontSize: 12.5)),
-              backgroundColor:
-                  msg.level == 'warning' ? t.error : t.warning,
-              duration: const Duration(seconds: 5),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      } else if (msg is ToolProgressMsg) {
-        // 工具进度：周期推送当前工具已执行多少秒。按事件 session 的 key 写
-        // family provider 给 tool_call_card 读取。tool 结果到达时由
-        // _applyAssistantSideEffects 显式清理对应 entry。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null && msg.toolUseId.isNotEmpty) {
-          final notifier = ref.read(toolProgressProvider(liveKey).notifier);
-          notifier.state = {
-            ...notifier.state,
-            msg.toolUseId: msg.elapsedSeconds,
-          };
-        }
-      } else if (msg is ThinkingTokensMsg) {
-        // SDK 在 thinking 阶段周期推送估算 token 数。按事件 session 的 key 写，
-        // 给 spinner 上的 thinking pill 用。不进消息流。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(thinkingTokensProvider(liveKey).notifier).state =
-              msg.estimatedTokens;
-        }
-      } else if (msg is TaskStartedMsg) {
-        // SDK 0.3.x 后台 task 生命周期：按事件 session 的 key 写 tasks store，
-        // 后台 session 的 task 进自己的 key，不串到当前页面的 TasksChip。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(tasksProvider(liveKey).notifier).start(msg);
-        }
-      } else if (msg is TaskUpdatedMsg) {
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(tasksProvider(liveKey).notifier).update(msg);
-        }
-      } else if (msg is TaskProgressMsg) {
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(tasksProvider(liveKey).notifier).progress(msg);
-        }
-      } else if (msg is TaskNotificationMsg) {
-        // SDK 0.3.x 路径：有 task_id（store 里有对应 entry）就合并终态。
-        // harness XML 路径：task_id 为 null 时不进 store，让 message_view
-        // 的现有 InlineTaskNotification 渲染处理。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null && msg.taskId != null) {
-          ref.read(tasksProvider(liveKey).notifier).notify(msg);
-        }
-        // 老路径：仍按原逻辑加入消息流（如果不是 SDK 路径触发的）。
-        if (msg.taskId == null || !msg.skipTranscript) {
-          _messages.add(msg);
-          _debugTrack(msg, json);
-        }
+      } else if (_applyClaudeWireMessage(msg, eventRuntime, json)) {
+        // Claude SDK 专属 wire 消息（session status / informational / tool
+        // progress / thinking tokens / 后台 task）委托给 chat_tab_claude.dart
+        // 的 _ClaudeChatLogic 处理。返回 true 表示已消费，不再走默认追加。
       } else {
         _messages.add(msg);
         _debugTrack(msg, json);
@@ -1915,36 +1658,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (_isActiveRuntime(eventRuntime)) _scrollToEnd();
   }
 
-  bool _isCodexRealtimeSnapshot(Map<String, dynamic> json, String? wireUuid) {
-    if (wireUuid == null || wireUuid.isEmpty) return false;
-    if (json['agent'] != 'codex') return false;
-    final nativeEvent = json['native_event'];
-    return nativeEvent is String && nativeEvent.startsWith('item/');
-  }
-
-  bool _upsertCodexRealtimeSnapshot(
-    String? wireUuid,
-    IncomingMessage msg,
-    Map<String, dynamic> json,
-  ) {
-    if (!_isCodexRealtimeSnapshot(json, wireUuid)) return false;
-    final uuid = wireUuid!;
-    final existing = _codexRealtimeSnapshots[uuid];
-    if (existing != null) {
-      final index = _messages.indexOf(existing);
-      if (index >= 0) {
-        _debugRaw.remove(existing);
-        _messages[index] = msg;
-        _debugTrack(msg, json);
-        _codexRealtimeSnapshots[uuid] = msg;
-        return true;
-      }
-    }
-    _messages.add(msg);
-    _debugTrack(msg, json);
-    _codexRealtimeSnapshots[uuid] = msg;
-    return true;
-  }
+  // _isCodexRealtimeSnapshot / _upsertCodexRealtimeSnapshot 已移到
+  // chat_tab_codex.dart（CodexChatLogic extension），行为不变。
 
   void _applyAssistantSideEffects(AssistantMsg msg) {
     // 拦截 TodoWrite 工具调用 → 更新全局 todoListProvider，让顶部 chip 反映进度。
@@ -2136,7 +1851,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _localUserEchoes.add(local);
       _busy = true;
       _busyStartedAt = DateTime.now();
-      _mode = CcStreamMode.requesting;
+      _mode = AiStreamMode.requesting;
       _currentBlockKind = null;
       _thoughtSeconds = null;
       _thoughtForTimer?.cancel();
@@ -2158,7 +1873,9 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
         text: text,
         deviceId: _deviceId,
         model: isClaude ? model.id : null,
-        permissionMode: isClaude ? permMode.wire : null,
+        // 权限模式只对声明了该能力的 agent 传（Codex 走 approval_policy）。
+        permissionMode:
+            session.agent.profile.permissionMode ? permMode.wire : null,
         agent: session.agent,
         runtime: session.runtime,
       )
@@ -2326,7 +2043,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             _interrupting = false;
             _busy = false;
             _busyStartedAt = null;
-            _mode = CcStreamMode.requesting;
+            _mode = AiStreamMode.requesting;
             _currentBlockKind = null;
             _thinkingStartedAt = null;
             _thoughtSeconds = null;
@@ -2402,7 +2119,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       _busy = false;
       _busyStartedAt = null;
       _interrupting = false;
-      _mode = CcStreamMode.requesting;
+      _mode = AiStreamMode.requesting;
       _currentBlockKind = null;
       _thinkingStartedAt = null;
       _thoughtSeconds = null;
@@ -2448,116 +2165,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     unawaited(_chatApi!.answer(_sessionId!, toolUseId, answers, annotations));
   }
 
-  /// 把 Codex app-server approval 决策通过 REST 回给 server。
-  void _sendCodexApproval(String requestId, String decision, String? scope) {
-    _sendCodexApprovalForRuntime(_runtime, requestId, decision, scope);
-  }
+  // _sendCodexApproval / _sendCodexApprovalForRuntime 已移到
+  // chat_tab_codex.dart（CodexChatLogic extension），行为不变。
 
-  void _sendCodexApprovalForRuntime(
-    _ChatSessionRuntime runtime,
-    String requestId,
-    String decision,
-    String? scope,
-  ) {
-    final uuid = runtime.sessionId;
-    final api = runtime.chatApi;
-    if (uuid == null || api == null) return;
-    void markAnswered() {
-      runtime.notifiedApprovalIds.remove(requestId);
-      runtime.codexApprovalDecisions[requestId] =
-          scope == 'session' ? 'accept:session' : decision;
-      runtime.dismissedApprovalPopoverId = requestId;
-    }
-
-    if (mounted && _isActiveRuntime(runtime)) {
-      setState(markAnswered);
-    } else {
-      markAnswered();
-    }
-    ref
-        .read(inAppChatNotificationsProvider.notifier)
-        .dismissApprovalsForRequest(requestId);
-    unawaited(api
-        .answerCodexApproval(uuid, requestId, decision, scope: scope)
-        .catchError(
-      (Object error) {
-        void markError() {
-          runtime.error = '$error';
-        }
-
-        if (mounted && _isActiveRuntime(runtime)) {
-          setState(markError);
-        } else {
-          markError();
-        }
-      },
-    ));
-  }
-
-  void _notifyCodexApprovalIfNeeded(
-    _ChatSessionRuntime runtime,
-    _PendingCodexApproval approval,
-    Connection config,
-  ) {
-    final uuid = runtime.sessionId;
-    final session = runtime.session;
-    if (uuid == null || session == null) return;
-    final requestId = approval.toolUse.id;
-    if (!runtime.notifiedApprovalIds.add(requestId)) return;
-    final payload = _completionPayloadFor(session, resumeId: uuid);
-    final title = _approvalNotificationTitle(session, approval.toolUse.name);
-    final body = _approvalNotificationBody(approval.toolUse);
-    if (_appInForeground) {
-      ChatCompletionNotifier.instance.showInAppApproval(
-        payload: payload,
-        requestId: requestId,
-        title: title,
-        body: body,
-      );
-      return;
-    }
-    unawaited(StreamingForegroundService.instance.complete(payload));
-    unawaited(ChatCompletionNotifier.instance.notifyCodexApproval(
-      payload: payload,
-      apiBase: config.apiBase,
-      token: config.token,
-      uuid: uuid,
-      requestId: requestId,
-      method: approval.toolUse.name,
-      title: title,
-      body: body,
-      appInForeground: _appInForeground,
-    ));
-  }
-
-  String _approvalNotificationTitle(CurrentSession session, String method) {
-    final sessionName = _notificationSessionName(session);
-    if (method == 'item/commandExecution/requestApproval') {
-      return '$sessionName 等待确认命令';
-    }
-    if (method == 'item/fileChange/requestApproval') {
-      return '$sessionName 等待确认文件修改';
-    }
-    if (method == 'item/permissions/requestApproval') {
-      return '$sessionName 等待确认权限';
-    }
-    return '$sessionName 等待确认';
-  }
-
-  String _approvalNotificationBody(ToolUseBlock toolUse) {
-    final input = toolUse.input;
-    final reason = input['reason']?.toString().trim();
-    if (toolUse.name == 'item/commandExecution/requestApproval') {
-      final command = input['command']?.toString().trim();
-      if (command != null && command.isNotEmpty) return command;
-    }
-    if (toolUse.name == 'item/fileChange/requestApproval') {
-      final grantRoot = input['grantRoot']?.toString().trim();
-      if (grantRoot != null && grantRoot.isNotEmpty) return grantRoot;
-    }
-    if (reason != null && reason.isNotEmpty) return reason;
-    return '需要你确认后继续';
-  }
+  // _notifyCodexApprovalIfNeeded / _approvalNotificationTitle /
+  // _approvalNotificationBody 已移到 chat_tab_codex.dart，行为不变。
 
   String _notificationSessionName(CurrentSession session) {
     final cwdName = _basename(session.cwd);
@@ -2597,87 +2209,34 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     return toolResults;
   }
 
-  void _scheduleCodexApprovalSideEffects({_ChatSessionRuntime? runtime}) {
-    final target = runtime ?? _runtime;
-    final config = ref.read(activeConnectionProvider);
-    final activeApproval = _withRuntime(
-      target,
-      () => _latestPendingCodexApproval(_buildToolResultIndex()),
-    );
-    if (activeApproval == null || config == null || target.sessionId == null) {
-      return;
+  /// 渲染时判断 AI 是否在"等待用户操作"，返回对应 spinner 模式；都没有则 null
+  /// （照常用 _mode）。按"等到的是问题还是审批"区分文案/态，不按 agent——
+  /// Codex 只会命中审批，Claude 命中问题（以后接了工具审批也会命中审批）。
+  AiStreamMode? _pendingUserActionMode() {
+    final toolResults = _buildToolResultIndex();
+    // 待审批：Codex 现有；Claude 工具审批以后接进来也走这条。
+    if (_latestPendingCodexApproval(toolResults) != null) {
+      return AiStreamMode.awaitingApproval;
     }
-    if (!_appInForeground) {
-      _notifyCodexApprovalIfNeeded(target, activeApproval, config);
-      return;
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _notifyCodexApprovalIfNeeded(target, activeApproval, config);
-      if (_isCurrentSessionRuntime(target)) {
-        _showCodexApprovalSheetIfNeeded(target, activeApproval);
+    // 待回答：有个 AskUserQuestion 的 tool_use 还没配上 tool_result。
+    for (final m in _messages.reversed) {
+      final content = switch (m) {
+        AssistantMsg(:final content) => content,
+        _ => const <ContentBlock>[],
+      };
+      for (final b in content) {
+        if (b is ToolUseBlock &&
+            b.name.endsWith('AskUserQuestion') &&
+            !toolResults.containsKey(b.id)) {
+          return AiStreamMode.awaitingAnswer;
+        }
       }
-    });
+    }
+    return null;
   }
 
-  Future<void> _showCodexApprovalSheetIfNeeded(
-    _ChatSessionRuntime runtime,
-    _PendingCodexApproval approval,
-  ) async {
-    final requestId = approval.toolUse.id;
-    if (!_isCurrentSessionRuntime(runtime)) return;
-    if (runtime.dismissedApprovalPopoverId == requestId) return;
-    if (runtime.suppressedApprovalSheetIds.contains(requestId)) return;
-    final pendingApprovals = _withRuntime(
-      runtime,
-      () => _pendingCodexApprovals(_buildToolResultIndex()),
-    );
-    if (pendingApprovals.length > 1) {
-      runtime.suppressedApprovalSheetIds.addAll(
-        pendingApprovals.map((item) => item.toolUse.id),
-      );
-      return;
-    }
-    if (!runtime.presentedApprovalSheetIds.add(requestId)) return;
-
-    FocusManager.instance.primaryFocus?.unfocus();
-    final submitted = await showModalBottomSheet<bool>(
-      context: context,
-      requestFocus: false,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.32),
-      builder: (sheetContext) => _ApprovalBottomSheet(
-        toolUse: approval.toolUse,
-        result: approval.result,
-        onSubmit: (id, decision, scope) {
-          _sendCodexApprovalForRuntime(runtime, id, decision, scope);
-          Navigator.of(sheetContext).pop(true);
-        },
-      ),
-    );
-    if (!mounted) return;
-    void markDismissed() {
-      runtime.dismissedApprovalPopoverId = requestId;
-      if (submitted != true) {
-        runtime.presentedApprovalSheetIds.remove(requestId);
-      }
-    }
-
-    if (submitted == true) {
-      if (_isActiveRuntime(runtime)) {
-        setState(markDismissed);
-      } else {
-        markDismissed();
-      }
-    } else {
-      if (_isActiveRuntime(runtime)) {
-        setState(markDismissed);
-      } else {
-        markDismissed();
-      }
-    }
-  }
+  // _scheduleCodexApprovalSideEffects / _showCodexApprovalSheetIfNeeded
+  // 已移到 chat_tab_codex.dart，行为不变。
 
   void _syncForegroundStreamService({
     CurrentSession? session,
@@ -2699,11 +2258,15 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
 
   String _foregroundActivityLabel() {
     return switch (_mode) {
-      CcStreamMode.requesting => '连接中',
-      CcStreamMode.thinking => '思考中',
-      CcStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
-      CcStreamMode.responding => '生成回复',
-      CcStreamMode.toolInput => '准备工具',
+      AiStreamMode.requesting => '连接中',
+      AiStreamMode.thinking => '思考中',
+      AiStreamMode.thoughtFor => '思考了 ${_thoughtSeconds ?? 0}s',
+      AiStreamMode.responding => '生成回复',
+      AiStreamMode.toolInput => '准备工具',
+      // _mode 不会被设成这两个（awaiting 只在渲染时由 _pendingUserActionMode
+      // 计算），列出仅为 switch 穷尽。
+      AiStreamMode.awaitingAnswer => '等待回答',
+      AiStreamMode.awaitingApproval => '等待确认',
     };
   }
 
@@ -2720,100 +2283,13 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     );
   }
 
-  _PendingCodexApproval? _latestPendingCodexApproval(
-    Map<String, ToolResultBlock> toolResults,
-  ) {
-    final pending = _pendingCodexApprovals(toolResults);
-    for (final approval in pending) {
-      if (approval.toolUse.id != _runtime.dismissedApprovalPopoverId) {
-        return approval;
-      }
-    }
-    return null;
-  }
-
-  List<_PendingCodexApproval> _pendingCodexApprovals(
-    Map<String, ToolResultBlock> toolResults,
-  ) {
-    final pending = <_PendingCodexApproval>[];
-    for (final m in _messages.reversed) {
-      final content = switch (m) {
-        UserMsg(:final content) => content,
-        AssistantMsg(:final content) => content,
-        _ => const <ContentBlock>[],
-      };
-      for (final block in content.reversed) {
-        if (block is! ToolUseBlock) continue;
-        if (!_isCodexApprovalRequestName(block.name)) continue;
-        final result = toolResults[block.id];
-        if (result == null) {
-          pending.add(_PendingCodexApproval(toolUse: block, result: result));
-          continue;
-        }
-      }
-    }
-    return pending;
-  }
+  // _latestPendingCodexApproval / _pendingCodexApprovals 已移到
+  // chat_tab_codex.dart，行为不变。
 
   /// 弹文件选择器，把每个选中的文件都登记为 uploading 状态并启动并发上传。
-  Future<void> _pickAndUploadAttachments() async {
-    FocusManager.instance.primaryFocus?.unfocus();
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-    if (result == null) return;
-    final session = ref.read(currentSessionProvider);
-    if (session == null) return;
-    final config = ref.read(activeConnectionProvider);
-    if (config == null) return;
-    final api = UploadApi(config.apiBase, token: config.token);
-    for (final pickedFile in result.files) {
-      final path = pickedFile.path;
-      if (path == null) continue;
-      final state = _AttachmentState(
-        localName: pickedFile.name,
-        localPath: path,
-        status: _AttachmentStatus.uploading,
-      );
-      setState(() => _attachments.add(state));
-      unawaited(_uploadOne(api, state, session.cwd));
-    }
-  }
-
-  Future<void> _uploadOne(
-      UploadApi api, _AttachmentState state, String cwd) async {
-    try {
-      final result = await api.upload(File(state.localPath), cwd);
-      if (!mounted) return;
-      setState(() {
-        state.remotePath = result.path;
-        state.status = _AttachmentStatus.ready;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        state.errorMsg = e.toString();
-        state.status = _AttachmentStatus.failed;
-      });
-    }
-  }
-
-  void _removeAttachment(_AttachmentState a) {
-    setState(() => _attachments.remove(a));
-  }
-
-  Future<void> _retryAttachment(_AttachmentState a) async {
-    final session = ref.read(currentSessionProvider);
-    final config = ref.read(activeConnectionProvider);
-    if (session == null || config == null) return;
-    setState(() {
-      a.status = _AttachmentStatus.uploading;
-      a.errorMsg = null;
-    });
-    await _uploadOne(
-        UploadApi(config.apiBase, token: config.token), a, session.cwd);
-  }
-
-  bool get _attachmentsAllReady =>
-      _attachments.every((a) => a.status == _AttachmentStatus.ready);
+  // 附件选择/上传方法（_pickAndUploadAttachments / _uploadOne /
+  // _removeAttachment / _retryAttachment / _attachmentsAllReady）已移到
+  // chat_tab_attachments.dart（_AttachmentLogic extension），行为不变。
 
   @override
   Widget build(BuildContext context) {
@@ -2949,10 +2425,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                                 codexApprovalDecisions: _codexApprovalDecisions,
                                 onOpenFilePath: _openRemoteFilePreview,
                                 onSaveFilePath: _saveRemoteFileRef,
-                                rawJson:
-                                    (kDebugMode || ref.read(rawInspectModeProvider))
-                                        ? _debugRaw[m]
-                                        : null,
+                                rawJson: kDebugMode ? _debugRaw[m] : null,
                               );
                             }
                             return KeyedSubtree(
@@ -2997,9 +2470,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
           ),
         ),
         if (_busy && _busyStartedAt != null)
-          CcSpinnerLine(
+          AiSpinnerLine(
             startedAt: _busyStartedAt!,
-            mode: _mode,
+            // 在等用户回答/审批时覆盖成"等待"态（spinner 冻住变黄）。
+            mode: _pendingUserActionMode() ?? _mode,
             thoughtSeconds: _thoughtSeconds,
             color: t.accent,
             dimColor: t.textDim,

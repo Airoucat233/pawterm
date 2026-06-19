@@ -151,34 +151,6 @@ final scrollToBottomOnSessionSwitchProvider =
   (_) => ScrollToBottomOnSessionSwitchNotifier(),
 );
 
-/// 「原始事件检查」开关：开启后长按消息可查看 server 下发的 wire 数据，
-/// 其中 `native` 字段携带 SDK / Codex 的原生事件结构（P2 native 透传）。
-/// 默认关闭——开启会让每条消息在内存里多留一份原始 JSON，仅排查时需要。
-/// debug 包始终可用，无需开关。
-class RawInspectModeNotifier extends StateNotifier<bool> {
-  RawInspectModeNotifier() : super(false) {
-    _load();
-  }
-
-  static const _key = 'raw_inspect_mode_v1';
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = prefs.getBool(_key) ?? false;
-  }
-
-  Future<void> set(bool value) async {
-    state = value;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_key, value);
-  }
-}
-
-final rawInspectModeProvider =
-    StateNotifierProvider<RawInspectModeNotifier, bool>(
-  (_) => RawInspectModeNotifier(),
-);
-
 enum BottomTabId {
   chat('chat'),
   shell('shell'),

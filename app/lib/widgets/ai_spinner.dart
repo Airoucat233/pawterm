@@ -7,20 +7,30 @@ import '../i18n/locale_provider.dart';
 import '../state/open_chat_windows.dart';
 import '../state/session_status_state.dart';
 import '../state/thinking_tokens_state.dart';
+import '../theme.dart';
 
-/// claude-code CLI 风格的字符 spinner。
-/// 字符序列复刻自 `src/components/Spinner/utils.ts`（macOS 集合）。
+/// "AI 在忙"的字符 spinner —— **两个 agent（Claude / Codex）共用**的活动指示
+/// 器（以前叫 CcSpinner，Cc=claude-code 是历史误导，其实并非 Claude 专属）。
+/// 视觉风格复刻自 claude-code CLI 的字符 spinner（`Spinner/utils.ts` macOS 集）。
 /// 帧序列 = 正向 + 反向，共 12 帧 "开花-合上" 循环，约 80ms/帧。
-class CcSpinner extends StatefulWidget {
+class AiSpinner extends StatefulWidget {
   final double size;
   final Color color;
-  const CcSpinner({super.key, this.size = 16, required this.color});
+
+  /// false 时冻住不动画（用于"等待用户操作"态——AI 没在忙，而是在等你）。
+  final bool animate;
+  const AiSpinner({
+    super.key,
+    this.size = 16,
+    required this.color,
+    this.animate = true,
+  });
 
   @override
-  State<CcSpinner> createState() => _CcSpinnerState();
+  State<AiSpinner> createState() => _AiSpinnerState();
 }
 
-class _CcSpinnerState extends State<CcSpinner>
+class _AiSpinnerState extends State<AiSpinner>
     with SingleTickerProviderStateMixin {
   static const _chars = ['·', '✢', '✳', '✶', '✻', '✽'];
   static final List<String> _frames =
@@ -45,34 +55,40 @@ class _CcSpinnerState extends State<CcSpinner>
 
   @override
   Widget build(BuildContext context) {
+    // 冻住态：不走 AnimatedBuilder，定格在"开花"满帧（✽），静止显示。
+    if (!widget.animate) return _glyph('✽');
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) {
         final i = (_ctrl.value * _frames.length).floor() % _frames.length;
-        // 显式设置 width 和 height，确保 bounding box 与行内 Text 对齐。
-        // height 取 size * 1.4 ≈ 文字行高（fontSize * defaultLineHeight）。
-        return SizedBox(
-          width: widget.size * 1.2,
-          height: widget.size * 1.4,
-          child: Center(
-            child: Text(
-              _frames[i],
-              textAlign: TextAlign.center,
-              strutStyle: StrutStyle(
-                fontSize: widget.size,
-                height: 1.0,
-                forceStrutHeight: true,
-              ),
-              style: TextStyle(
-                fontSize: widget.size,
-                color: widget.color,
-                height: 1.0,
-                fontFamilyFallback: const ['Apple Color Emoji'],
-              ),
-            ),
-          ),
-        );
+        return _glyph(_frames[i]);
       },
+    );
+  }
+
+  Widget _glyph(String char) {
+    // 显式设置 width 和 height，确保 bounding box 与行内 Text 对齐。
+    // height 取 size * 1.4 ≈ 文字行高（fontSize * defaultLineHeight）。
+    return SizedBox(
+      width: widget.size * 1.2,
+      height: widget.size * 1.4,
+      child: Center(
+        child: Text(
+          char,
+          textAlign: TextAlign.center,
+          strutStyle: StrutStyle(
+            fontSize: widget.size,
+            height: 1.0,
+            forceStrutHeight: true,
+          ),
+          style: TextStyle(
+            fontSize: widget.size,
+            color: widget.color,
+            height: 1.0,
+            fontFamilyFallback: const ['Apple Color Emoji'],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -83,7 +99,27 @@ class _CcSpinnerState extends State<CcSpinner>
 /// thoughtFor → thinking 刚结束的过渡态，显示"已思考 Xs"约 2 秒
 /// responding → 生成普通文本
 /// toolInput → 生成工具调用参数
-enum CcStreamMode { requesting, thinking, thoughtFor, responding, toolInput }
+/// awaitingAnswer → AI 在等用户回答 AskUserQuestion（不是在忙）
+/// awaitingApproval → AI 在等用户批准某个操作（审批卡，不是在忙）
+///
+/// 后两个是"等待用户"态：spinner 冻住不动、变黄、文案变"等待你…"——因为此时
+/// AI 没在工作，是在等你。按"等到的是问题还是审批"区分文案，不按 agent，
+/// 所以 Codex 只会命中 awaitingApproval，Claude 命中 awaitingAnswer（以后加了
+/// 工具审批也会命中 awaitingApproval）。
+enum AiStreamMode {
+  requesting,
+  thinking,
+  thoughtFor,
+  responding,
+  toolInput,
+  awaitingAnswer,
+  awaitingApproval,
+}
+
+/// 是否是"等待用户"态（spinner 该冻住变黄）。
+bool isAwaitingUser(AiStreamMode mode) =>
+    mode == AiStreamMode.awaitingAnswer ||
+    mode == AiStreamMode.awaitingApproval;
 
 /// 把秒数格式化成 `12s` / `1m30s` / `1h2m30s` 紧凑形式。
 /// - 总是从最高非零位开始；
@@ -102,9 +138,9 @@ String _formatElapsed(int seconds) {
 
 /// 一整行的"响应中"状态：spinner + 文案 + 经过秒数 + 停止按钮。
 /// 支持随 [mode] 动态切换文案，thinking → thoughtFor 至少持续 2s（防抖）。
-class CcSpinnerLine extends ConsumerStatefulWidget {
+class AiSpinnerLine extends ConsumerStatefulWidget {
   final DateTime startedAt;
-  final CcStreamMode mode;
+  final AiStreamMode mode;
 
   /// 仅在 [mode] == thoughtFor 时有意义：本轮 thinking 耗时秒数。
   final int? thoughtSeconds;
@@ -117,7 +153,7 @@ class CcSpinnerLine extends ConsumerStatefulWidget {
   final Widget? trailing;
   final List<Widget> actions;
 
-  const CcSpinnerLine({
+  const AiSpinnerLine({
     super.key,
     required this.startedAt,
     required this.mode,
@@ -130,10 +166,10 @@ class CcSpinnerLine extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<CcSpinnerLine> createState() => _CcSpinnerLineState();
+  ConsumerState<AiSpinnerLine> createState() => _AiSpinnerLineState();
 }
 
-class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
+class _AiSpinnerLineState extends ConsumerState<AiSpinnerLine> {
   late int _verbIndex;
   Timer? _tick;
   int _elapsed = 0;
@@ -169,37 +205,44 @@ class _CcSpinnerLineState extends ConsumerState<CcSpinnerLine> {
         : ref.watch(claudeSessionStatusProvider(sessionKey));
     if (claudeStatus == 'compacting') return '正在压缩上下文…';
     switch (widget.mode) {
-      case CcStreamMode.requesting:
+      case AiStreamMode.requesting:
         return s.spinnerRequesting;
-      case CcStreamMode.thinking:
+      case AiStreamMode.thinking:
         return s.spinnerThinking;
-      case CcStreamMode.thoughtFor:
+      case AiStreamMode.thoughtFor:
         final sec = widget.thoughtSeconds ?? 0;
         return s.spinnerThoughtForTpl.replaceAll('{s}', '$sec');
-      case CcStreamMode.responding:
+      case AiStreamMode.responding:
         final verbs = s.spinnerRespondingVerbs;
         return '${verbs[_verbIndex % verbs.length]}…';
-      case CcStreamMode.toolInput:
+      case AiStreamMode.toolInput:
         return s.spinnerToolInput;
+      case AiStreamMode.awaitingAnswer:
+        return '等待你回答…';
+      case AiStreamMode.awaitingApproval:
+        return '等待你确认…';
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(stringsProvider);
+    // "等待用户"态：spinner 冻住不动、变黄、文案"等待你…"——AI 不是在忙，是在等你。
+    final awaiting = isAwaitingUser(widget.mode);
+    final accent = awaiting ? AppTokens.of(context).warning : widget.color;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          CcSpinner(size: 14, color: widget.color),
+          AiSpinner(size: 14, color: accent, animate: !awaiting),
           const SizedBox(width: 8),
           Text(
             _label(ref),
             style: TextStyle(
               fontSize: 12,
               height: 1.2,
-              color: widget.color,
+              color: accent,
               fontWeight: FontWeight.w500,
             ),
           ),
