@@ -387,6 +387,17 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
           model: claudeRuntime.model,
           ...(claudeRuntime.thinking ? { thinking: claudeRuntime.thinking } : {}),
           askRegistry,
+          // 工具审批请求 → 广播成 tool_permission_request 让客户端弹审批卡。
+          onToolPermissionRequest: (rq) => {
+            const e = activeRuns.get(key);
+            if (!e) return;
+            broadcast(e, 'tool_permission_request', {
+              type: 'tool_permission_request',
+              agent: 'claude' as const,
+              session_ref: { agent: 'claude' as const, id: uuid },
+              ...rq,
+            });
+          },
         });
 
         const entry: RunEntry = {
@@ -633,6 +644,25 @@ export async function registerChatRest(app: FastifyInstance): Promise<void> {
       // 持久化 patch：单字段更新，避免覆盖 runtime 里的 model / thinking 等字段。
       setSessionRuntime('claude', entry.cwd, uuid, { permission_mode: mode });
       return { ok: true };
+    },
+  );
+
+  /** POST /chat/tool-permission — answer a pending Claude tool approval
+   * (canUseTool suspended via ToolPermissionRegistry). */
+  app.post<{ Body: { uuid?: string; request_id?: string; decision?: 'allow' | 'deny'; dont_ask_again?: boolean } }>(
+    '/chat/tool-permission',
+    async (req, reply) => {
+      const { uuid, request_id: requestId, decision, dont_ask_again: dontAskAgain } = req.body ?? {};
+      if (!uuid) { reply.code(400); return { error: 'uuid required' }; }
+      if (!requestId) { reply.code(400); return { error: 'request_id required' }; }
+      if (decision !== 'allow' && decision !== 'deny') {
+        reply.code(400);
+        return { error: 'decision must be allow|deny' };
+      }
+      const entry = activeRuns.get(runKey('claude', uuid));
+      if (!entry?.session) { reply.code(400); return { error: 'no active claude run' }; }
+      const ok = entry.session.answerToolPermission(requestId, decision, { dontAskAgain });
+      return { ok };
     },
   );
 
