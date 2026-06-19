@@ -50,6 +50,11 @@ import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+// Codex 专属逻辑（realtime 快照 / 审批生命周期）拆到这个 part 文件，作为
+// _ChatTabState 的 extension。part 与本文件同库，privacy 与调用语义完全一致，
+// 是纯结构位移、零行为改动（P3 绞杀式拆分）。
+part 'chat_tab_codex.dart';
+
 class LocalUserInput extends IncomingMessage {
   final String text;
   final int timestamp;
@@ -1935,36 +1940,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     if (_isActiveRuntime(eventRuntime)) _scrollToEnd();
   }
 
-  bool _isCodexRealtimeSnapshot(Map<String, dynamic> json, String? wireUuid) {
-    if (wireUuid == null || wireUuid.isEmpty) return false;
-    if (json['agent'] != 'codex') return false;
-    final nativeEvent = json['native_event'];
-    return nativeEvent is String && nativeEvent.startsWith('item/');
-  }
-
-  bool _upsertCodexRealtimeSnapshot(
-    String? wireUuid,
-    IncomingMessage msg,
-    Map<String, dynamic> json,
-  ) {
-    if (!_isCodexRealtimeSnapshot(json, wireUuid)) return false;
-    final uuid = wireUuid!;
-    final existing = _codexRealtimeSnapshots[uuid];
-    if (existing != null) {
-      final index = _messages.indexOf(existing);
-      if (index >= 0) {
-        _debugRaw.remove(existing);
-        _messages[index] = msg;
-        _debugTrack(msg, json);
-        _codexRealtimeSnapshots[uuid] = msg;
-        return true;
-      }
-    }
-    _messages.add(msg);
-    _debugTrack(msg, json);
-    _codexRealtimeSnapshots[uuid] = msg;
-    return true;
-  }
+  // _isCodexRealtimeSnapshot / _upsertCodexRealtimeSnapshot 已移到
+  // chat_tab_codex.dart（CodexChatLogic extension），行为不变。
 
   void _applyAssistantSideEffects(AssistantMsg msg) {
     // 拦截 TodoWrite 工具调用 → 更新全局 todoListProvider，让顶部 chip 反映进度。
