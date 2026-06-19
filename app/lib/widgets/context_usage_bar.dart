@@ -31,40 +31,39 @@ class ContextUsageBar extends ConsumerWidget {
             ? t.warning
             : _green;
 
-    // 参考 claude-hud 的紧凑风格：只占右半边、单行 —— 一根细进度条 + 百分比，
-    // 按阈值变色（绿/黄/红）。不再占满整行、不再单列 token 文字。
+    String fmt(int n) => n >= 1000
+        ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k'
+        : '$n';
+
+    // 贴输入框底边、左对齐、极小高度：一根迷你细条 + 「大小 + 百分比」，
+    // 按阈值变色（绿/黄/红）。
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
       child: Row(
         children: [
-          const Spacer(),
-          Expanded(
-            child: Row(
-              children: [
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(2),
-                    child: LinearProgressIndicator(
-                      value: pct,
-                      minHeight: 3,
-                      backgroundColor: t.border,
-                      valueColor: AlwaysStoppedAnimation<Color>(color),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  '${usage.percentage.toStringAsFixed(0)}%',
-                  style: TextStyle(
-                    fontSize: 9.5,
-                    color: color,
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+          SizedBox(
+            width: 44,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: pct,
+                minHeight: 2.5,
+                backgroundColor: t.border,
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
             ),
           ),
+          const SizedBox(width: 6),
+          Text(
+            '${fmt(usage.totalTokens)}/${fmt(usage.maxTokens)} · ${usage.percentage.toStringAsFixed(0)}%',
+            style: TextStyle(
+              fontSize: 9,
+              height: 1.1,
+              color: color,
+              fontFamily: 'monospace',
+            ),
+          ),
+          const Spacer(),
         ],
       ),
     );

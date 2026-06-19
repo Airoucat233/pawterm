@@ -239,57 +239,63 @@ class _AiSpinnerLineState extends ConsumerState<AiSpinnerLine> {
           const SizedBox(width: 8),
           // Flexible + ellipsis：右侧胶囊（tasks / todo / 重新编辑）多时让文案
           // 收缩，而不是把胶囊挤出屏幕。
-          Flexible(
-            child: Text(
-              _label(ref),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 12,
-                height: 1.2,
-                color: accent,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            _formatElapsed(_elapsed),
-            style: TextStyle(
-              fontSize: 11,
-              height: 1.2,
-              color: widget.dimColor,
-              fontFamily: 'monospace',
-            ),
-          ),
-          // Thinking tokens pill：仅在 thinking 阶段 SDK 推过 tokens 时显示。
-          // ThinkingTokensProvider 只在 Claude session 写入，Codex 永远是 0
-          // 不显示。值 < 100 时也不显示（信号太弱）。
-          Builder(builder: (_) {
-            final sessionKey = ref.watch(currentSessionKeyProvider);
-            final tokens = sessionKey == null
-                ? 0
-                : ref.watch(thinkingTokensProvider(sessionKey));
-            if (tokens < 100) return const SizedBox.shrink();
-            final label = tokens >= 1000
-                ? '${(tokens / 1000).toStringAsFixed(1)}k'
-                : tokens.toString();
-            // 和左边读秒一样的灰色纯文字，无背景。
-            // Claude Code CLI 风格：'↑ {tokens} tokens'（↑ = 本轮输出/思考 token）。
-            return Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: Text(
-                '↑ $label tokens',
-                style: TextStyle(
-                  fontSize: 11,
-                  height: 1.2,
-                  color: widget.dimColor,
-                  fontFamily: 'monospace',
+          // 左侧动态内容（文案 / 读秒 / thinking tokens）整体放进 Expanded：
+          // 宽度变化只在这块内部消化（文案 ellipsis），不会把右侧 todo/task 胶囊
+          // 推来推去——胶囊钉死在右侧，不随左边 tokens 跳。
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    _label(ref),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.2,
+                      color: accent,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                 ),
-              ),
-            );
-          }),
-          const Spacer(),
+                const SizedBox(width: 10),
+                Text(
+                  _formatElapsed(_elapsed),
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.2,
+                    color: widget.dimColor,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+                // Thinking tokens：仅 thinking 阶段 SDK 推过 tokens 时显示（Claude
+                // 专属，Codex 永远 0；< 100 不显示）。灰色纯文字、无背景。
+                Builder(builder: (_) {
+                  final sessionKey = ref.watch(currentSessionKeyProvider);
+                  final tokens = sessionKey == null
+                      ? 0
+                      : ref.watch(thinkingTokensProvider(sessionKey));
+                  if (tokens < 100) return const SizedBox.shrink();
+                  final label = tokens >= 1000
+                      ? '${(tokens / 1000).toStringAsFixed(1)}k'
+                      : tokens.toString();
+                  return Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text(
+                      '↑ $label tokens',
+                      style: TextStyle(
+                        fontSize: 11,
+                        height: 1.2,
+                        color: widget.dimColor,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
           if (widget.trailing != null) ...[
             widget.trailing!,
             const SizedBox(width: 8),

@@ -35,12 +35,14 @@ class PrefsNotifier extends StateNotifier<ThemeMode> {
 final prefsProvider =
     StateNotifierProvider<PrefsNotifier, ThemeMode>((ref) => PrefsNotifier());
 
-/// SDK 权限模式，复刻 claude-code CLI 的 4 个档。
-/// 协议 wire string 跟 server 一致：`default` / `acceptEdits` / `plan` / `bypassPermissions`。
+/// SDK 权限模式，复刻 claude-code CLI 的档位。
+/// 协议 wire string 跟 server 一致：`default` / `acceptEdits` / `plan` / `auto` /
+/// `bypassPermissions`。auto = SDK 模型分类器自动判断是否需要审批。
 enum CcPermissionMode {
   defaultMode('default'),
   acceptEdits('acceptEdits'),
   plan('plan'),
+  auto('auto'),
   bypass('bypassPermissions');
 
   final String wire;
