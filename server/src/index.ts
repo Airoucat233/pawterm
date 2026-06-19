@@ -1183,7 +1183,16 @@ if (subcommand === '--version' || subcommand === '-v') {
 } else if (subcommand && SERVICE_CMDS.has(subcommand)) {
   const { runServiceCommand } = await import('./service.js');
   runServiceCommand(subcommand, process.argv.slice(3));
+} else if (subcommand) {
+  // 未识别的子命令：绝不静默前台启动 server。否则从某个目录误跑
+  // `pawterm-server service restart`（拼错命令）会落到这里、用 cwd 相对的
+  // config 启动一个 server，抢错端口（比如仓库目录的 ./server/config.json
+  // 端口 8765），表现成莫名其妙的 EADDRINUSE。直接报错并指引 help。
+  console.error(`Unknown command: ${subcommand}`);
+  console.error(`Run 'pawterm-server help' for usage.`);
+  process.exit(1);
 } else {
+  // 无子命令：前台启动 server（launchd plist / 本地 dev 的正常路径）。
   if (isFirstRun && process.stdin.isTTY && process.stdout.isTTY) await firstRunSetup();
   main().catch((err) => {
     console.error(err);
