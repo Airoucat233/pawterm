@@ -50,10 +50,12 @@ import '../../widgets/top_toast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
-// Codex 专属逻辑（realtime 快照 / 审批生命周期）拆到这个 part 文件，作为
-// _ChatTabState 的 extension。part 与本文件同库，privacy 与调用语义完全一致，
-// 是纯结构位移、零行为改动（P3 绞杀式拆分）。
+// 各 agent 专属逻辑拆到对称的 part 文件（_ChatTabState 的 extension）。part 与
+// 本文件同库，privacy 与调用语义完全一致，纯结构位移、零行为改动。
+// _handleWireMessage 做中央分发，agent 专属处理委托到各自文件——骨架对称，
+// 未来某个 agent 扩展就往它自己的文件塞（P3 绞杀式拆分）。
 part 'chat_tab_codex.dart';
+part 'chat_tab_claude.dart';
 
 class LocalUserInput extends IncomingMessage {
   final String text;
@@ -1230,32 +1232,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     }
   }
 
-  void _switchPermissionMode(CcPermissionMode m) {
-    final session = ref.read(currentSessionProvider);
-    // 权限模式是一种 agent 能力：只有声明了 permissionMode 的 agent 才有这套
-    // default/acceptEdits/... 选择器（Codex 走 approval_policy，不是这套）。
-    if (!(session?.agent.profile.permissionMode ?? false)) return;
-    // 1) UI 全局态，picker 当前选中项靠这个
-    ref.read(permissionModeProvider.notifier).set(m);
-    // 2) 写回 session.runtime['permission_mode']——之前漏了这一步，导致
-    //    UI 选中 bypass 但 session.runtime 还是入会时的初值 acceptEdits；
-    //    任何依赖 session.runtime 的逻辑（runtime sheet 的高亮、新建同 cwd
-    //    session 时的 default 计算等）都会拿到错的值。
-    final nextRuntime = {...session!.runtime, 'permission_mode': m.wire};
-    final next = session.copyWith(runtime: nextRuntime);
-    ref.read(currentSessionProvider.notifier).state = next;
-    _runtime.session = next;
-    // 3) 通知服务端切 live SDK + 持久化 sessionRuntime（服务端 /chat/permission
-    //    现在两件事都会做）
-    if (_sessionId != null && _chatApi != null) {
-      unawaited(_chatApi!.permission(_sessionId!, m.wire));
-    }
-    // 4) 同时更新 agent-level overrides，让用户下次新建 session 直接拿到
-    //    用户偏好的 permission_mode（跨 cwd 共享）。
-    ref
-        .read(agentRuntimeOverridesProvider.notifier)
-        .patch(session.agent, {'permission_mode': m.wire});
-  }
+  // _switchPermissionMode 已移到 chat_tab_claude.dart（_ClaudeChatLogic），
+  // 行为不变。
 
   void _patchRuntime(Map<String, dynamic> patch) {
     final session = ref.read(currentSessionProvider);
@@ -1859,82 +1837,10 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
       } else if (msg is RateLimitInfoMsg) {
         // 限流是账号级状态，不进消息流；写到全局 provider 给 composer chip 用。
         ref.read(rateLimitInfoProvider.notifier).state = msg.info;
-      } else if (msg is SessionStatusMsg) {
-        // SDK 内部状态：'compacting' / 'requesting' / null。按事件所属 session
-        // 的 key 写 family provider —— 后台 session 的 compacting 写进自己的
-        // key，结构上不会串到当前显示页面。不进消息流。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(claudeSessionStatusProvider(liveKey).notifier).state =
-              msg.status;
-        }
-      } else if (msg is InformationalMsg) {
-        // SDK 自发提示：warning/suggestion 才用 SnackBar 弹出，info/notice 静默。
-        // 只对前台显示的 Claude session 弹，避免后台 session 打断当前页面。
-        if (_isActiveClaudeRuntime(eventRuntime) &&
-            (msg.level == 'warning' || msg.level == 'suggestion')) {
-          final t = AppTokens.of(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(msg.content,
-                  style: const TextStyle(fontSize: 12.5)),
-              backgroundColor:
-                  msg.level == 'warning' ? t.error : t.warning,
-              duration: const Duration(seconds: 5),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      } else if (msg is ToolProgressMsg) {
-        // 工具进度：周期推送当前工具已执行多少秒。按事件 session 的 key 写
-        // family provider 给 tool_call_card 读取。tool 结果到达时由
-        // _applyAssistantSideEffects 显式清理对应 entry。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null && msg.toolUseId.isNotEmpty) {
-          final notifier = ref.read(toolProgressProvider(liveKey).notifier);
-          notifier.state = {
-            ...notifier.state,
-            msg.toolUseId: msg.elapsedSeconds,
-          };
-        }
-      } else if (msg is ThinkingTokensMsg) {
-        // SDK 在 thinking 阶段周期推送估算 token 数。按事件 session 的 key 写，
-        // 给 spinner 上的 thinking pill 用。不进消息流。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(thinkingTokensProvider(liveKey).notifier).state =
-              msg.estimatedTokens;
-        }
-      } else if (msg is TaskStartedMsg) {
-        // SDK 0.3.x 后台 task 生命周期：按事件 session 的 key 写 tasks store，
-        // 后台 session 的 task 进自己的 key，不串到当前页面的 TasksChip。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(tasksProvider(liveKey).notifier).start(msg);
-        }
-      } else if (msg is TaskUpdatedMsg) {
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(tasksProvider(liveKey).notifier).update(msg);
-        }
-      } else if (msg is TaskProgressMsg) {
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null) {
-          ref.read(tasksProvider(liveKey).notifier).progress(msg);
-        }
-      } else if (msg is TaskNotificationMsg) {
-        // SDK 0.3.x 路径：有 task_id（store 里有对应 entry）就合并终态。
-        // harness XML 路径：task_id 为 null 时不进 store，让 message_view
-        // 的现有 InlineTaskNotification 渲染处理。
-        final liveKey = _liveStatusKey(eventRuntime);
-        if (liveKey != null && msg.taskId != null) {
-          ref.read(tasksProvider(liveKey).notifier).notify(msg);
-        }
-        // 老路径：仍按原逻辑加入消息流（如果不是 SDK 路径触发的）。
-        if (msg.taskId == null || !msg.skipTranscript) {
-          _messages.add(msg);
-          _debugTrack(msg, json);
-        }
+      } else if (_applyClaudeWireMessage(msg, eventRuntime, json)) {
+        // Claude SDK 专属 wire 消息（session status / informational / tool
+        // progress / thinking tokens / 后台 task）委托给 chat_tab_claude.dart
+        // 的 _ClaudeChatLogic 处理。返回 true 表示已消费，不再走默认追加。
       } else {
         _messages.add(msg);
         _debugTrack(msg, json);
