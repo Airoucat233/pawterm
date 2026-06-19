@@ -340,6 +340,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     return session == null ? null : _sessionKey(session);
   }
 
+  /// setState 的对外包装：State.setState 是 @protected，part 文件里的 extension
+  /// （CodexChatLogic 等）不能直接调，统一经这里转发。纯转发，行为与 setState
+  /// 完全一致。
+  void rebuild(VoidCallback fn) => setState(fn);
+
   bool _isCurrentSessionRuntime(_ChatSessionRuntime runtime) {
     if (!_isActiveRuntime(runtime)) return false;
     final current = ref.read(currentSessionProvider);
@@ -2447,51 +2452,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     unawaited(_chatApi!.answer(_sessionId!, toolUseId, answers, annotations));
   }
 
-  /// 把 Codex app-server approval 决策通过 REST 回给 server。
-  void _sendCodexApproval(String requestId, String decision, String? scope) {
-    _sendCodexApprovalForRuntime(_runtime, requestId, decision, scope);
-  }
-
-  void _sendCodexApprovalForRuntime(
-    _ChatSessionRuntime runtime,
-    String requestId,
-    String decision,
-    String? scope,
-  ) {
-    final uuid = runtime.sessionId;
-    final api = runtime.chatApi;
-    if (uuid == null || api == null) return;
-    void markAnswered() {
-      runtime.codex.notifiedApprovalIds.remove(requestId);
-      runtime.codex.codexApprovalDecisions[requestId] =
-          scope == 'session' ? 'accept:session' : decision;
-      runtime.codex.dismissedApprovalPopoverId = requestId;
-    }
-
-    if (mounted && _isActiveRuntime(runtime)) {
-      setState(markAnswered);
-    } else {
-      markAnswered();
-    }
-    ref
-        .read(inAppChatNotificationsProvider.notifier)
-        .dismissApprovalsForRequest(requestId);
-    unawaited(api
-        .answerCodexApproval(uuid, requestId, decision, scope: scope)
-        .catchError(
-      (Object error) {
-        void markError() {
-          runtime.error = '$error';
-        }
-
-        if (mounted && _isActiveRuntime(runtime)) {
-          setState(markError);
-        } else {
-          markError();
-        }
-      },
-    ));
-  }
+  // _sendCodexApproval / _sendCodexApprovalForRuntime 已移到
+  // chat_tab_codex.dart（CodexChatLogic extension），行为不变。
 
   void _notifyCodexApprovalIfNeeded(
     _ChatSessionRuntime runtime,

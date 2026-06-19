@@ -41,4 +41,50 @@ extension _CodexChatLogic on _ChatTabState {
     _codexRealtimeSnapshots[uuid] = msg;
     return true;
   }
+
+  /// 把 Codex app-server approval 决策通过 REST 回给 server。
+  void _sendCodexApproval(String requestId, String decision, String? scope) {
+    _sendCodexApprovalForRuntime(_runtime, requestId, decision, scope);
+  }
+
+  void _sendCodexApprovalForRuntime(
+    _ChatSessionRuntime runtime,
+    String requestId,
+    String decision,
+    String? scope,
+  ) {
+    final uuid = runtime.sessionId;
+    final api = runtime.chatApi;
+    if (uuid == null || api == null) return;
+    void markAnswered() {
+      runtime.codex.notifiedApprovalIds.remove(requestId);
+      runtime.codex.codexApprovalDecisions[requestId] =
+          scope == 'session' ? 'accept:session' : decision;
+      runtime.codex.dismissedApprovalPopoverId = requestId;
+    }
+
+    if (mounted && _isActiveRuntime(runtime)) {
+      rebuild(markAnswered);
+    } else {
+      markAnswered();
+    }
+    ref
+        .read(inAppChatNotificationsProvider.notifier)
+        .dismissApprovalsForRequest(requestId);
+    unawaited(api
+        .answerCodexApproval(uuid, requestId, decision, scope: scope)
+        .catchError(
+      (Object error) {
+        void markError() {
+          runtime.error = '$error';
+        }
+
+        if (mounted && _isActiveRuntime(runtime)) {
+          rebuild(markError);
+        } else {
+          markError();
+        }
+      },
+    ));
+  }
 }
