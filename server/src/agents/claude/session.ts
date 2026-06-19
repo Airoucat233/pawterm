@@ -150,6 +150,17 @@ export class ChatSession {
         // default / acceptEdits / auto 等需要审批的模式触发。
         const o = opts as Record<string, unknown>;
         const toolUseId = opts.toolUseID;
+        // 诊断日志：记录每次进入审批路径的工具 + 当前 mode + SDK 给的升级原因。
+        // 方便核验"auto 模式下到底哪些工具会进 canUseTool"——若 auto 下普通工具
+        // 也进，说明需要按 classifier_approvable 收口（只在 safety 升级时弹）。
+        // 看日志：grep '\[canUseTool\]' ~/.config/pawterm/server.log（或测试服日志）。
+        console.error('[canUseTool]', JSON.stringify({
+          mode: this.permissionMode,
+          tool: toolName,
+          reason_type: (o.decision_reason_type as string) ?? null,
+          classifier_approvable: (o.classifier_approvable as boolean) ?? null,
+          blocked_path: (o.blockedPath as string) ?? null,
+        }));
         this.onToolPermissionRequest?.({
           request_id: toolUseId,
           tool_name: toolName,
