@@ -23,6 +23,9 @@
     <!-- Keep active SSE streams alive while the app is backgrounded. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- 请求电池优化豁免：熄屏进 Doze 后仍保持 SSE/前台服务存活，否则
+         国产 ROM/Doze 会冻结 isolate 与网络，导致流式中断、通知不更新。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
         android:label="@string/app_name"
         android:name="${applicationName}"

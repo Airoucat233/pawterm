@@ -42,6 +42,7 @@ class StreamingForegroundService {
   final Map<String, String> _activity = {};
   bool _initialized = false;
   bool _appInForeground = true;
+  bool _batteryExemptionAsked = false;
 
   Future<void> init() async {
     if (_initialized || !Platform.isAndroid) return;
@@ -78,7 +79,26 @@ class StreamingForegroundService {
     if (activity != null && activity.isNotEmpty) {
       _activity[payload.key] = activity;
     }
+    // turn 开始时 App 通常在前台，借机申请电池优化豁免（系统框只能在前台弹）。
+    // 没豁免熄屏进 Doze 后前台服务也会被冻，流式中断、通知不更新。
+    unawaited(_ensureBatteryExemption());
     await _sync();
+  }
+
+  /// 申请电池优化豁免：每个进程生命周期最多弹一次系统框；已豁免则跳过。
+  Future<void> _ensureBatteryExemption() async {
+    if (_batteryExemptionAsked || !Platform.isAndroid) return;
+    _batteryExemptionAsked = true;
+    try {
+      await init();
+      final ignoring =
+          await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+      if (!ignoring) {
+        await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+      }
+    } catch (_) {
+      // 拉起系统设置失败不致命，前台服务仍尽力保活。
+    }
   }
 
   Future<void> remove(ChatCompletionPayload payload) async {
