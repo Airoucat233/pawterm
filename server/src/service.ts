@@ -182,6 +182,45 @@ function warnIfNpx(): void {
 }
 
 
+/**
+ * 重启 macOS launchd 服务。优先用 `launchctl kickstart -k`：原子地"先杀后起"
+ * 已加载的 job，由 launchd 处理端口释放，**不依赖 servicePort()**（它读
+ * active-config 指针，可能指向别的 config，从而等错端口）。kickstart 不可用
+ * 或 job 未 bootstrap 时回退到旧式 unload/load。
+ */
+export function restartDarwinService(deps: {
+  /** Run `launchctl kickstart -k` for the given uid; returns its exit status. */
+  kickstart?: (uid: number) => number | null;
+  /** Legacy unload → wait-for-port → load path, used when kickstart is unavailable. */
+  fallback?: () => void;
+  getUid?: () => number | null;
+} = {}): void {
+  const kickstart =
+    deps.kickstart ??
+    ((uid: number): number | null =>
+      spawnSync('launchctl', ['kickstart', '-k', `gui/${uid}/${LABEL}`], {
+        stdio: 'inherit',
+      }).status);
+  const fallback =
+    deps.fallback ??
+    ((): void => {
+      tryExec(`launchctl unload "${PLIST_PATH}"`);
+      const port = servicePort();
+      if (!waitForPortRelease({ port })) {
+        console.error(`✗ Port ${port} is still in use after stopping the service.`);
+        console.error(`  Run: lsof -nP -iTCP:${port} -sTCP:LISTEN`);
+        process.exit(1);
+      }
+      exec(`launchctl load "${PLIST_PATH}"`);
+    });
+  const getUid =
+    deps.getUid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : null));
+
+  const uid = getUid();
+  if (uid != null && kickstart(uid) === 0) return;
+  fallback();
+}
+
 export function runServiceCommand(cmd: string, args: string[] = []): void {
   const p = currentPlatform();
 
@@ -265,14 +304,7 @@ export function runServiceCommand(cmd: string, args: string[] = []): void {
   if (cmd === 'restart') {
     if (p === 'darwin') {
       if (!existsSync(PLIST_PATH)) { console.error('Service not installed. Run: pawterm-server install'); process.exit(1); }
-      const port = servicePort();
-      tryExec(`launchctl unload "${PLIST_PATH}"`);
-      if (!waitForPortRelease({ port })) {
-        console.error(`✗ Port ${port} is still in use after stopping the service.`);
-        console.error(`  Run: lsof -nP -iTCP:${port} -sTCP:LISTEN`);
-        process.exit(1);
-      }
-      exec(`launchctl load "${PLIST_PATH}"`);
+      restartDarwinService();
       console.log('✓ Service restarted');
     } else if (p === 'linux') {
       exec('systemctl --user restart pawterm-server');
@@ -310,8 +342,7 @@ Usage: pawterm-server [command]
     console.log(`Updating ${pkg}...`);
     exec(`npm install -g ${pkg}`);
     if (p === 'darwin' && existsSync(PLIST_PATH)) {
-      tryExec(`launchctl unload "${PLIST_PATH}"`);
-      exec(`launchctl load "${PLIST_PATH}"`);
+      restartDarwinService();
       console.log('✓ Service restarted');
     } else if (p === 'linux') {
       tryExec('systemctl --user restart pawterm-server');
