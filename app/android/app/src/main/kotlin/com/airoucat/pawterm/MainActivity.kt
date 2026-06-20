@@ -15,9 +15,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.view.View
 import android.webkit.MimeTypeMap
-import android.widget.RemoteViews
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -402,57 +400,62 @@ class MainActivity : FlutterActivity() {
         sessions: List<Map<String, Any?>>,
         alert: Boolean,
     ): Notification {
-        val container = RemoteViews(packageName, R.layout.dashboard_notification)
-        container.removeAllViews(R.id.dashboard_rows)
+        // 标准 InboxStyle 多行（每会话一行），系统原生渲染，不会被 ROM 降级进
+        // 「更多通知」（自定义 RemoteViews 视图通知才会）。审批用通知级动作按钮。
+        val inbox = NotificationCompat.InboxStyle()
         var firstPayload: String? = null
-        sessions.forEachIndexed { index, s ->
+        var approvalPayload: String? = null
+        var approvalAgent = ""
+        var approvalRequestId = ""
+        var approvalName = ""
+        sessions.forEach { s ->
             val name = (s["name"] as? String) ?: "会话"
             val status = (s["status"] as? String) ?: ""
-            val agent = (s["agent"] as? String) ?: ""
             val phase = (s["phase"] as? String) ?: "running"
-            val requestId = (s["request_id"] as? String) ?: ""
             val payload = (s["payload"] as? String) ?: ""
+            inbox.addLine("$name — $status")
             if (firstPayload == null && payload.isNotEmpty()) firstPayload = payload
-
-            val row = RemoteViews(packageName, R.layout.dashboard_row)
-            row.setTextViewText(R.id.row_name, name)
-            row.setTextViewText(R.id.row_status, status)
-            // 整行可点 → 深链到该会话
-            row.setOnClickPendingIntent(R.id.row_tap, dashboardTapIntent(payload, index))
-            if (phase == "approval" || phase == "waiting") {
-                row.setViewVisibility(R.id.row_allow, View.VISIBLE)
-                row.setViewVisibility(R.id.row_deny, View.VISIBLE)
-                row.setOnClickPendingIntent(
-                    R.id.row_allow,
-                    dashboardActionIntent("allow", payload, agent, requestId, index),
-                )
-                row.setOnClickPendingIntent(
-                    R.id.row_deny,
-                    dashboardActionIntent("deny", payload, agent, requestId, index),
-                )
-            } else {
-                row.setViewVisibility(R.id.row_allow, View.GONE)
-                row.setViewVisibility(R.id.row_deny, View.GONE)
+            if (approvalPayload == null && (phase == "approval" || phase == "waiting")) {
+                approvalPayload = payload
+                approvalAgent = (s["agent"] as? String) ?: ""
+                approvalRequestId = (s["request_id"] as? String) ?: ""
+                approvalName = name
             }
-            container.addView(R.id.dashboard_rows, row)
         }
-        return NotificationCompat.Builder(this, dashboardChannelId)
+        val summary = if (sessions.size == 1) {
+            (sessions.firstOrNull()?.get("status") as? String) ?: ""
+        } else {
+            "${sessions.size} 个会话"
+        }
+        // 待审批时点击直接进那个会话，否则进第一个。
+        val tapPayload = approvalPayload ?: firstPayload
+        val builder = NotificationCompat.Builder(this, dashboardChannelId)
             .setSmallIcon(applicationInfo.icon)
             .setContentTitle(title)
-            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
-            .setCustomContentView(container)
-            .setCustomBigContentView(container)
-            .setContentIntent(firstPayload?.let { dashboardTapIntent(it, 999) })
+            .setContentText(summary)
+            .setStyle(inbox)
+            .setContentIntent(tapPayload?.let { dashboardTapIntent(it, 999) })
             .setOngoing(true)
             .setOnlyAlertOnce(!alert)
             .setPriority(
                 if (alert) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT,
             )
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            // 强制前台服务通知立即正常显示，避免被系统延迟/降级进「更多通知」。
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .build()
+        approvalPayload?.let { p ->
+            builder.addAction(
+                0,
+                "允许 ($approvalName)",
+                dashboardActionIntent("allow", p, approvalAgent, approvalRequestId, 0),
+            )
+            builder.addAction(
+                0,
+                "拒绝",
+                dashboardActionIntent("deny", p, approvalAgent, approvalRequestId, 1),
+            )
+        }
+        return builder.build()
     }
 
     /** 单行点击 → 打开 App 深链到该会话。每行用不同 requestCode 避免 PI 复用串台。 */
