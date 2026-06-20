@@ -63,6 +63,11 @@
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- 单条会话仪表盘前台服务（保活 + 多行常驻通知）。 -->
+        <service
+            android:name=".DashboardForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
             android:exported="false" />

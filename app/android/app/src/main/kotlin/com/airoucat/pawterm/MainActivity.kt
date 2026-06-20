@@ -2,6 +2,7 @@ package com.airoucat.pawterm
 
 import android.app.ActivityManager
 import android.app.DownloadManager
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -30,6 +31,8 @@ class MainActivity : FlutterActivity() {
     private val sessionEventsGroup = "pawterm.session_events"
     private val sessionEventsSummaryId = 876501
     private val activeSessionsNotificationId = 876502
+    private val dashboardChannelId = "session_dashboard"
+    private var dashboardRunning = false
     private val sessionEvents = ArrayDeque<String>()
     private val pendingApkDownloads = mutableSetOf<Long>()
     private var notificationsMethodChannel: MethodChannel? = null
@@ -111,6 +114,25 @@ class MainActivity : FlutterActivity() {
                         clearSessionNotifications()
                         result.success(null)
                     }
+                    "startDashboard", "updateDashboard" -> {
+                        val title = call.argument<String>("title") ?: "PawTerm"
+                        val summary = call.argument<String>("summary") ?: ""
+                        val lines = call.argument<List<String>>("lines") ?: emptyList()
+                        val alert = call.argument<Boolean>("alert") ?: false
+                        val payload = call.argument<String>("payload")
+                        try {
+                            startOrUpdateDashboard(title, summary, lines, alert, payload)
+                            result.success(null)
+                        } catch (e: SecurityException) {
+                            result.error("permission_denied", e.message, null)
+                        } catch (e: Exception) {
+                            result.error("dashboard_failed", e.message, null)
+                        }
+                    }
+                    "stopDashboard" -> {
+                        stopDashboard()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -163,7 +185,10 @@ class MainActivity : FlutterActivity() {
     private fun notificationPayloadFrom(intent: Intent?): String? {
         if (intent == null) return null
         val action = intent.action
-        if (action != "pawterm.SESSION_EVENTS" && action != "pawterm.ACTIVE_SESSION_PROGRESS") {
+        if (action != "pawterm.SESSION_EVENTS" &&
+            action != "pawterm.ACTIVE_SESSION_PROGRESS" &&
+            action != "pawterm.DASHBOARD"
+        ) {
             return null
         }
         return intent.getStringExtra("payload")?.takeIf { it.isNotBlank() }
@@ -311,6 +336,97 @@ class MainActivity : FlutterActivity() {
             .build()
 
         NotificationManagerCompat.from(this).notify(activeSessionsNotificationId, notification)
+    }
+
+    /** 启动或更新单条会话仪表盘前台服务（多行 InboxStyle 常驻通知）。 */
+    private fun startOrUpdateDashboard(
+        title: String,
+        summary: String,
+        lines: List<String>,
+        alert: Boolean,
+        payload: String?,
+    ) {
+        ensureDashboardChannel()
+        val notification = buildDashboardNotification(title, summary, lines, alert, payload)
+        if (!dashboardRunning) {
+            val intent = Intent(this, DashboardForegroundService::class.java).apply {
+                action = DashboardForegroundService.ACTION_START
+                putExtra(DashboardForegroundService.EXTRA_NOTIFICATION, notification)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            dashboardRunning = true
+        } else {
+            // 已在前台：直接更新同 id 通知，前台状态不变；alert=true 时（事件）
+            // onlyAlertOnce=false 让它再次 heads-up（在 buildDashboardNotification 里设）。
+            NotificationManagerCompat.from(this)
+                .notify(DashboardForegroundService.NOTIF_ID, notification)
+        }
+    }
+
+    private fun stopDashboard() {
+        if (!dashboardRunning) return
+        dashboardRunning = false
+        val intent = Intent(this, DashboardForegroundService::class.java).apply {
+            action = DashboardForegroundService.ACTION_STOP
+        }
+        try {
+            startService(intent)
+        } catch (_: Exception) {
+        }
+        NotificationManagerCompat.from(this).cancel(DashboardForegroundService.NOTIF_ID)
+    }
+
+    private fun buildDashboardNotification(
+        title: String,
+        summary: String,
+        lines: List<String>,
+        alert: Boolean,
+        payload: String?,
+    ): Notification {
+        val intent = Intent(this, MainActivity::class.java)
+            .setAction("pawterm.DASHBOARD")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (!payload.isNullOrBlank()) {
+            intent.putExtra("payload", payload)
+        }
+        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        val pendingIntent =
+            PendingIntent.getActivity(this, DashboardForegroundService.NOTIF_ID, intent, piFlags)
+        val inboxStyle = NotificationCompat.InboxStyle()
+        lines.take(8).forEach { inboxStyle.addLine(it) }
+        if (lines.size > 8) inboxStyle.setSummaryText("+ ${lines.size - 8}")
+        return NotificationCompat.Builder(this, dashboardChannelId)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle(title)
+            .setContentText(summary.ifBlank { title })
+            .setStyle(inboxStyle)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(!alert)
+            .setPriority(
+                if (alert) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW,
+            )
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .build()
+    }
+
+    private fun ensureDashboardChannel() {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (manager.getNotificationChannel(dashboardChannelId) != null) return
+        val channel = NotificationChannel(
+            dashboardChannelId,
+            "Session dashboard",
+            // HIGH：事件(完成/审批)时 onlyAlertOnce=false 能再次 heads-up。
+            NotificationManager.IMPORTANCE_HIGH,
+        )
+        channel.description = "Live multi-session dashboard"
+        manager.createNotificationChannel(channel)
     }
 
     private fun ensureSessionEventsChannel() {

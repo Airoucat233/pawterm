@@ -1,26 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter/services.dart';
 
 import 'chat_completion_notifier.dart';
-
-@pragma('vm:entry-point')
-void startStreamingForegroundTask() {
-  FlutterForegroundTask.setTaskHandler(_StreamingForegroundTaskHandler());
-}
-
-class _StreamingForegroundTaskHandler extends TaskHandler {
-  @override
-  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
-
-  @override
-  void onRepeatEvent(DateTime timestamp) {}
-
-  @override
-  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
-}
 
 const _nativeNotificationsChannel = MethodChannel('pawterm/notifications');
 
@@ -34,44 +19,46 @@ class ActiveSessionProgress {
   });
 }
 
+/// 后台「会话仪表盘」：一条常驻通知，多会话各占一行（name — 实时状态），
+/// 完成的会话该行翻成「✓ 已完成」并 heads-up，稍后移除；其余继续。
+///
+/// 由原生 [DashboardForegroundService] 承载（前台服务保活 + InboxStyle 多行
+/// 通知），本类通过 `pawterm/notifications` 方法通道 start/update/stopDashboard。
+/// 仅在 App 切后台且有进行中/刚完成会话时显示。
 class StreamingForegroundService {
   StreamingForegroundService._();
   static final instance = StreamingForegroundService._();
 
+  /// sessionKey -> 会话载荷
   final Map<String, ChatCompletionPayload> _active = {};
-  final Map<String, String> _activity = {};
-  bool _initialized = false;
-  bool _appInForeground = true;
-  bool _batteryExemptionAsked = false;
 
-  Future<void> init() async {
-    if (_initialized || !Platform.isAndroid) return;
-    FlutterForegroundTask.initCommunicationPort();
-    FlutterForegroundTask.init(
-      androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'streaming_turns',
-        channelName: 'Active AI turns',
-        channelDescription: 'Keeps active AI turn streams connected',
-        channelImportance: NotificationChannelImportance.LOW,
-        priority: NotificationPriority.LOW,
-        onlyAlertOnce: true,
-      ),
-      iosNotificationOptions: const IOSNotificationOptions(),
-      foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(30000),
-        autoRunOnBoot: false,
-        autoRunOnMyPackageReplaced: false,
-        allowWakeLock: true,
-        allowWifiLock: true,
-      ),
-    );
-    _initialized = true;
-    unawaited(_ensureNotificationPermission());
-  }
+  /// sessionKey -> 实时状态文案（思考中 / 调用工具X / 回复中 …）
+  final Map<String, String> _activity = {};
+
+  /// 已完成、正在「✓ 已完成」展示中的 sessionKey（短暂保留后移除）
+  final Set<String> _done = {};
+
+  /// 每个 done 会话的延迟移除计时器
+  final Map<String, Timer> _doneTimers = {};
+
+  bool _appInForeground = true;
+  bool _running = false; // 原生仪表盘前台服务是否在跑
+
+  /// 已完成行展示多久后从仪表盘移除
+  static const _doneLinger = Duration(seconds: 6);
+
+  /// 路由更新节流：避免高频状态刷新过度发通知
+  DateTime? _lastPush;
+  static const _cooldown = Duration(milliseconds: 1200);
+  Timer? _coalesce;
+
+  /// 兼容启动调用：仪表盘改由原生前台服务承载，无需再初始化
+  /// flutter_foreground_task；电池豁免延后到首个 turn(前台)时申请。
+  Future<void> init() async {}
 
   Future<void> setAppInForeground(bool value) async {
     _appInForeground = value;
-    await _sync();
+    await _sync(alert: false);
   }
 
   Future<void> upsert(ChatCompletionPayload payload, {String? activity}) async {
@@ -79,118 +66,160 @@ class StreamingForegroundService {
     if (activity != null && activity.isNotEmpty) {
       _activity[payload.key] = activity;
     }
-    // turn 开始时 App 通常在前台，借机申请电池优化豁免（系统框只能在前台弹）。
-    // 没豁免熄屏进 Doze 后前台服务也会被冻，流式中断、通知不更新。
-    unawaited(_ensureBatteryExemption());
-    await _sync();
-  }
-
-  /// 申请电池优化豁免：每个进程生命周期最多弹一次系统框；已豁免则跳过。
-  Future<void> _ensureBatteryExemption() async {
-    if (_batteryExemptionAsked || !Platform.isAndroid) return;
-    _batteryExemptionAsked = true;
-    try {
-      await init();
-      final ignoring =
-          await FlutterForegroundTask.isIgnoringBatteryOptimizations;
-      if (!ignoring) {
-        await FlutterForegroundTask.requestIgnoreBatteryOptimization();
-      }
-    } catch (_) {
-      // 拉起系统设置失败不致命，前台服务仍尽力保活。
-    }
+    _cancelDone(payload.key); // 又活跃了：撤销「已完成」展示
+    await _sync(alert: false);
   }
 
   Future<void> remove(ChatCompletionPayload payload) async {
     _active.remove(payload.key);
     _activity.remove(payload.key);
-    await _sync();
+    _cancelDone(payload.key);
+    await _sync(alert: false);
   }
 
+  /// 一轮完成：把该会话行翻成「✓ 已完成」并让仪表盘 heads-up，
+  /// [_doneLinger] 后移除该行（其余进行中的会话不受影响）。
   Future<void> complete(ChatCompletionPayload payload) async {
-    final removed = _active.remove(payload.key) != null;
-    _activity.remove(payload.key);
-    if (!removed && _active.length == 1) {
-      final only = _active.values.single;
-      if (only.cwd == payload.cwd && only.agent == payload.agent) {
-        _active.remove(only.key);
-        _activity.remove(only.key);
+    final key = payload.key;
+    if (!_active.containsKey(key)) {
+      // fallback：key 没匹配但只有一个活跃，认为就是它
+      if (_active.length == 1) {
+        final only = _active.keys.single;
+        _markDone(only);
+        await _sync(alert: true);
       }
+      return;
     }
-    await _sync();
+    _markDone(key);
+    await _sync(alert: true);
+  }
+
+  void _markDone(String key) {
+    _done.add(key);
+    _activity[key] = '✓ 已完成';
+    _doneTimers[key]?.cancel();
+    _doneTimers[key] = Timer(_doneLinger, () {
+      _active.remove(key);
+      _activity.remove(key);
+      _done.remove(key);
+      _doneTimers.remove(key);
+      unawaited(_sync(alert: false));
+    });
+  }
+
+  void _cancelDone(String key) {
+    _done.remove(key);
+    _doneTimers.remove(key)?.cancel();
   }
 
   Future<void> clear() async {
     _active.clear();
     _activity.clear();
-    await _sync();
+    _done.clear();
+    for (final t in _doneTimers.values) {
+      t.cancel();
+    }
+    _doneTimers.clear();
+    await _sync(alert: false);
   }
 
-  Future<void> _sync() async {
+  /// 把当前状态推到原生仪表盘。前台 / 无会话时停掉前台服务。
+  /// [alert] = true（完成/审批事件）让通知再次 heads-up；普通状态更新静默 + 节流。
+  Future<void> _sync({required bool alert}) async {
     if (!Platform.isAndroid) return;
-    await init();
+
     if (_appInForeground || _active.isEmpty) {
-      if (await FlutterForegroundTask.isRunningService) {
-        await FlutterForegroundTask.stopService();
+      _coalesce?.cancel();
+      if (_running) {
+        try {
+          await _nativeNotificationsChannel.invokeMethod('stopDashboard');
+        } on PlatformException {
+          // best-effort
+        } on MissingPluginException {
+          // non-Android / early startup
+        }
+        _running = false;
       }
-      await _clearProgressNotification();
       return;
     }
 
-    final title = _title();
-    final body = _body();
-    if (await FlutterForegroundTask.isRunningService) {
-      await FlutterForegroundTask.updateService(
-        notificationTitle: title,
-        notificationText: body,
+    // 事件(alert)立即推；普通更新节流，避免高频发通知。
+    if (!alert) {
+      final now = DateTime.now();
+      if (_lastPush != null && now.difference(_lastPush!) < _cooldown) {
+        _coalesce?.cancel();
+        _coalesce = Timer(_cooldown, () => unawaited(_sync(alert: false)));
+        return;
+      }
+    }
+    _coalesce?.cancel();
+    _lastPush = DateTime.now();
+
+    final items = _progressItems();
+    final lines = items
+        .map((it) => '${_sessionDisplayName(it.payload)} — ${it.activity}')
+        .toList(growable: false);
+    final runningCount = _active.length - _done.length;
+    final title = runningCount > 0
+        ? 'PawTerm · ${_active.length} 个会话'
+        : 'PawTerm';
+    final summary = activeSessionSummary(items);
+    // 点击载荷：优先第一个会话（后续逐行深链在 stage 2 用自定义布局做）。
+    final payload =
+        _active.isNotEmpty ? _active.values.first.toJson() : null;
+
+    try {
+      await _nativeNotificationsChannel.invokeMethod(
+        _running ? 'updateDashboard' : 'startDashboard',
+        {
+          'title': title,
+          'summary': summary,
+          'lines': lines,
+          'alert': alert,
+          if (payload != null) 'payload': _encodePayload(payload),
+        },
       );
-      return;
-    }
-    await _ensureNotificationPermission();
-    await FlutterForegroundTask.startService(
-      serviceId: 8765,
-      serviceTypes: const [ForegroundServiceTypes.dataSync],
-      notificationTitle: title,
-      notificationText: body,
-      callback: startStreamingForegroundTask,
-    );
-  }
-
-  Future<void> _ensureNotificationPermission() async {
-    final permission =
-        await FlutterForegroundTask.checkNotificationPermission();
-    if (permission != NotificationPermission.granted) {
-      await FlutterForegroundTask.requestNotificationPermission();
+      _running = true;
+    } on PlatformException {
+      // best-effort
+    } on MissingPluginException {
+      // non-Android / early startup
     }
   }
 
-  String _title() {
-    return 'PawTerm 正在继续回复';
+  // ChatCompletionPayload.toJson 是 Map；原生只需要透传字符串做深链。
+  String _encodePayload(Map<String, dynamic> json) => jsonEncode(json);
+
+  /// 当前是否已豁免电池优化（设置页展示状态用）。
+  Future<bool> isBatteryExempt() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      return await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    } catch (_) {
+      return false;
+    }
   }
 
-  String _body() {
-    return activeSessionCompactBody(_progressItems());
+  /// 用户在设置里**主动**请求电池优化豁免（会拉起系统设置页）。
+  /// 默认不自动弹——平时仅靠前台服务尽力保活，想要更强后台保障的用户自行开启。
+  Future<void> requestBatteryExemption() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final ignoring =
+          await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+      if (!ignoring) {
+        await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+      }
+    } catch (_) {}
   }
 
   List<ActiveSessionProgress> _progressItems() {
     return _active.values
         .map((payload) => ActiveSessionProgress(
               payload: payload,
-              activity: _activity[payload.key] ?? '保持连接',
+              activity: _activity[payload.key] ?? '运行中',
             ))
         .toList(growable: false);
-  }
-
-  Future<void> _clearProgressNotification() async {
-    try {
-      await _nativeNotificationsChannel.invokeMethod<void>(
-        'clearActiveSessionProgress',
-      );
-    } on MissingPluginException {
-      // Non-Android platforms and early startup can miss the native channel.
-    } on PlatformException {
-      // Clearing a notification is best-effort.
-    }
   }
 }
 
@@ -198,18 +227,9 @@ String activeSessionSummary(List<ActiveSessionProgress> items) {
   if (items.isEmpty) return '没有后台会话';
   final approvals = items.where((item) => item.activity.contains('审批')).length;
   if (approvals > 0) {
-    return '${items.length} 个会话运行中，$approvals 个等待审批';
+    return '${items.length} 个会话，$approvals 个等待审批';
   }
   return items.length == 1 ? '1 个会话运行中' : '${items.length} 个会话运行中';
-}
-
-String activeSessionCompactBody(List<ActiveSessionProgress> items) {
-  if (items.isEmpty) return '没有后台会话';
-  if (items.length == 1) {
-    final item = items.first;
-    return '${_sessionDisplayName(item.payload)} · ${item.activity}';
-  }
-  return activeSessionSummary(items);
 }
 
 String _sessionDisplayName(ChatCompletionPayload payload) {
@@ -222,7 +242,7 @@ String _sessionDisplayName(ChatCompletionPayload payload) {
 }
 
 String _shorten(String value) {
-  const max = 28;
+  const max = 22;
   if (value.length <= max) return value;
   return '${value.substring(0, max - 1)}…';
 }
