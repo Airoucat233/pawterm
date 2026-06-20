@@ -84,17 +84,19 @@ class StreamingForegroundService {
   /// [_doneLinger] 后移除该行（其余进行中的会话不受影响）。
   Future<void> complete(ChatCompletionPayload payload) async {
     final key = payload.key;
+    final text = '${_sessionDisplayName(payload)} 已完成回复';
+    final pj = _encodePayload(payload.toJson());
     if (!_active.containsKey(key)) {
       // fallback：key 没匹配但只有一个活跃，认为就是它
       if (_active.length == 1) {
         final only = _active.keys.single;
         _markDone(only);
-        await _sync(alert: true);
+        await _sync(alert: true, alertText: text, alertPayload: pj);
       }
       return;
     }
     _markDone(key);
-    await _sync(alert: true);
+    await _sync(alert: true, alertText: text, alertPayload: pj);
   }
 
   void _markDone(String key) {
@@ -121,7 +123,11 @@ class StreamingForegroundService {
     _active[payload.key] = payload;
     _approvals[payload.key] = requestId;
     _cancelDone(payload.key);
-    await _sync(alert: true);
+    await _sync(
+      alert: true,
+      alertText: '${_sessionDisplayName(payload)} 需要审批',
+      alertPayload: _encodePayload(payload.toJson()),
+    );
   }
 
   /// 审批已解决（用户在 App 内或别处响应）：撤销该行的待审批态。
@@ -159,7 +165,11 @@ class StreamingForegroundService {
 
   /// 把当前状态推到原生仪表盘。前台 / 无会话时停掉前台服务。
   /// [alert] = true（完成/审批事件）让通知再次 heads-up；普通状态更新静默 + 节流。
-  Future<void> _sync({required bool alert}) async {
+  Future<void> _sync({
+    required bool alert,
+    String? alertText,
+    String? alertPayload,
+  }) async {
     if (!Platform.isAndroid) return;
 
     if (_appInForeground || _active.isEmpty) {
@@ -212,6 +222,8 @@ class StreamingForegroundService {
           'title': title,
           'sessions': sessions,
           'alert': alert,
+          if (alertText != null) 'alert_text': alertText,
+          if (alertPayload != null) 'alert_payload': alertPayload,
         },
       );
       _running = true;

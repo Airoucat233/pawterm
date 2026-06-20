@@ -2298,7 +2298,11 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
     CurrentSession? session,
     bool? busy,
   }) {
-    final current = session ?? ref.read(currentSessionProvider);
+    // 默认取**事件所属 runtime** 的会话（而非当前显示的会话）：状态文案
+    // _foregroundActivityLabel() 用的是 _runtime.mode，payload 也得对应同一个
+    // runtime，否则后台会话来事件时会把状态串到显示会话上（状态更新不对）。
+    final current =
+        session ?? _runtime.session ?? ref.read(currentSessionProvider);
     if (current == null) return;
     final isBusy = busy ?? _busy;
     final payload = _completionPayloadFor(current);

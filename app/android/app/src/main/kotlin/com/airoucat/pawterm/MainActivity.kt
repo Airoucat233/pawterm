@@ -125,8 +125,10 @@ class MainActivity : FlutterActivity() {
                         val sessions =
                             call.argument<List<Map<String, Any?>>>("sessions") ?: emptyList()
                         val alert = call.argument<Boolean>("alert") ?: false
+                        val alertText = call.argument<String>("alert_text")
+                        val alertPayload = call.argument<String>("alert_payload")
                         try {
-                            startOrUpdateDashboard(title, sessions, alert)
+                            startOrUpdateDashboard(title, sessions, alert, alertText, alertPayload)
                             result.success(null)
                         } catch (e: SecurityException) {
                             result.error("permission_denied", e.message, null)
@@ -360,6 +362,8 @@ class MainActivity : FlutterActivity() {
         title: String,
         sessions: List<Map<String, Any?>>,
         alert: Boolean,
+        alertText: String?,
+        alertPayload: String?,
     ) {
         ensureDashboardChannel()
         val notification = buildDashboardNotification(title, sessions, alert)
@@ -375,11 +379,37 @@ class MainActivity : FlutterActivity() {
             }
             dashboardRunning = true
         } else {
-            // 已在前台：直接更新同 id 通知，前台状态不变；alert=true 时（事件）
-            // onlyAlertOnce=false 让它再次 heads-up（在 buildDashboardNotification 里设）。
+            // 已在前台：直接更新同 id 通知（静默），前台状态不变。
             NotificationManagerCompat.from(this)
                 .notify(DashboardForegroundService.NOTIF_ID, notification)
         }
+        // 事件(完成/审批)额外发一条瞬态悬浮通知——新 id 才能可靠 heads-up，
+        // 自动消失，不持久(避免和常驻仪表盘成双重)。
+        if (alert && !alertText.isNullOrBlank()) {
+            postDashboardEvent(alertText, alertPayload)
+        }
+    }
+
+    private var dashboardEventSeq = 0
+
+    /** 完成/审批事件的瞬态悬浮通知：同 dashboard channel(HIGH)，轮转 id 保证每次都弹，
+     *  autoCancel + 超时自动消失。 */
+    private fun postDashboardEvent(text: String, payload: String?) {
+        ensureDashboardChannel()
+        val id = DashboardForegroundService.NOTIF_ID + 100 + (dashboardEventSeq++ % 5)
+        val notification = NotificationCompat.Builder(this, dashboardChannelId)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle("PawTerm")
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(false)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setTimeoutAfter(8000)
+            .setContentIntent(payload?.let { dashboardTapIntent(it, 1000 + id) })
+            .build()
+        NotificationManagerCompat.from(this).notify(id, notification)
     }
 
     private fun stopDashboard() {
