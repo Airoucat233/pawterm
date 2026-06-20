@@ -37,6 +37,7 @@ class MainActivity : FlutterActivity() {
     private val sessionEventsSummaryId = 876501
     private val activeSessionsNotificationId = 876502
     private val dashboardChannelId = "session_dashboard"
+    private val alertsChannelId = "session_alerts"
     private var dashboardRunning = false
     private val sessionEvents = ArrayDeque<String>()
     private val pendingApkDownloads = mutableSetOf<Long>()
@@ -397,9 +398,9 @@ class MainActivity : FlutterActivity() {
     /** 完成/审批事件的瞬态悬浮通知：同 dashboard channel(HIGH)，轮转 id 保证每次都弹，
      *  autoCancel + 超时自动消失。 */
     private fun postDashboardEvent(text: String, payload: String?) {
-        ensureDashboardChannel()
+        ensureAlertsChannel()
         val id = DashboardForegroundService.NOTIF_ID + 100 + (dashboardEventSeq++ % 5)
-        val notification = NotificationCompat.Builder(this, dashboardChannelId)
+        val notification = NotificationCompat.Builder(this, alertsChannelId)
             .setSmallIcon(applicationInfo.icon)
             .setContentTitle("PawTerm")
             .setContentText(text)
@@ -408,10 +409,25 @@ class MainActivity : FlutterActivity() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setTimeoutAfter(8000)
+            // 持续 1 分钟后自动消失（常驻仪表盘归 dashboard，这条只是事件提醒）。
+            .setTimeoutAfter(60000)
             .setContentIntent(payload?.let { dashboardTapIntent(it, 1000 + id) })
             .build()
         NotificationManagerCompat.from(this).notify(id, notification)
+    }
+
+    /** 完成/审批事件悬浮的独立通知类别（HIGH，单独可控悬浮，和 dashboard 分开）。 */
+    private fun ensureAlertsChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(alertsChannelId) != null) return
+        val channel = NotificationChannel(
+            alertsChannelId,
+            "会话提醒",
+            NotificationManager.IMPORTANCE_HIGH,
+        )
+        channel.description = "完成 / 审批等事件的悬浮提醒"
+        manager.createNotificationChannel(channel)
     }
 
     private fun stopDashboard() {
