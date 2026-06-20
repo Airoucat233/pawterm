@@ -46,6 +46,11 @@ extension _ClaudeChatLogic on _ChatTabState {
     final uuid = _sessionId;
     final api = _chatApi;
     rebuild(() => _runtime.claudeToolApprovals.remove(requestId));
+    final approvalSession = _runtime.session ?? ref.read(currentSessionProvider);
+    if (approvalSession != null) {
+      unawaited(StreamingForegroundService.instance
+          .clearApproval(_completionPayloadFor(approvalSession)));
+    }
     if (uuid != null && api != null) {
       unawaited(api
           .toolPermission(uuid, requestId, decision, dontAskAgain: dontAskAgain)
@@ -64,6 +69,14 @@ extension _ClaudeChatLogic on _ChatTabState {
       // 某工具正在等审批：存进待审批表，渲染层据此在该工具卡上显示
       // 允许/允许且不再问/拒绝。不进消息流。
       eventRuntime.claudeToolApprovals[msg.requestId] = msg;
+      // 同步给后台通知仪表盘：该会话行显示「⏳ 等待审批」+ 允许/拒绝按钮。
+      final approvalSession = eventRuntime.session;
+      if (approvalSession != null) {
+        unawaited(StreamingForegroundService.instance.setApproval(
+          _completionPayloadFor(approvalSession),
+          msg.requestId,
+        ));
+      }
       return true;
     } else if (msg is ContextUsageMsg) {
       // 上下文窗口实时占用 → 按事件 session 的 key 写 family provider，

@@ -38,6 +38,9 @@ class StreamingForegroundService {
   /// 已完成、正在「✓ 已完成」展示中的 sessionKey（短暂保留后移除）
   final Set<String> _done = {};
 
+  /// 等待审批的 sessionKey -> requestId（行显示「⏳ 等待审批」+ 允许/拒绝按钮）
+  final Map<String, String> _approvals = {};
+
   /// 每个 done 会话的延迟移除计时器
   final Map<String, Timer> _doneTimers = {};
 
@@ -112,10 +115,41 @@ class StreamingForegroundService {
     _doneTimers.remove(key)?.cancel();
   }
 
+  /// 某会话出现待审批：行显示「⏳ 等待审批」+ 允许/拒绝按钮，并 heads-up。
+  Future<void> setApproval(
+      ChatCompletionPayload payload, String requestId) async {
+    _active[payload.key] = payload;
+    _approvals[payload.key] = requestId;
+    _cancelDone(payload.key);
+    await _sync(alert: true);
+  }
+
+  /// 审批已解决（用户在 App 内或别处响应）：撤销该行的待审批态。
+  Future<void> clearApproval(ChatCompletionPayload payload) async {
+    if (_approvals.remove(payload.key) != null) {
+      await _sync(alert: false);
+    }
+  }
+
+  /// 从通知里直接审批后按 uuid 清除（回调只拿到 payload，不便重建 key 时用）。
+  Future<void> clearApprovalByUuid(String uuid) async {
+    String? key;
+    for (final e in _active.entries) {
+      if (e.value.resumeId == uuid) {
+        key = e.key;
+        break;
+      }
+    }
+    if (key != null && _approvals.remove(key) != null) {
+      await _sync(alert: false);
+    }
+  }
+
   Future<void> clear() async {
     _active.clear();
     _activity.clear();
     _done.clear();
+    _approvals.clear();
     for (final t in _doneTimers.values) {
       t.cancel();
     }
@@ -157,13 +191,16 @@ class StreamingForegroundService {
 
     // 结构化每会话：name + 实时状态 + 深链载荷 + phase（done 行显示已完成）。
     final sessions = _active.values.map((p) {
+      final waiting = _approvals.containsKey(p.key);
       return <String, Object?>{
         'name': _sessionDisplayName(p),
-        'status': _activity[p.key] ?? '运行中',
+        'status': waiting ? '⏳ 等待审批' : (_activity[p.key] ?? '运行中'),
         'payload': _encodePayload(p.toJson()),
         'agent': p.agent.wire,
-        'phase': _done.contains(p.key) ? 'done' : 'running',
-        'request_id': '',
+        'phase': waiting
+            ? 'approval'
+            : (_done.contains(p.key) ? 'done' : 'running'),
+        'request_id': _approvals[p.key] ?? '',
       };
     }).toList(growable: false);
     final title = 'PawTerm · ${_active.length} 个会话';
