@@ -149,8 +149,20 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         updateTaskLabel()
         ensureDownloadReceiver()
-        ensureSessionEventsChannel()
-        ensureActiveSessionsChannel()
+        cleanupLegacyNotificationChannels()
+    }
+
+    /** 这些旧通知类别已被「会话仪表盘」统一取代，删掉避免系统设置里堆一堆 channel。 */
+    private fun cleanupLegacyNotificationChannels() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        listOf(
+            "session_events",
+            "active_session_progress",
+            "streaming_turns",
+            "chat_completion",
+            "chat_completion_native",
+        ).forEach { manager.deleteNotificationChannel(it) }
     }
 
     override fun onNewIntent(intent: Intent) {

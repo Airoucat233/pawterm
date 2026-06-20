@@ -213,12 +213,7 @@ class ChatCompletionNotifier {
   ChatCompletionNotifier._();
   static final instance = ChatCompletionNotifier._();
 
-  static const _channel = AndroidNotificationChannel(
-    'chat_completion',
-    'Chat completion',
-    description: 'AI turn completion alerts',
-    importance: Importance.high,
-  );
+  // 完成通知已统一进「会话仪表盘」常驻通知，不再单列 chat_completion 类别。
   static const _approvalChannel = AndroidNotificationChannel(
     'chat_approval',
     'Chat approvals',
@@ -272,10 +267,6 @@ class ChatCompletionNotifier {
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(_channel);
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(_approvalChannel);
     _initialized = true;
     unawaited(_requestAndroidPermissionIfForeground());
@@ -310,44 +301,15 @@ class ChatCompletionNotifier {
     required bool appInForeground,
   }) async {
     _markPulse(payload);
-    final id = payload.key.hashCode & 0x7fffffff;
     final sessionName = _sessionDisplayName(payload);
     final agentName = _agentLabel(payload.agent);
     final title = '$sessionName 有新回复';
     final body = '$agentName 已完成回复';
-    final line = '$sessionName · $agentName 已完成回复';
     if (appInForeground || _appIsVisibleNow()) {
       _showInAppCompletion(payload: payload, title: title, body: body);
-      return;
     }
-    try {
-      await _nativeNotificationsChannel.invokeMethod<void>(
-        'addSessionEvent',
-        {
-          'title': title,
-          'line': line,
-          'payload': jsonEncode(payload.toJson()),
-        },
-      );
-    } on MissingPluginException {
-      await _plugin.show(
-        id: id,
-        title: title,
-        body: body,
-        notificationDetails: NotificationDetails(
-          android: AndroidNotificationDetails(
-            _channel.id,
-            _channel.name,
-            channelDescription: _channel.description,
-            importance: Importance.high,
-            priority: Priority.high,
-            category: AndroidNotificationCategory.status,
-            ticker: 'AI turn complete',
-          ),
-        ),
-        payload: jsonEncode(payload.toJson()),
-      );
-    }
+    // 后台完成已由「会话仪表盘」常驻通知统一展示（该行翻「✓ 已完成」+ heads-up），
+    // 不再单独发完成通知——避免重复，并减少通知类别。
   }
 
   void showInAppApproval({
