@@ -88,12 +88,15 @@ class StreamingForegroundService {
   /// [_doneLinger] 后移除该行（其余进行中的会话不受影响）。
   Future<void> complete(ChatCompletionPayload payload) async {
     final key = payload.key;
+    // 已标记完成过就跳过——避免重连补播/重复触发再弹一条「已完成」。
+    if (_done.contains(key)) return;
     final text = '${_sessionDisplayName(payload)} 已完成回复';
     final pj = _encodePayload(payload.toJson());
     if (!_active.containsKey(key)) {
       // fallback：key 没匹配但只有一个活跃，认为就是它
       if (_active.length == 1) {
         final only = _active.keys.single;
+        if (_done.contains(only)) return;
         _markDone(only);
         await _sync(alert: true, alertText: text, alertPayload: pj);
       }
