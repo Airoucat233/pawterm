@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 
 import 'chat_completion_notifier.dart';
 
@@ -67,6 +68,10 @@ class StreamingForegroundService {
     }
     _done.clear();
   }
+
+  /// 实时查 App 是否在前台可见（绕开 _appInForeground 标志的更新竞态）。
+  bool _isAppVisibleNow() =>
+      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
 
   Future<void> upsert(ChatCompletionPayload payload, {String? activity}) async {
     _active[payload.key] = payload;
@@ -168,10 +173,13 @@ class StreamingForegroundService {
     if (!Platform.isAndroid) return;
 
     // 完成/审批事件：后台时独立发一条瞬态悬浮通知，不受仪表盘显隐/早退影响。
+    // 进了 App(resumed=可见)就不弹——除了 _appInForeground 标志，再实时查一次
+    // 生命周期，规避回前台重连补播时标志还没置 true 的竞态。
     if (alert &&
         alertText != null &&
         alertText.isNotEmpty &&
-        !_appInForeground) {
+        !_appInForeground &&
+        !_isAppVisibleNow()) {
       try {
         await _nativeNotificationsChannel.invokeMethod('dashboardEvent', {
           'text': alertText,
@@ -184,7 +192,7 @@ class StreamingForegroundService {
       }
     }
 
-    if (_appInForeground || _active.isEmpty) {
+    if (_appInForeground || _isAppVisibleNow() || _active.isEmpty) {
       _coalesce?.cancel();
       if (_running) {
         try {
