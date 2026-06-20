@@ -172,6 +172,23 @@ class StreamingForegroundService {
   }) async {
     if (!Platform.isAndroid) return;
 
+    // 完成/审批事件：后台时独立发一条瞬态悬浮通知，不受仪表盘显隐/早退影响。
+    if (alert &&
+        alertText != null &&
+        alertText.isNotEmpty &&
+        !_appInForeground) {
+      try {
+        await _nativeNotificationsChannel.invokeMethod('dashboardEvent', {
+          'text': alertText,
+          if (alertPayload != null) 'payload': alertPayload,
+        });
+      } on PlatformException {
+        // best-effort
+      } on MissingPluginException {
+        // non-Android / early startup
+      }
+    }
+
     if (_appInForeground || _active.isEmpty) {
       _coalesce?.cancel();
       if (_running) {
@@ -222,8 +239,6 @@ class StreamingForegroundService {
           'title': title,
           'sessions': sessions,
           'alert': alert,
-          if (alertText != null) 'alert_text': alertText,
-          if (alertPayload != null) 'alert_payload': alertPayload,
         },
       );
       _running = true;

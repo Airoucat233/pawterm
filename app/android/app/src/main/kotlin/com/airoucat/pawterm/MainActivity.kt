@@ -125,15 +125,24 @@ class MainActivity : FlutterActivity() {
                         val sessions =
                             call.argument<List<Map<String, Any?>>>("sessions") ?: emptyList()
                         val alert = call.argument<Boolean>("alert") ?: false
-                        val alertText = call.argument<String>("alert_text")
-                        val alertPayload = call.argument<String>("alert_payload")
                         try {
-                            startOrUpdateDashboard(title, sessions, alert, alertText, alertPayload)
+                            startOrUpdateDashboard(title, sessions, alert)
                             result.success(null)
                         } catch (e: SecurityException) {
                             result.error("permission_denied", e.message, null)
                         } catch (e: Exception) {
                             result.error("dashboard_failed", e.message, null)
+                        }
+                    }
+                    "dashboardEvent" -> {
+                        // 完成/审批的瞬态悬浮通知（独立于仪表盘显隐，后台时由 Dart 发）。
+                        val text = call.argument<String>("text") ?: ""
+                        val payload = call.argument<String>("payload")
+                        try {
+                            if (text.isNotBlank()) postDashboardEvent(text, payload)
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("dashboard_event_failed", e.message, null)
                         }
                     }
                     "stopDashboard" -> {
@@ -362,8 +371,6 @@ class MainActivity : FlutterActivity() {
         title: String,
         sessions: List<Map<String, Any?>>,
         alert: Boolean,
-        alertText: String?,
-        alertPayload: String?,
     ) {
         ensureDashboardChannel()
         val notification = buildDashboardNotification(title, sessions, alert)
@@ -382,11 +389,6 @@ class MainActivity : FlutterActivity() {
             // 已在前台：直接更新同 id 通知（静默），前台状态不变。
             NotificationManagerCompat.from(this)
                 .notify(DashboardForegroundService.NOTIF_ID, notification)
-        }
-        // 事件(完成/审批)额外发一条瞬态悬浮通知——新 id 才能可靠 heads-up，
-        // 自动消失，不持久(避免和常驻仪表盘成双重)。
-        if (alert && !alertText.isNullOrBlank()) {
-            postDashboardEvent(alertText, alertPayload)
         }
     }
 
