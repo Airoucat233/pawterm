@@ -11,6 +11,13 @@ type CodexTurn = {
   durationMs?: number | null;
 };
 
+/** 清洗 Codex 模型：跨 agent 串入的 Claude/Gemini 模型 Codex 不认 → 用默认(null)。 */
+function sanitizeCodexModel(model: string | null | undefined): string | null {
+  if (!model) return null;
+  if (/^(claude|gemini)/i.test(model)) return null;
+  return model;
+}
+
 export class CodexAgentProvider implements AgentProvider<'codex'> {
   readonly kind = 'codex' as const;
 
@@ -122,11 +129,15 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
     deviceId: string;
   }): Promise<AgentRun> {
     const runtime = input.runtime;
+    // 清洗模型：历史会话的 runtime 可能被串入 Claude/Gemini 模型，Codex 不认会
+    // 导致 thread/resume + turn/start 失败("Reconnecting"→iterator exhausted)。
+    // 这类跨 agent 模型一律丢掉，让 Codex 用默认模型。
+    const model = sanitizeCodexModel(runtime.model);
     const modelReasoningEffort = runtime.reasoning_effort ?? 'medium';
     const client = await this.client();
     const startThread = () => client.request('thread/start', {
       cwd: input.cwd,
-      model: runtime.model ?? null,
+      model: model,
       config: { model_reasoning_effort: modelReasoningEffort },
       sandbox: runtime.sandbox,
       approvalPolicy: runtime.approval_policy,
@@ -137,7 +148,7 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
       ? await client.request('thread/resume', {
           threadId: input.sessionId,
           cwd: input.cwd,
-          model: runtime.model ?? null,
+          model: model,
           config: { model_reasoning_effort: modelReasoningEffort },
           sandbox: runtime.sandbox,
           approvalPolicy: runtime.approval_policy,
@@ -149,7 +160,7 @@ export class CodexAgentProvider implements AgentProvider<'codex'> {
     const started = await client.request('turn/start', {
       threadId,
       input: [{ type: 'text', text: input.text }],
-      model: runtime.model ?? null,
+      model: model,
       effort: modelReasoningEffort,
     }).catch((err) => {
       stream.close();
