@@ -31,14 +31,21 @@ class ContextUsageBar extends ConsumerWidget {
             ? t.warning
             : _green;
 
-    String fmt(int n) => n >= 1000
-        ? '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k'
-        : '$n';
+    // 1,000,000 → 1M（惯用叫法），千位 → k。
+    String fmt(int n) {
+      if (n >= 1000000) {
+        final m = n / 1000000;
+        return '${m == m.roundToDouble() ? m.toStringAsFixed(0) : m.toStringAsFixed(1)}M';
+      }
+      if (n >= 1000) return '${(n / 1000).toStringAsFixed(0)}k';
+      return '$n';
+    }
 
-    // 贴输入框底边、左对齐、极小高度：一根迷你细条 + 「大小 + 百分比」，
-    // 按阈值变色（绿/黄/红）。
+    // 贴输入框底边、左对齐、极小高度：迷你细条 + 「总大小 · 百分比」，按阈值变色。
+    // 放在 composer 的 SafeArea 内、输入框正下方；上下间距由这里 + composer 底
+    // padding 控制成一致的小间距。
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+      padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
       child: Row(
         children: [
           SizedBox(
@@ -55,7 +62,7 @@ class ContextUsageBar extends ConsumerWidget {
           ),
           const SizedBox(width: 6),
           Text(
-            '${fmt(usage.totalTokens)}/${fmt(usage.maxTokens)} · ${usage.percentage.toStringAsFixed(0)}%',
+            '${fmt(usage.maxTokens)} · ${usage.percentage.toStringAsFixed(0)}%',
             style: TextStyle(
               fontSize: 9,
               height: 1.1,

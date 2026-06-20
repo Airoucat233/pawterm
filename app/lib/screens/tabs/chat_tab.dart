@@ -2510,7 +2510,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               if (!_stickToBottom)
                 Positioned(
                   right: 12,
-                  bottom: 12,
+                  // 默认位置往上挪一点，给底部固定的「重新编辑」悬浮胶囊预留位置。
+                  bottom: 54,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -2526,21 +2527,17 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                     ],
                   ),
                 ),
+              // 重新编辑：浮在消息区右下角的小胶囊，固定位置、不占行、不遮挡消息。
+              // 位置固定不避让（箭头已上移让出此处）。
+              if (_unrespondedUserText != null && _busy)
+                Positioned(
+                  right: 12,
+                  bottom: 12,
+                  child: _ReEditAction(onReEdit: _reEditLastMessage),
+                ),
             ],
           ),
         ),
-        // 重新编辑胶囊：移出 spinner 行，单独占一行放在它正上方，避免和
-        // 状态/耗时/进度 chip 挤在一行。streaming 时也显示。
-        if (_unrespondedUserText != null && _busy)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 12, 0),
-            child: Row(
-              children: [
-                const Spacer(),
-                _ReEditAction(onReEdit: _reEditLastMessage),
-              ],
-            ),
-          ),
         if (_busy && _busyStartedAt != null)
           AiSpinnerLine(
             startedAt: _busyStartedAt!,
@@ -2606,8 +2603,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             runtime: session.runtime,
             sessionId: _sessionId ?? session.resumeId,
           ),
-        // 贴输入框底边、左对齐的上下文占用条（设置可关、仅 Claude 有数据）。
-        const ContextUsageBar(),
       ],
     );
   }
@@ -3360,7 +3355,7 @@ class _Composer extends ConsumerWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3529,6 +3524,8 @@ class _Composer extends ConsumerWidget {
             ],
           ),
             ),
+            // 上下文占用条：贴输入框底边、SafeArea 内、左对齐（仅 Claude 有数据）。
+            const ContextUsageBar(),
           ],
         ),
       ),
@@ -5622,12 +5619,17 @@ class _ReEditAction extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-              color: t.accent.withValues(alpha: dark ? 0.12 : 0.09),
+              // 不透明 surface + accent 微染：浮在消息上也清晰可读。
+              color: Color.alphaBlend(
+                t.accent.withValues(alpha: dark ? 0.18 : 0.12),
+                t.surface,
+              ),
               borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: t.accent.withValues(alpha: 0.25), width: 0.5),
               boxShadow: [
                 BoxShadow(
-                  color: t.accent.withValues(alpha: dark ? 0.08 : 0.06),
-                  blurRadius: 12,
+                  color: Colors.black.withValues(alpha: dark ? 0.28 : 0.12),
+                  blurRadius: 10,
                   offset: const Offset(0, 3),
                 ),
               ],

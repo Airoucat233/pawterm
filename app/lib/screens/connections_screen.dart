@@ -376,15 +376,7 @@ class _ConnCard extends ConsumerWidget {
                   const SizedBox(height: 10),
                   Row(
                     children: [
-                      _MiniConnAction(
-                        label: isActive ? '打开' : '连接',
-                        icon: isActive
-                            ? Icons.open_in_new_rounded
-                            : Icons.power_settings_new_rounded,
-                        primary: true,
-                        onTap: () => _connect(context, ref),
-                      ),
-                      const SizedBox(width: 8),
+                      // 次要操作放左边，主操作「连接/打开」(绿色)推到右下角。
                       _MiniConnAction(
                         label: '编辑',
                         icon: Icons.edit_outlined,
@@ -394,6 +386,15 @@ class _ConnCard extends ConsumerWidget {
                       _MiniConnAction.icon(
                         icon: Icons.more_horiz_rounded,
                         onTap: () => _showActions(context, ref),
+                      ),
+                      const Spacer(),
+                      _MiniConnAction(
+                        label: isActive ? '打开' : '连接',
+                        icon: isActive
+                            ? Icons.open_in_new_rounded
+                            : Icons.power_settings_new_rounded,
+                        primary: true,
+                        onTap: () => _connect(context, ref),
                       ),
                     ],
                   ),
