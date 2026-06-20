@@ -1754,14 +1754,20 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
   void _syncRuntimeModelFromAssistant(AssistantMsg msg) {
     final model = msg.model?.trim();
     if (model == null || model.isEmpty) return;
-    final session = ref.read(currentSessionProvider);
+    // 写到**事件所属 runtime** 的会话（而非当前显示的会话）：否则后台 Claude
+    // 会话的 assistant 模型(如 claude-opus-4-8)会被写进你正显示的 Codex 会话
+    // runtime，造成跨会话 + 跨 agent 模型串污染（Codex 拿到 Claude 模型续不上）。
+    final session = _runtime.session;
     if (session == null) return;
     final existing = (session.runtime['model'] ?? '').toString().trim();
     if (existing == model) return;
     if (existing.isNotEmpty) return; // 用户已经选过，不要覆盖
     final nextRuntime = {...session.runtime, 'model': model};
-    ref.read(currentSessionProvider.notifier).state =
-        session.copyWith(runtime: nextRuntime);
+    final nextSession = session.copyWith(runtime: nextRuntime);
+    _runtime.session = nextSession;
+    if (_isActiveRuntime(_runtime)) {
+      ref.read(currentSessionProvider.notifier).state = nextSession;
+    }
   }
 
   void _markAiOutputStarted() {
