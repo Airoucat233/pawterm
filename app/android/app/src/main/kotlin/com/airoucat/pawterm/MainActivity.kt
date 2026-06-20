@@ -15,7 +15,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.view.View
 import android.webkit.MimeTypeMap
+import android.widget.RemoteViews
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -24,6 +26,11 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        /** 供 DashboardActionReceiver 把通知里的审批决定转发回 Dart。 */
+        var dashboardChannel: MethodChannel? = null
+    }
+
     private val apkInstallerChannel = "pawterm/apk_installer"
     private val notificationsChannel = "pawterm/notifications"
     private val sessionEventsChannelId = "session_events"
@@ -72,6 +79,7 @@ class MainActivity : FlutterActivity() {
             }
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
         notificationsMethodChannel = channel
+        dashboardChannel = channel
         channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getInitialNotificationPayload" -> {
@@ -116,12 +124,11 @@ class MainActivity : FlutterActivity() {
                     }
                     "startDashboard", "updateDashboard" -> {
                         val title = call.argument<String>("title") ?: "PawTerm"
-                        val summary = call.argument<String>("summary") ?: ""
-                        val lines = call.argument<List<String>>("lines") ?: emptyList()
+                        val sessions =
+                            call.argument<List<Map<String, Any?>>>("sessions") ?: emptyList()
                         val alert = call.argument<Boolean>("alert") ?: false
-                        val payload = call.argument<String>("payload")
                         try {
-                            startOrUpdateDashboard(title, summary, lines, alert, payload)
+                            startOrUpdateDashboard(title, sessions, alert)
                             result.success(null)
                         } catch (e: SecurityException) {
                             result.error("permission_denied", e.message, null)
@@ -338,16 +345,14 @@ class MainActivity : FlutterActivity() {
         NotificationManagerCompat.from(this).notify(activeSessionsNotificationId, notification)
     }
 
-    /** 启动或更新单条会话仪表盘前台服务（多行 InboxStyle 常驻通知）。 */
+    /** 启动或更新单条会话仪表盘前台服务（RemoteViews 多行常驻通知）。 */
     private fun startOrUpdateDashboard(
         title: String,
-        summary: String,
-        lines: List<String>,
+        sessions: List<Map<String, Any?>>,
         alert: Boolean,
-        payload: String?,
     ) {
         ensureDashboardChannel()
-        val notification = buildDashboardNotification(title, summary, lines, alert, payload)
+        val notification = buildDashboardNotification(title, sessions, alert)
         if (!dashboardRunning) {
             val intent = Intent(this, DashboardForegroundService::class.java).apply {
                 action = DashboardForegroundService.ACTION_START
@@ -382,30 +387,50 @@ class MainActivity : FlutterActivity() {
 
     private fun buildDashboardNotification(
         title: String,
-        summary: String,
-        lines: List<String>,
+        sessions: List<Map<String, Any?>>,
         alert: Boolean,
-        payload: String?,
     ): Notification {
-        val intent = Intent(this, MainActivity::class.java)
-            .setAction("pawterm.DASHBOARD")
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        if (!payload.isNullOrBlank()) {
-            intent.putExtra("payload", payload)
+        val container = RemoteViews(packageName, R.layout.dashboard_notification)
+        container.removeAllViews(R.id.dashboard_rows)
+        var firstPayload: String? = null
+        sessions.forEachIndexed { index, s ->
+            val name = (s["name"] as? String) ?: "会话"
+            val status = (s["status"] as? String) ?: ""
+            val agent = (s["agent"] as? String) ?: ""
+            val phase = (s["phase"] as? String) ?: "running"
+            val requestId = (s["request_id"] as? String) ?: ""
+            val payload = (s["payload"] as? String) ?: ""
+            if (firstPayload == null && payload.isNotEmpty()) firstPayload = payload
+
+            val row = RemoteViews(packageName, R.layout.dashboard_row)
+            row.setTextViewText(R.id.row_name, name)
+            row.setTextViewText(R.id.row_status, status)
+            // 整行可点 → 深链到该会话
+            row.setOnClickPendingIntent(R.id.row_tap, dashboardTapIntent(payload, index))
+            if (phase == "approval" || phase == "waiting") {
+                row.setViewVisibility(R.id.row_allow, View.VISIBLE)
+                row.setViewVisibility(R.id.row_deny, View.VISIBLE)
+                row.setOnClickPendingIntent(
+                    R.id.row_allow,
+                    dashboardActionIntent("allow", payload, agent, requestId, index),
+                )
+                row.setOnClickPendingIntent(
+                    R.id.row_deny,
+                    dashboardActionIntent("deny", payload, agent, requestId, index),
+                )
+            } else {
+                row.setViewVisibility(R.id.row_allow, View.GONE)
+                row.setViewVisibility(R.id.row_deny, View.GONE)
+            }
+            container.addView(R.id.dashboard_rows, row)
         }
-        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
-        val pendingIntent =
-            PendingIntent.getActivity(this, DashboardForegroundService.NOTIF_ID, intent, piFlags)
-        val inboxStyle = NotificationCompat.InboxStyle()
-        lines.take(8).forEach { inboxStyle.addLine(it) }
-        if (lines.size > 8) inboxStyle.setSummaryText("+ ${lines.size - 8}")
         return NotificationCompat.Builder(this, dashboardChannelId)
             .setSmallIcon(applicationInfo.icon)
             .setContentTitle(title)
-            .setContentText(summary.ifBlank { title })
-            .setStyle(inboxStyle)
-            .setContentIntent(pendingIntent)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(container)
+            .setCustomBigContentView(container)
+            .setContentIntent(firstPayload?.let { dashboardTapIntent(it, 999) })
             .setOngoing(true)
             .setOnlyAlertOnce(!alert)
             .setPriority(
@@ -413,6 +438,37 @@ class MainActivity : FlutterActivity() {
             )
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .build()
+    }
+
+    /** 单行点击 → 打开 App 深链到该会话。每行用不同 requestCode 避免 PI 复用串台。 */
+    private fun dashboardTapIntent(payload: String, index: Int): PendingIntent {
+        val intent = Intent(this, MainActivity::class.java)
+            .setAction("pawterm.DASHBOARD")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (payload.isNotEmpty()) intent.putExtra("payload", payload)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        return PendingIntent.getActivity(this, 7000 + index, intent, flags)
+    }
+
+    /** 审批按钮 → 广播给 DashboardActionReceiver（不开 App），由它转发回 Dart。 */
+    private fun dashboardActionIntent(
+        decision: String,
+        payload: String,
+        agent: String,
+        requestId: String,
+        index: Int,
+    ): PendingIntent {
+        val intent = Intent(this, DashboardActionReceiver::class.java)
+            .setAction(DashboardActionReceiver.ACTION)
+            .putExtra(DashboardActionReceiver.EXTRA_DECISION, decision)
+            .putExtra(DashboardActionReceiver.EXTRA_UUID, payload)
+            .putExtra(DashboardActionReceiver.EXTRA_AGENT, agent)
+            .putExtra(DashboardActionReceiver.EXTRA_REQUEST_ID, requestId)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        val code = 8000 + index * 2 + if (decision == "allow") 0 else 1
+        return PendingIntent.getBroadcast(this, code, intent, flags)
     }
 
     private fun ensureDashboardChannel() {

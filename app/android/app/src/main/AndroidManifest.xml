@@ -68,6 +68,14 @@
             android:name=".DashboardForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- 仪表盘通知里允许/拒绝按钮的接收端（不开 App，转发给 Dart）。 -->
+        <receiver
+            android:name=".DashboardActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="pawterm.dashboard.ACTION" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
             android:exported="false" />

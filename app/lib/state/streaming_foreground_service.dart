@@ -155,28 +155,26 @@ class StreamingForegroundService {
     _coalesce?.cancel();
     _lastPush = DateTime.now();
 
-    final items = _progressItems();
-    final lines = items
-        .map((it) => '${_sessionDisplayName(it.payload)} — ${it.activity}')
-        .toList(growable: false);
-    final runningCount = _active.length - _done.length;
-    final title = runningCount > 0
-        ? 'PawTerm · ${_active.length} 个会话'
-        : 'PawTerm';
-    final summary = activeSessionSummary(items);
-    // 点击载荷：优先第一个会话（后续逐行深链在 stage 2 用自定义布局做）。
-    final payload =
-        _active.isNotEmpty ? _active.values.first.toJson() : null;
+    // 结构化每会话：name + 实时状态 + 深链载荷 + phase（done 行显示已完成）。
+    final sessions = _active.values.map((p) {
+      return <String, Object?>{
+        'name': _sessionDisplayName(p),
+        'status': _activity[p.key] ?? '运行中',
+        'payload': _encodePayload(p.toJson()),
+        'agent': p.agent.wire,
+        'phase': _done.contains(p.key) ? 'done' : 'running',
+        'request_id': '',
+      };
+    }).toList(growable: false);
+    final title = 'PawTerm · ${_active.length} 个会话';
 
     try {
       await _nativeNotificationsChannel.invokeMethod(
         _running ? 'updateDashboard' : 'startDashboard',
         {
           'title': title,
-          'summary': summary,
-          'lines': lines,
+          'sessions': sessions,
           'alert': alert,
-          if (payload != null) 'payload': _encodePayload(payload),
         },
       );
       _running = true;
@@ -213,14 +211,6 @@ class StreamingForegroundService {
     } catch (_) {}
   }
 
-  List<ActiveSessionProgress> _progressItems() {
-    return _active.values
-        .map((payload) => ActiveSessionProgress(
-              payload: payload,
-              activity: _activity[payload.key] ?? '运行中',
-            ))
-        .toList(growable: false);
-  }
 }
 
 String activeSessionSummary(List<ActiveSessionProgress> items) {
