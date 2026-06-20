@@ -2,6 +2,7 @@ package com.airoucat.pawterm
 
 import android.app.ActivityManager
 import android.app.DownloadManager
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -14,7 +15,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.view.View
 import android.webkit.MimeTypeMap
+import android.widget.RemoteViews
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -23,6 +26,11 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        /** 供 DashboardActionReceiver 把通知里的审批决定转发回 Dart。 */
+        var dashboardChannel: MethodChannel? = null
+    }
+
     private val apkInstallerChannel = "pawterm/apk_installer"
     private val notificationsChannel = "pawterm/notifications"
     private val sessionEventsChannelId = "session_events"
@@ -30,6 +38,8 @@ class MainActivity : FlutterActivity() {
     private val sessionEventsGroup = "pawterm.session_events"
     private val sessionEventsSummaryId = 876501
     private val activeSessionsNotificationId = 876502
+    private val dashboardChannelId = "session_dashboard"
+    private var dashboardRunning = false
     private val sessionEvents = ArrayDeque<String>()
     private val pendingApkDownloads = mutableSetOf<Long>()
     private var notificationsMethodChannel: MethodChannel? = null
@@ -69,6 +79,7 @@ class MainActivity : FlutterActivity() {
             }
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, notificationsChannel)
         notificationsMethodChannel = channel
+        dashboardChannel = channel
         channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getInitialNotificationPayload" -> {
@@ -109,6 +120,24 @@ class MainActivity : FlutterActivity() {
                     }
                     "clearSessionNotifications" -> {
                         clearSessionNotifications()
+                        result.success(null)
+                    }
+                    "startDashboard", "updateDashboard" -> {
+                        val title = call.argument<String>("title") ?: "PawTerm"
+                        val sessions =
+                            call.argument<List<Map<String, Any?>>>("sessions") ?: emptyList()
+                        val alert = call.argument<Boolean>("alert") ?: false
+                        try {
+                            startOrUpdateDashboard(title, sessions, alert)
+                            result.success(null)
+                        } catch (e: SecurityException) {
+                            result.error("permission_denied", e.message, null)
+                        } catch (e: Exception) {
+                            result.error("dashboard_failed", e.message, null)
+                        }
+                    }
+                    "stopDashboard" -> {
+                        stopDashboard()
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -163,7 +192,10 @@ class MainActivity : FlutterActivity() {
     private fun notificationPayloadFrom(intent: Intent?): String? {
         if (intent == null) return null
         val action = intent.action
-        if (action != "pawterm.SESSION_EVENTS" && action != "pawterm.ACTIVE_SESSION_PROGRESS") {
+        if (action != "pawterm.SESSION_EVENTS" &&
+            action != "pawterm.ACTIVE_SESSION_PROGRESS" &&
+            action != "pawterm.DASHBOARD"
+        ) {
             return null
         }
         return intent.getStringExtra("payload")?.takeIf { it.isNotBlank() }
@@ -311,6 +343,146 @@ class MainActivity : FlutterActivity() {
             .build()
 
         NotificationManagerCompat.from(this).notify(activeSessionsNotificationId, notification)
+    }
+
+    /** 启动或更新单条会话仪表盘前台服务（RemoteViews 多行常驻通知）。 */
+    private fun startOrUpdateDashboard(
+        title: String,
+        sessions: List<Map<String, Any?>>,
+        alert: Boolean,
+    ) {
+        ensureDashboardChannel()
+        val notification = buildDashboardNotification(title, sessions, alert)
+        if (!dashboardRunning) {
+            val intent = Intent(this, DashboardForegroundService::class.java).apply {
+                action = DashboardForegroundService.ACTION_START
+                putExtra(DashboardForegroundService.EXTRA_NOTIFICATION, notification)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            dashboardRunning = true
+        } else {
+            // 已在前台：直接更新同 id 通知，前台状态不变；alert=true 时（事件）
+            // onlyAlertOnce=false 让它再次 heads-up（在 buildDashboardNotification 里设）。
+            NotificationManagerCompat.from(this)
+                .notify(DashboardForegroundService.NOTIF_ID, notification)
+        }
+    }
+
+    private fun stopDashboard() {
+        if (!dashboardRunning) return
+        dashboardRunning = false
+        val intent = Intent(this, DashboardForegroundService::class.java).apply {
+            action = DashboardForegroundService.ACTION_STOP
+        }
+        try {
+            startService(intent)
+        } catch (_: Exception) {
+        }
+        NotificationManagerCompat.from(this).cancel(DashboardForegroundService.NOTIF_ID)
+    }
+
+    private fun buildDashboardNotification(
+        title: String,
+        sessions: List<Map<String, Any?>>,
+        alert: Boolean,
+    ): Notification {
+        val container = RemoteViews(packageName, R.layout.dashboard_notification)
+        container.removeAllViews(R.id.dashboard_rows)
+        var firstPayload: String? = null
+        sessions.forEachIndexed { index, s ->
+            val name = (s["name"] as? String) ?: "会话"
+            val status = (s["status"] as? String) ?: ""
+            val agent = (s["agent"] as? String) ?: ""
+            val phase = (s["phase"] as? String) ?: "running"
+            val requestId = (s["request_id"] as? String) ?: ""
+            val payload = (s["payload"] as? String) ?: ""
+            if (firstPayload == null && payload.isNotEmpty()) firstPayload = payload
+
+            val row = RemoteViews(packageName, R.layout.dashboard_row)
+            row.setTextViewText(R.id.row_name, name)
+            row.setTextViewText(R.id.row_status, status)
+            // 整行可点 → 深链到该会话
+            row.setOnClickPendingIntent(R.id.row_tap, dashboardTapIntent(payload, index))
+            if (phase == "approval" || phase == "waiting") {
+                row.setViewVisibility(R.id.row_allow, View.VISIBLE)
+                row.setViewVisibility(R.id.row_deny, View.VISIBLE)
+                row.setOnClickPendingIntent(
+                    R.id.row_allow,
+                    dashboardActionIntent("allow", payload, agent, requestId, index),
+                )
+                row.setOnClickPendingIntent(
+                    R.id.row_deny,
+                    dashboardActionIntent("deny", payload, agent, requestId, index),
+                )
+            } else {
+                row.setViewVisibility(R.id.row_allow, View.GONE)
+                row.setViewVisibility(R.id.row_deny, View.GONE)
+            }
+            container.addView(R.id.dashboard_rows, row)
+        }
+        return NotificationCompat.Builder(this, dashboardChannelId)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle(title)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(container)
+            .setCustomBigContentView(container)
+            .setContentIntent(firstPayload?.let { dashboardTapIntent(it, 999) })
+            .setOngoing(true)
+            .setOnlyAlertOnce(!alert)
+            .setPriority(
+                if (alert) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW,
+            )
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .build()
+    }
+
+    /** 单行点击 → 打开 App 深链到该会话。每行用不同 requestCode 避免 PI 复用串台。 */
+    private fun dashboardTapIntent(payload: String, index: Int): PendingIntent {
+        val intent = Intent(this, MainActivity::class.java)
+            .setAction("pawterm.DASHBOARD")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (payload.isNotEmpty()) intent.putExtra("payload", payload)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        return PendingIntent.getActivity(this, 7000 + index, intent, flags)
+    }
+
+    /** 审批按钮 → 广播给 DashboardActionReceiver（不开 App），由它转发回 Dart。 */
+    private fun dashboardActionIntent(
+        decision: String,
+        payload: String,
+        agent: String,
+        requestId: String,
+        index: Int,
+    ): PendingIntent {
+        val intent = Intent(this, DashboardActionReceiver::class.java)
+            .setAction(DashboardActionReceiver.ACTION)
+            .putExtra(DashboardActionReceiver.EXTRA_DECISION, decision)
+            .putExtra(DashboardActionReceiver.EXTRA_UUID, payload)
+            .putExtra(DashboardActionReceiver.EXTRA_AGENT, agent)
+            .putExtra(DashboardActionReceiver.EXTRA_REQUEST_ID, requestId)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        val code = 8000 + index * 2 + if (decision == "allow") 0 else 1
+        return PendingIntent.getBroadcast(this, code, intent, flags)
+    }
+
+    private fun ensureDashboardChannel() {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (manager.getNotificationChannel(dashboardChannelId) != null) return
+        val channel = NotificationChannel(
+            dashboardChannelId,
+            "Session dashboard",
+            // HIGH：事件(完成/审批)时 onlyAlertOnce=false 能再次 heads-up。
+            NotificationManager.IMPORTANCE_HIGH,
+        )
+        channel.description = "Live multi-session dashboard"
+        manager.createNotificationChannel(channel)
     }
 
     private fun ensureSessionEventsChannel() {

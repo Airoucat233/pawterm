@@ -12,6 +12,8 @@ import '../api/agents_api.dart';
 import '../screens/main_shell.dart';
 import 'open_chat_windows.dart';
 import 'projects_store.dart';
+import 'server_config.dart';
+import 'streaming_foreground_service.dart';
 
 final chatCompletionPulseProvider =
     StateProvider<Map<String, int>>((ref) => const {});
@@ -251,6 +253,8 @@ class ChatCompletionNotifier {
       if (call.method == 'notificationTapped') {
         final payload = call.arguments;
         if (payload is String) _handlePayload(payload);
+      } else if (call.method == 'dashboardApproval') {
+        await _handleDashboardApproval(call.arguments);
       }
     });
     await _plugin.initialize(
@@ -435,6 +439,41 @@ class ChatCompletionNotifier {
       ),
       payload: jsonEncode(approvalPayload),
     );
+  }
+
+  /// 通知里「允许/拒绝」被点（不开 App）：直接调服务端审批接口，
+  /// 然后撤销仪表盘里该会话的待审批态。
+  Future<void> _handleDashboardApproval(dynamic args) async {
+    if (args is! Map) return;
+    final decision = args['decision']?.toString(); // allow / deny
+    final payloadJson = args['uuid']?.toString(); // 透传的 payload JSON
+    final agent = args['agent']?.toString() ?? 'claude';
+    final requestId = args['request_id']?.toString() ?? '';
+    if (decision == null || payloadJson == null || requestId.isEmpty) return;
+    Map<String, dynamic> json;
+    try {
+      json = jsonDecode(payloadJson) as Map<String, dynamic>;
+    } catch (_) {
+      return;
+    }
+    final uuid = json['resume_id']?.toString();
+    if (uuid == null || uuid.isEmpty) return;
+    final ref = _ref;
+    if (ref == null) return;
+    final conn = ref.read(activeConnectionProvider);
+    if (conn == null) return;
+    final api = ChatApi(conn.apiBase, token: conn.token);
+    try {
+      if (agent == 'codex') {
+        await api.answerCodexApproval(
+            uuid, requestId, decision == 'allow' ? 'approved' : 'denied');
+      } else {
+        await api.toolPermission(uuid, requestId, decision);
+      }
+    } catch (_) {
+      return; // 失败保留待审批行，用户可进 App 再处理
+    }
+    unawaited(StreamingForegroundService.instance.clearApprovalByUuid(uuid));
   }
 
   bool _appIsVisibleNow() {

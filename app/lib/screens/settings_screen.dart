@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -6,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../i18n/locale_provider.dart';
 import '../state/app_info.dart';
 import '../state/prefs.dart';
+import '../state/streaming_foreground_service.dart';
 import '../theme.dart';
 import '../utils/update_checker.dart';
 
@@ -300,6 +303,8 @@ class _ConversationSettingsPage extends ConsumerWidget {
             value: showContextBar,
             onChanged: (v) => ref.read(showContextBarProvider.notifier).set(v),
           ),
+          _Divider(),
+          const _BatteryExemptionRow(),
         ]),
       ],
     );
@@ -737,6 +742,51 @@ class _TappableRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ── 后台保活：电池优化豁免（仅 Android，点击主动申请，不自动弹）──────────────
+
+class _BatteryExemptionRow extends StatefulWidget {
+  const _BatteryExemptionRow();
+
+  @override
+  State<_BatteryExemptionRow> createState() => _BatteryExemptionRowState();
+}
+
+class _BatteryExemptionRowState extends State<_BatteryExemptionRow> {
+  bool? _exempt;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final v = await StreamingForegroundService.instance.isBatteryExempt();
+    if (mounted) setState(() => _exempt = v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Platform.isAndroid) return const SizedBox.shrink();
+    final t = AppTokens.of(context);
+    final exempt = _exempt ?? false;
+    return _TappableRow(
+      icon: Icons.battery_saver_outlined,
+      label: '后台保活（电池优化豁免）',
+      subtitle: exempt
+          ? '已豁免 — 熄屏/后台流式更稳'
+          : '默认仅前台服务保活；部分 ROM 熄屏会断流，点此申请豁免',
+      trailing: exempt
+          ? Icon(Icons.check_circle, size: 18, color: t.success)
+          : const Icon(Icons.chevron_right, size: 18),
+      onTap: () async {
+        await StreamingForegroundService.instance.requestBatteryExemption();
+        await _refresh();
+      },
     );
   }
 }
