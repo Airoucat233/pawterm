@@ -216,8 +216,8 @@ class ChatCompletionNotifier {
   // 完成通知已统一进「会话仪表盘」常驻通知，不再单列 chat_completion 类别。
   static const _approvalChannel = AndroidNotificationChannel(
     'chat_approval',
-    'Chat approvals',
-    description: 'AI approval requests',
+    '审批请求',
+    description: 'AI 工具/命令审批请求',
     importance: Importance.high,
   );
   static const _actionDecline = 'approval_decline';

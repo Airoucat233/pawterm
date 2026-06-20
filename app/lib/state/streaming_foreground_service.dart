@@ -35,20 +35,14 @@ class StreamingForegroundService {
   /// sessionKey -> 实时状态文案（思考中 / 调用工具X / 回复中 …）
   final Map<String, String> _activity = {};
 
-  /// 已完成、正在「✓ 已完成」展示中的 sessionKey（短暂保留后移除）
+  /// 已完成、常驻里显示「✓ 已完成」的 sessionKey（回前台才清）
   final Set<String> _done = {};
 
   /// 等待审批的 sessionKey -> requestId（行显示「⏳ 等待审批」+ 允许/拒绝按钮）
   final Map<String, String> _approvals = {};
 
-  /// 每个 done 会话的延迟移除计时器
-  final Map<String, Timer> _doneTimers = {};
-
   bool _appInForeground = true;
   bool _running = false; // 原生仪表盘前台服务是否在跑
-
-  /// 已完成行展示多久后从仪表盘移除
-  static const _doneLinger = Duration(seconds: 6);
 
   /// 路由更新节流：避免高频状态刷新过度发通知
   DateTime? _lastPush;
@@ -61,7 +55,17 @@ class StreamingForegroundService {
 
   Future<void> setAppInForeground(bool value) async {
     _appInForeground = value;
+    // 回前台 = 用户已看到 → 清掉「已完成」的会话行（运行中/待审批保留）。
+    if (value) _clearDoneSessions();
     await _sync(alert: false);
+  }
+
+  void _clearDoneSessions() {
+    for (final key in _done.toList()) {
+      _active.remove(key);
+      _activity.remove(key);
+    }
+    _done.clear();
   }
 
   Future<void> upsert(ChatCompletionPayload payload, {String? activity}) async {
@@ -102,19 +106,11 @@ class StreamingForegroundService {
   void _markDone(String key) {
     _done.add(key);
     _activity[key] = '✓ 已完成';
-    _doneTimers[key]?.cancel();
-    _doneTimers[key] = Timer(_doneLinger, () {
-      _active.remove(key);
-      _activity.remove(key);
-      _done.remove(key);
-      _doneTimers.remove(key);
-      unawaited(_sync(alert: false));
-    });
+    // 不自动移除：常驻仪表盘保留「✓ 已完成」行，回前台时由 _clearDoneSessions 清。
   }
 
   void _cancelDone(String key) {
     _done.remove(key);
-    _doneTimers.remove(key)?.cancel();
   }
 
   /// 某会话出现待审批：行显示「⏳ 等待审批」+ 允许/拒绝按钮，并 heads-up。
@@ -156,10 +152,6 @@ class StreamingForegroundService {
     _activity.clear();
     _done.clear();
     _approvals.clear();
-    for (final t in _doneTimers.values) {
-      t.cancel();
-    }
-    _doneTimers.clear();
     await _sync(alert: false);
   }
 

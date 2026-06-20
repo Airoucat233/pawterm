@@ -543,11 +543,11 @@ class MainActivity : FlutterActivity() {
         if (manager.getNotificationChannel(dashboardChannelId) != null) return
         val channel = NotificationChannel(
             dashboardChannelId,
-            "Session dashboard",
+            "会话仪表盘",
             // HIGH：事件(完成/审批)时 onlyAlertOnce=false 能再次 heads-up。
             NotificationManager.IMPORTANCE_HIGH,
         )
-        channel.description = "Live multi-session dashboard"
+        channel.description = "后台进行中会话的常驻状态"
         manager.createNotificationChannel(channel)
     }
 
