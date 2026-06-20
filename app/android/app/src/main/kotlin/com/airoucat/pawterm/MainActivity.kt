@@ -434,8 +434,11 @@ class MainActivity : FlutterActivity() {
             .setOngoing(true)
             .setOnlyAlertOnce(!alert)
             .setPriority(
-                if (alert) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW,
+                if (alert) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT,
             )
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            // 强制前台服务通知立即正常显示，避免被系统延迟/降级进「更多通知」。
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .build()
     }
