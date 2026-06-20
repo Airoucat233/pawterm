@@ -2510,8 +2510,7 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
               if (!_stickToBottom)
                 Positioned(
                   right: 12,
-                  // 默认位置往上挪一点，给底部固定的「重新编辑」悬浮胶囊预留位置。
-                  bottom: 54,
+                  bottom: 12,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -2526,14 +2525,6 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
                       ),
                     ],
                   ),
-                ),
-              // 重新编辑：浮在消息区右下角的小胶囊，固定位置、不占行、不遮挡消息。
-              // 位置固定不避让（箭头已上移让出此处）。
-              if (_unrespondedUserText != null && _busy)
-                Positioned(
-                  right: 12,
-                  bottom: 12,
-                  child: _ReEditAction(onReEdit: _reEditLastMessage),
                 ),
             ],
           ),
@@ -2602,6 +2593,8 @@ class _ChatTabState extends ConsumerState<ChatTab> with WidgetsBindingObserver {
             agent: session.agent,
             runtime: session.runtime,
             sessionId: _sessionId ?? session.resumeId,
+            unrespondedText: _unrespondedUserText,
+            onReEdit: _reEditLastMessage,
           ),
       ],
     );
@@ -3304,6 +3297,8 @@ class _Composer extends ConsumerWidget {
   final AgentKind agent;
   final Map<String, dynamic> runtime;
   final String? sessionId;
+  final String? unrespondedText;
+  final VoidCallback onReEdit;
   const _Composer({
     required this.controller,
     required this.focusNode,
@@ -3328,6 +3323,8 @@ class _Composer extends ConsumerWidget {
     required this.agent,
     required this.runtime,
     required this.sessionId,
+    this.unrespondedText,
+    required this.onReEdit,
   });
 
   @override
@@ -3422,6 +3419,12 @@ class _Composer extends ConsumerWidget {
                       keyboardType: TextInputType.multiline,
                     ),
                   ),
+                  // 重新编辑：放在输入框右侧、发送按钮左边；一旦输入新文字
+                  // (hasText) 即隐藏。
+                  if (unrespondedText != null && busy && !hasText) ...[
+                    _ReEditAction(onReEdit: onReEdit),
+                    const SizedBox(width: 6),
+                  ],
                   const SizedBox(width: 8),
                   _SendOrStopButton(
                     busy: busy,
@@ -5619,20 +5622,10 @@ class _ReEditAction extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-              // 不透明 surface + accent 微染：浮在消息上也清晰可读。
-              color: Color.alphaBlend(
-                t.accent.withValues(alpha: dark ? 0.18 : 0.12),
-                t.surface,
-              ),
+              color: t.accent.withValues(alpha: dark ? 0.14 : 0.10),
               borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: t.accent.withValues(alpha: 0.25), width: 0.5),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: dark ? 0.28 : 0.12),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
-                ),
-              ],
+              border:
+                  Border.all(color: t.accent.withValues(alpha: 0.25), width: 0.5),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
